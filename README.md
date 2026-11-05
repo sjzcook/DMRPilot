@@ -1,12 +1,10 @@
 # DMR Pilot —— 连接 BrandMeister 的 iOS App
 
-Swift + SwiftUI 写的 BrandMeister 客户端，两条腿：
+Swift + SwiftUI 写的 BrandMeister 客户端，三条腿：
 
 1. **真协议连接**：以 MMDVM / Homebrew 热点身份登录 BrandMeister Master，完成 `RPTL → RPTK → RPTC` 握手，用 `RPTPING/MSTPONG`（或新版 `DMRP`）保持心跳，然后持续接收 `DMRD` 语音数据帧，本地聚合成实时通话列表。
-2. **REST 查询**：`api.brandmeister.network/v2` 的设备详情与全球通话组名称表。
-
-> 语音不解码。DMR 空口是 AMBE+2 编码，解码器受 DVSI 专利限制，Swift 里没有合法实现。
-> 所以这个 App 做到的是「真正在线 + 看清谁在呼叫哪个时隙」，而不是音频转发。详见文末。
+2. **真的能出声**：`DMRD` 里的 33 字节载荷送进**纯 Swift 实现的 AMBE+2 半速率解码器**，还原成 8 kHz PCM 用 `AVAudioEngine` 播出来。整个声码器（FEC、反量化、谐波合成、增强、限幅）没有一个 C/C++ 文件，也不依赖第三方二进制。
+3. **REST 查询**：`api.brandmeister.network/v2` 的设备详情与全球通话组名称表。
 
 ---
 
@@ -24,11 +22,25 @@ DMRApp/
 │   ├── HomebrewFrames.swift     # 协议帧编解码
 │   ├── HomebrewClient.swift     # UDP / WebSocket 传输 + 登录状态机 + 心跳
 │   ├── RootView.swift           # TabView
-│   ├── HotspotView.swift        # 状态卡 + 实时通话
+│   ├── HotspotView.swift        # 状态卡 + 电平表 + 实时通话
 │   ├── DirectoryView.swift      # 设备查询 + 通话组搜索
 │   ├── SettingsView.swift       # 身份 / 服务器 / 行为
 │   ├── LogConsoleView.swift     # 十六进制协议日志
+│   ├── Vocoder/                 # AMBE+2 半速率解码器（纯 Swift）
+│   │   ├── HalfrateDecoder.swift    # 帧解码 + 丢帧隐藏 + 输出级
+│   │   ├── HalfrateCore.swift       # 常量、定点饱和、快速 log2/exp2/sqrt、FFT
+│   │   ├── HalfrateFec.swift        # Golay(23,12) / 交织 / 解扰
+│   │   ├── HalfrateDequant.swift    # 码本预测反量化
+│   │   ├── HalfrateSynth.swift      # 谐波合成 / 噪声 / 脉冲
+│   │   ├── HalfrateOptions.swift    # 全部调音参数的默认值
+│   │   ├── HalfrateTables.swift     # 从 C++ 生成的大表（13 万字节，勿手改）
+│   │   └── DMRVoicePath.swift       # DMRD 载荷 → 3 个空中帧 → PCM
+│   ├── Audio/
+│   │   ├── VoicePipeline.swift  # 每路通话一个解码器 + 播放调度
+│   │   └── VoicePlayer.swift    # AVAudioEngine 8 kHz 播放
 │   └── Assets.xcassets
+├── tools/
+│   └── gen_tables.py            # 从 DroidStar 源码抽取数值表生成 HalfrateTables.swift
 └── README.md
 ```
 
@@ -42,7 +54,7 @@ DMRApp/
 4. 选真机或模拟器运行。模拟器可以验证 REST 查询；**UDP 热点连接建议真机**（模拟器共享宿主网络，收包行为不稳定）。
 5. 打开「设置」页填三项：DMR ID、Hotspot 密码、（可选）呼号，然后点「保存并连接」。
 
-> 如果工程打不开：新建一个 iOS App 工程（SwiftUI 模板），把 `DMRPilot/` 下全部 `.swift` 拖进去并勾选 target，效果一样。
+> 如果工程打不开：新建一个 iOS App 工程（SwiftUI 模板），把 `DMRPilot/` 下**所有子目录**里的 `.swift` 都拖进去并勾选 target，效果一样。
 
 ### BrandMeister 侧要准备什么
 
@@ -125,16 +137,63 @@ App                          Master
 **日志里看到 `DMRD` 但列表不动**
 通话是别人用别的时隙/别的 TG —— 检查 `dst` 是不是你订阅的组。`TS2` 的数据帧在只订阅 TS1 的热点上不会来。
 
-**收不到语音（重要）**
-见下节，这是设计上的边界，不是 bug。
+**收到了 `DMRD` 但听不到声音**
+1. 「热点」页的「语音播放」开关是不是关着？关着时仍会解码（统计和电平照常走），只是不出声。
+2. 手机侧静音键拨了？`AVAudioSession` 用的是 `.playback`，静音开关不影响，但音量键会。
+3. 「纠错比特」一直大于 12，说明 Golay 每帧都在纠错到极限，信号质量太差，解出来是噪声。
+4. 电平表在跳但听不到：`已解码` 包数在涨说明解码确实在跑，检查系统输出是不是切到了蓝牙耳机。
+
+**通话列表在动，但只有杂音**
+多半是别人的通话用了你没订阅的时隙——能收到帧但载荷不完整。看日志里的 `TS1` / `TS2` 是否是你订阅的那个。
 
 ---
 
-## 为什么不做语音
+## 语音是怎么解出来的
 
-DMR 每 20 ms 传 33 bit 的 AMBE+2 参数，必须用 DVSI 的 AMBE-3000 芯片或授权软件声码器才能还原成 PCM。开源界只有 `mbelib` 这类实现，专利与授权状态不明确，放进 App Store 上架风险很大。
+DMR 每 20 ms 传 33 bit 的 AMBE+2 参数（2450 bit/s 语音 + 1150 bit/s 前向纠错），
+还原成 PCM 需要半速率声码器。这个 App 里是**纯 Swift 移植**，整条链路分五层：
 
-所以 `HomebrewClient` 只解析到「信令层 + 帧统计」，并在文件末尾留了 `AmbeDecoder` 协议占位：将来如果接入合规声码器（硬件模块或取得授权），实现 `decode(bits:) -> [Int16]?` 后用 `AVAudioEngine` 播放即可，上层不用动。
+```
+DMRD 53/55 字节
+   └─ 33 字节载荷
+        └─ DMRVoicePath.unpackFrames        重排成 3 × 9 字节空中帧
+             └─ HRFec.decodeAirFrame        解交织 → Golay(23,12) → 解扰
+                  └─ HRDecoder.decode       反量化 → 谐波合成 → 增强 → 限幅
+                       └─ 3 × 160 = 480 个 8 kHz PCM 采样
+                            └─ VoicePlayer  AVAudioEngine 升采样后播放
+```
+
+| 层 | 文件 | 做什么 |
+|---|---|---|
+| 拆帧 | `DMRVoicePath` | 216 个语音比特散在载荷 `0..13` 与 `20..32`，第 13 字节低半字节是嵌入式信令，要用第 19 字节低半字节替换 |
+| 纠错 | `HRFec` | `channelPosition(i) = 4i - 71·(i/18)` 的 DMR 交织、Golay(23,12) 纠 3 位、23 位伪随机解扰 |
+| 反量化 | `HRDequant` | 9 个参数字段（宽度 `{7,5,5,9,7,5,4,4,3}`），码本预测 ρ=0.65 |
+| 合成 | `HRSynth` | 相位跟踪的正弦谐波、128/512 点 FFT 噪声、脉冲串、160 采样重叠相加 |
+| 输出 | `HRDecoder` | 共振峰增强、高通、帧限幅、软限幅，最后饱和成 `Int16` |
+
+数值必须逐位一致，所以所有浮点常量都按 C++ 里的十六进制浮点原样写过来
+（例如 `0x1.186f18p-2` 必须写成 `0.273861289024353`，不能写成 `0.2734`），
+大表则用 `tools/gen_tables.py` 从源码解析后生成，不手抄。
+
+### 关于每一路通话
+
+`VoicePipeline` 给每个 `src-dst-slot` 单独持有一个解码器。halfrate 是强状态的：
+码本预测器、相位跟踪、增强滤波器都跨帧递推，两路共用一个解码器会互相污染。
+没有收到语音头就撞进通话中间的情况也照常处理（自动补一次 `begin`）。
+
+同一时刻只有一路真正出声（后到的接管）——两路同时播放只会互相盖住。
+
+### 授权说明（请务必读完）
+
+- 本目录 `Vocoder/` 下的解码器**移植自 [DroidStar](https://github.com/nostar/DroidStar) 的 `mbe/` 子系统**
+  （原作者 David Rowe / N0MJS 等），该子系统以 **GPL-3.0-or-later** 发布。
+  因此 `Vocoder/` 下的这些 Swift 文件同样受 GPL-3.0 约束：**分发二进制时必须提供完整源码**。
+  若要放进 App Store，GPL-3.0 与 Apple 的分发条款存在已知冲突，需自行评估法务风险。
+- AMBE+2 本身是 DVSI 的**专利技术**。开源实现（mbelib / halfrate）的专利状态在法律上
+  并没有被明确豁免，商业分发有风险。个人实验、自用、开源分发（遵守 GPL）风险相对可控。
+- App 只是「能听」，音质是软件声码器的水平：安静环境下可懂度不错，弱信号时会有金属声和
+  断续——`HRDecoder` 的丢帧隐藏会在丢包时重复上一帧或渐入舒适噪声。这与硬件 AMBE-3000
+  芯片的效果有差距，属正常现象。
 
 ---
 
@@ -144,11 +203,14 @@ DMR 每 20 ms 传 33 bit 的 AMBE+2 参数，必须用 DVSI 的 AMBE-3000 芯片
 - Talker Alias 解析（`DMRA` 帧，能把源 ID 显示成呼号）
 - 按通话组/时隙过滤、离线缓存通话组名称表（现在是内存缓存，重启要重拉）
 - 后台保活（`UIBackgroundModes` + `NWPathMonitor`，注意 App Store 审核对长期后台 UDP 比较敏感）
-- 语音热词/字幕（同样卡在 AMBE 解码）
+- 语音录音 / 回放（PCM 已经在手里，写个 `AVAudioFile` 就行）
+- 把解码挪到独立串行队列（现在是主线程同步解码，25 包/秒时约 1–3 ms/包）
 
 ---
 
 ## 关于实测状态
 
 - REST 端点已实测：`/v2/talkgroup` 返回 `{"91":"World-wide", ...}`；`/v2/device/262301` 返回完整设备 JSON（字段见 `Models.swift` 注释）。v1.0 已下线，全部走 v2。
-- 协议层按 MMDVMHost / HBlink3 的公开实现对齐，但**本机没有 Swift 工具链，代码未经真机编译验证**。首次编译若有零星报错（多为 SDK 版本差异导致的 API 签名），按提示改一处即可，不影响整体结构。
+- 协议层按 MMDVMHost / HBlink3 的公开实现对齐；声码器按 DroidStar 的 `mbe/` 逐函数移植，常量用十六进制浮点原样搬。
+- 但**本机没有 Swift 工具链，全部代码未经真机编译验证**。首次编译若有零星报错（多为 SDK 版本差异导致的 API 签名），按提示改一处即可，不影响整体结构。
+- 声码器正确性建议这样验：找一段已知内容的 DMR 录音，把 `DMRD` 载荷喂给 `DMRVoiceDecoder.decode(packet:)`，输出写进 WAV（8 kHz / 16 bit / 单声道）后与 DroidStar 的输出逐采样比对。

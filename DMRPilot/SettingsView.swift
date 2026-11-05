@@ -164,7 +164,7 @@ struct SettingsView: View {
         } header: {
             Text("关于")
         } footer: {
-            Text("语音部分不解码：DMR 使用 AMBE+2 编码，解码器受专利限制。本 App 只实现登录、心跳与信令可视化。")
+            Text("语音由内置的纯 Swift AMBE+2 半速率解码器还原（移植自 DroidStar 的 halfrate，GPL-3.0），不依赖任何 C/C++ 代码。语音开关与音量在「热点」页。")
         }
     }
 

@@ -18,6 +18,16 @@
 		C1C2C3D4E5F6A7B8C9D00209 /* DirectoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00109 /* DirectoryView.swift */; };
 		C1C2C3D4E5F6A7B8C9D0020A /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D0010A /* SettingsView.swift */; };
 		C1C2C3D4E5F6A7B8C9D0020B /* LogConsoleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D0010B /* LogConsoleView.swift */; };
+		C1C2C3D4E5F6A7B8C9D0020D /* HalfrateTables.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D0010E /* HalfrateTables.swift */; };
+		C1C2C3D4E5F6A7B8C9D0020E /* HalfrateCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D0010F /* HalfrateCore.swift */; };
+		C1C2C3D4E5F6A7B8C9D0020F /* HalfrateFec.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00110 /* HalfrateFec.swift */; };
+		C1C2C3D4E5F6A7B8C9D00210 /* HalfrateDequant.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00111 /* HalfrateDequant.swift */; };
+		C1C2C3D4E5F6A7B8C9D00211 /* HalfrateSynth.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00112 /* HalfrateSynth.swift */; };
+		C1C2C3D4E5F6A7B8C9D00212 /* HalfrateOptions.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00113 /* HalfrateOptions.swift */; };
+		C1C2C3D4E5F6A7B8C9D00213 /* HalfrateDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00114 /* HalfrateDecoder.swift */; };
+		C1C2C3D4E5F6A7B8C9D00214 /* DMRVoicePath.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00115 /* DMRVoicePath.swift */; };
+		C1C2C3D4E5F6A7B8C9D00215 /* VoicePlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00116 /* VoicePlayer.swift */; };
+		C1C2C3D4E5F6A7B8C9D00216 /* VoicePipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00117 /* VoicePipeline.swift */; };
 		C1C2C3D4E5F6A7B8C9D0020C /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D0010C /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
@@ -33,6 +43,16 @@
 		B1B2C3D4E5F6A7B8C9D00109 /* DirectoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DirectoryView.swift; sourceTree = "<group>"; };
 		B1B2C3D4E5F6A7B8C9D0010A /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		B1B2C3D4E5F6A7B8C9D0010B /* LogConsoleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogConsoleView.swift; sourceTree = "<group>"; };
+		B1B2C3D4E5F6A7B8C9D0010E /* HalfrateTables.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HalfrateTables.swift; sourceTree = "<group>"; };
+		B1B2C3D4E5F6A7B8C9D0010F /* HalfrateCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HalfrateCore.swift; sourceTree = "<group>"; };
+		B1B2C3D4E5F6A7B8C9D00110 /* HalfrateFec.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HalfrateFec.swift; sourceTree = "<group>"; };
+		B1B2C3D4E5F6A7B8C9D00111 /* HalfrateDequant.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HalfrateDequant.swift; sourceTree = "<group>"; };
+		B1B2C3D4E5F6A7B8C9D00112 /* HalfrateSynth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HalfrateSynth.swift; sourceTree = "<group>"; };
+		B1B2C3D4E5F6A7B8C9D00113 /* HalfrateOptions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HalfrateOptions.swift; sourceTree = "<group>"; };
+		B1B2C3D4E5F6A7B8C9D00114 /* HalfrateDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HalfrateDecoder.swift; sourceTree = "<group>"; };
+		B1B2C3D4E5F6A7B8C9D00115 /* DMRVoicePath.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DMRVoicePath.swift; sourceTree = "<group>"; };
+		B1B2C3D4E5F6A7B8C9D00116 /* VoicePlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoicePlayer.swift; sourceTree = "<group>"; };
+		B1B2C3D4E5F6A7B8C9D00117 /* VoicePipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoicePipeline.swift; sourceTree = "<group>"; };
 		B1B2C3D4E5F6A7B8C9D0010C /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		B1B2C3D4E5F6A7B8C9D0010D /* DMRPilot.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DMRPilot.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -78,9 +98,35 @@
 				B1B2C3D4E5F6A7B8C9D00109 /* DirectoryView.swift */,
 				B1B2C3D4E5F6A7B8C9D0010A /* SettingsView.swift */,
 				B1B2C3D4E5F6A7B8C9D0010B /* LogConsoleView.swift */,
+				A1B2C3D4E5F6A7B8C9D00010 /* Vocoder */,
+				A1B2C3D4E5F6A7B8C9D00011 /* Audio */,
 				B1B2C3D4E5F6A7B8C9D0010C /* Assets.xcassets */,
 			);
 			path = DMRPilot;
+			sourceTree = "<group>";
+		};
+		A1B2C3D4E5F6A7B8C9D00010 /* Vocoder */ = {
+			isa = PBXGroup;
+			children = (
+				B1B2C3D4E5F6A7B8C9D00114 /* HalfrateDecoder.swift */,
+				B1B2C3D4E5F6A7B8C9D0010F /* HalfrateCore.swift */,
+				B1B2C3D4E5F6A7B8C9D00110 /* HalfrateFec.swift */,
+				B1B2C3D4E5F6A7B8C9D00111 /* HalfrateDequant.swift */,
+				B1B2C3D4E5F6A7B8C9D00112 /* HalfrateSynth.swift */,
+				B1B2C3D4E5F6A7B8C9D00113 /* HalfrateOptions.swift */,
+				B1B2C3D4E5F6A7B8C9D0010E /* HalfrateTables.swift */,
+				B1B2C3D4E5F6A7B8C9D00115 /* DMRVoicePath.swift */,
+			);
+			path = Vocoder;
+			sourceTree = "<group>";
+		};
+		A1B2C3D4E5F6A7B8C9D00011 /* Audio */ = {
+			isa = PBXGroup;
+			children = (
+				B1B2C3D4E5F6A7B8C9D00116 /* VoicePlayer.swift */,
+				B1B2C3D4E5F6A7B8C9D00117 /* VoicePipeline.swift */,
+			);
+			path = Audio;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -163,6 +209,16 @@
 				C1C2C3D4E5F6A7B8C9D00209 /* DirectoryView.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D0020A /* SettingsView.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D0020B /* LogConsoleView.swift in Sources */,
+				C1C2C3D4E5F6A7B8C9D0020D /* HalfrateTables.swift in Sources */,
+				C1C2C3D4E5F6A7B8C9D0020E /* HalfrateCore.swift in Sources */,
+				C1C2C3D4E5F6A7B8C9D0020F /* HalfrateFec.swift in Sources */,
+				C1C2C3D4E5F6A7B8C9D00210 /* HalfrateDequant.swift in Sources */,
+				C1C2C3D4E5F6A7B8C9D00211 /* HalfrateSynth.swift in Sources */,
+				C1C2C3D4E5F6A7B8C9D00212 /* HalfrateOptions.swift in Sources */,
+				C1C2C3D4E5F6A7B8C9D00213 /* HalfrateDecoder.swift in Sources */,
+				C1C2C3D4E5F6A7B8C9D00214 /* DMRVoicePath.swift in Sources */,
+				C1C2C3D4E5F6A7B8C9D00215 /* VoicePlayer.swift in Sources */,
+				C1C2C3D4E5F6A7B8C9D00216 /* VoicePipeline.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

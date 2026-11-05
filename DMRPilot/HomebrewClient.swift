@@ -4,10 +4,8 @@
 //
 //  以 MMDVM / Homebrew 热点身份连上 BrandMeister：
 //  登录（RPTL）→ 鉴权（RPTK）→ 上报配置（RPTC）→ 心跳（RPTPING / DMRP），
-//  然后持续接收 DMRD 语音数据帧，把信令聚合成本地“通话列表”。
-//
-//  ⚠️ 语音：DMR 空口承载的是 AMBE+2™ 压缩帧，解码器受专利保护，
-//  App 内不解码音频，只做链路与通话信令可视化（见 AmbeDecoder 占位说明）。
+//  然后持续接收 DMRD 语音数据帧，把信令聚合成本地“通话列表”，
+//  同时把 33 字节语音载荷送进纯 Swift 的 AMBE+2 解码器播放出来。
 //
 
 import Foundation
@@ -61,6 +59,12 @@ final class HomebrewClient: ObservableObject {
     @Published private(set) var lastProblem: String?
     @Published var isLoggingEnabled = true
 
+    // 语音解码状态（驱动 UI 的电平条与统计）
+    @Published private(set) var isVoicePlaying = false
+    @Published private(set) var voiceLevel: Float = 0
+    @Published private(set) var voiceErrorCount = 0
+    @Published private(set) var voicePackets = 0
+
     var activeCalls: [LiveCall] { calls.filter { $0.isActive } }
     var recentCalls: [LiveCall] { calls.filter { !$0.isActive } }
 
@@ -77,8 +81,38 @@ final class HomebrewClient: ObservableObject {
     private var retryWork: DispatchWorkItem?
     private var lastServerPacket: Date?
 
+    /// AMBE+2 解码 + 播放
+    private let voice = VoicePipeline()
+
     private let pingInterval: TimeInterval = 5
     private let silenceTimeout: TimeInterval = 15
+
+    init() {
+        voice.volume = Float(activeSettings.audioVolume)
+    }
+
+    // MARK: - 语音偏好
+
+    /// 用户在界面上改了开关/音量时调用，需要立刻生效而不必重连
+    func applyAudioPreference(_ settings: Settings) {
+        activeSettings.audioEnabled = settings.audioEnabled
+        activeSettings.audioVolume = settings.audioVolume
+        voice.volume = Float(settings.audioVolume)
+        voice.isMuted = !settings.audioEnabled
+        if !settings.audioEnabled {
+            voiceLevel = 0
+            isVoicePlaying = false
+        }
+    }
+
+    /// 每个语音包都会调用，所以只在值真的变了才写 @Published——
+    /// 否则 25 包/秒 × 4 个属性 = 每秒 100 次 objectWillChange，白白刷新整个界面。
+    private func syncVoiceUI() {
+        if isVoicePlaying != voice.isPlaying { isVoicePlaying = voice.isPlaying }
+        if voiceLevel != voice.level { voiceLevel = voice.level }
+        if voiceErrorCount != voice.lastErrorCount { voiceErrorCount = voice.lastErrorCount }
+        if voicePackets != voice.decodedPackets { voicePackets = voice.decodedPackets }
+    }
 
     // MARK: - 连接 / 断开
 
@@ -89,6 +123,11 @@ final class HomebrewClient: ObservableObject {
         rxFrames = 0
         txFrames = 0
         lastProblem = nil
+
+        voice.reset()
+        voice.volume = Float(settings.audioVolume)
+        voice.isMuted = !settings.audioEnabled
+        syncVoiceUI()
 
         guard settings.dmrId > 0, !settings.password.isEmpty else {
             state = .failed("请先在设置里填写 DMR ID 与 Hotspot 密码")
@@ -378,6 +417,8 @@ final class HomebrewClient: ObservableObject {
             closeCall(key: key, at: now)
             calls.insert(makeCall(frame: frame, key: key, at: now), at: 0)
             trimCalls()
+            voice.begin(key: key)
+            syncVoiceUI()
             append(.rx, "通话开始 \(frame.src) → \(frame.dst)　\(frame.isPrivate ? "单呼" : "组呼")　TS\(frame.slot)")
             return
         }
@@ -388,10 +429,17 @@ final class HomebrewClient: ObservableObject {
                 calls[index].isActive = false
                 append(.rx, "通话结束 \(frame.src) → \(frame.dst)（\(Fmt.duration(calls[index].duration))，\(calls[index].frames) 帧）")
             }
+            voice.end(key: key)
+            syncVoiceUI()
             return
         }
 
-        // 语音突发（AMBE 载荷，无法解码）或数据帧：只统计
+        // 语音突发：33 字节 AMBE+2 载荷 → 3 帧 → 480 采样
+        if !frame.isDataSync {
+            voice.push(key: key, payload: frame.payload)
+            syncVoiceUI()
+        }
+
         if let index = calls.firstIndex(where: { $0.id == key && $0.isActive }) {
             calls[index].frames += 1
             calls[index].updatedAt = now
@@ -488,6 +536,9 @@ final class HomebrewClient: ObservableObject {
         webSocketSession?.invalidateAndCancel()
         webSocketSession = nil
 
+        voice.reset()
+        syncVoiceUI()
+
         connectedSince = nil
         lastServerPacket = nil
         loginAttempt = 0
@@ -504,14 +555,4 @@ final class HomebrewClient: ObservableObject {
         }
         entries = list
     }
-}
-
-// MARK: - 语音解码占位
-
-/// DMR 语音是 AMBE+2™ 半速率编码（33 bit/20ms），解码需要 DVSI 的专利算法或
-/// mbelib（GPL + 专利风险）。本 App 不做音频解码；若将来接入合规的软件声码器，
-/// 在此实现并把 PCM 交给 AVAudioEngine 播放即可。
-protocol AmbeDecoder {
-    /// 27 bit 参数 + 56 bit 数据（DMR 封装）→ 160 个 8 kHz PCM 采样
-    func decode(bits: [UInt8]) -> [Int16]?
 }

@@ -96,13 +96,42 @@ struct Settings: Codable, Equatable {
     var modernPing: Bool = false
     var autoReconnect: Bool = true
 
+    // MARK: 语音
+
+    /// 是否解码并播放收到的 DMR 语音
+    var audioEnabled: Bool = true
+    /// 播放音量 0…1
+    var audioVolume: Double = 0.9
+
     var isIdentityReady: Bool { dmrId > 0 && !password.isEmpty }
+}
+
+extension Settings {
+
+    /// 手写解码而非合成：合成版遇到“老版本存下来的 JSON 里没有新字段”会直接抛错，
+    /// 用户升级一次 App 就把 DMR ID 和密码全丢了。这里每个字段都退回默认值。
+    init(from decoder: Decoder) throws {
+        let defaults = Settings()
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        dmrId = try container.decodeIfPresent(Int.self, forKey: .dmrId) ?? defaults.dmrId
+        callsign = try container.decodeIfPresent(String.self, forKey: .callsign) ?? defaults.callsign
+        password = try container.decodeIfPresent(String.self, forKey: .password) ?? defaults.password
+        host = try container.decodeIfPresent(String.self, forKey: .host) ?? defaults.host
+        port = try container.decodeIfPresent(Int.self, forKey: .port) ?? defaults.port
+        transport = try container.decodeIfPresent(HbTransport.self, forKey: .transport) ?? defaults.transport
+        wsPath = try container.decodeIfPresent(String.self, forKey: .wsPath) ?? defaults.wsPath
+        modernPing = try container.decodeIfPresent(Bool.self, forKey: .modernPing) ?? defaults.modernPing
+        autoReconnect = try container.decodeIfPresent(Bool.self, forKey: .autoReconnect) ?? defaults.autoReconnect
+        audioEnabled = try container.decodeIfPresent(Bool.self, forKey: .audioEnabled) ?? defaults.audioEnabled
+        audioVolume = try container.decodeIfPresent(Double.self, forKey: .audioVolume) ?? defaults.audioVolume
+    }
 }
 
 // MARK: - 实时通话
 
-/// 由 Homebrew 数据流聚合出来的“通话”。AMBE 语音无法在 App 内解码，
-/// 所以这里只统计信令与帧数，用来证明链路真正在线。
+/// 由 Homebrew 数据流聚合出来的“通话”：一次语音头到语音结束符之间的所有 DMRD 帧。
+/// 语音载荷同时会送进 VoicePipeline 解码播放，这里只负责信令与统计。
 struct LiveCall: Identifiable, Equatable {
     let id: String          // src-dst-slot
     let src: Int
