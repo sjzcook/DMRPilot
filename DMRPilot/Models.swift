@@ -1,0 +1,168 @@
+//
+//  Models.swift
+//  DMRPilot
+//
+//  BrandMeister v2 REST 模型 + App 内部模型
+//
+
+import Foundation
+
+// MARK: - BrandMeister v2 API 模型
+
+/// `GET https://api.brandmeister.network/v2/device/{id}`
+///
+/// 实测返回示例（ID 262301）：
+/// ```json
+/// {"id":262301,"callsign":"DB0OBO","linkname":null,"hardware":"","firmware":"",
+///  "tx":"0.0000","rx":"0.0000","colorcode":1,"status":3,"lastKnownMaster":9999,
+///  "lat":0,"lng":0,"city":null,"website":null,"pep":0,"agl":0,
+///  "priorityDescription":null,"description":null,
+///  "created_at":"2022-07-19T15:59:12.000000Z","updated_at":"2022-08-19T08:39:52.000000Z",
+///  "last_seen":"2022-07-19 17:57:55","permissions":[],"statusText":"Both Slots Linked"}
+/// ```
+/// 所有字段都按可选处理，服务器加字段/改类型也不会解析失败。
+struct BmDevice: Codable, Identifiable, Hashable {
+    let id: Int
+    var callsign: String?
+    var linkname: String?
+    var hardware: String?
+    var firmware: String?
+    var tx: String?
+    var rx: String?
+    var colorcode: Int?
+    var status: Int?
+    var lastKnownMaster: Int?
+    var lat: Double?
+    var lng: Double?
+    var city: String?
+    var website: String?
+    var desc: String?
+    var lastSeen: String?
+    var statusText: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, callsign, linkname, hardware, firmware, tx, rx, colorcode, status
+        case lastKnownMaster, lat, lng, city, website
+        case desc = "description"
+        case lastSeen = "last_seen"
+        case statusText
+    }
+
+    var coordinateText: String? {
+        guard let lat, let lng, lat != 0 || lng != 0 else { return nil }
+        return String(format: "%.5f, %.5f", lat, lng)
+    }
+}
+
+// MARK: - 传输方式
+
+enum HbTransport: String, Codable, CaseIterable, Identifiable {
+    case udp
+    case websocket
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .udp: return "UDP（标准）"
+        case .websocket: return "WebSocket"
+        }
+    }
+
+    var short: String {
+        switch self {
+        case .udp: return "UDP"
+        case .websocket: return "WSS"
+        }
+    }
+}
+
+// MARK: - 设置
+
+struct Settings: Codable, Equatable {
+    /// 热点自身的 DMR ID（不是你的个人呼号 ID）
+    var dmrId: Int = 0
+    /// 呼号，仅用于 RPTC 配置上报，可留空
+    var callsign: String = ""
+    /// BrandMeister 自助页 → Hotspot Security 里设置的密码
+    var password: String = ""
+    var host: String = "api.brandmeister.network"
+    var port: Int = 62031
+    var transport: HbTransport = .udp
+    /// WebSocket 路径，仅在 transport == .websocket 时生效
+    var wsPath: String = "/ws"
+    /// 使用新版心跳 `DMRP`（MMDVMHost 2024+ / 55 字节帧）。
+    /// 传统 BrandMeister 走 `RPTPING` / 53 字节帧，默认关闭。
+    var modernPing: Bool = false
+    var autoReconnect: Bool = true
+
+    var isIdentityReady: Bool { dmrId > 0 && !password.isEmpty }
+}
+
+// MARK: - 实时通话
+
+/// 由 Homebrew 数据流聚合出来的“通话”。AMBE 语音无法在 App 内解码，
+/// 所以这里只统计信令与帧数，用来证明链路真正在线。
+struct LiveCall: Identifiable, Equatable {
+    let id: String          // src-dst-slot
+    let src: Int
+    let dst: Int
+    let slot: Int
+    let isPrivate: Bool
+    var frames: Int
+    var startedAt: Date
+    var updatedAt: Date
+    var isActive: Bool
+
+    var duration: TimeInterval { max(0, updatedAt.timeIntervalSince(startedAt)) }
+    var callTypeText: String { isPrivate ? "单呼" : "组呼" }
+    var slotText: String { "TS\(slot)" }
+}
+
+// MARK: - 协议日志
+
+struct LogEntry: Identifiable {
+    enum Kind {
+        case info, tx, rx, warning, error
+
+        var symbol: String {
+            switch self {
+            case .info: return "info.circle"
+            case .tx: return "arrow.up.circle"
+            case .rx: return "arrow.down.circle"
+            case .warning: return "exclamationmark.triangle"
+            case .error: return "xmark.octagon"
+            }
+        }
+    }
+
+    let id = UUID()
+    let time = Date()
+    let kind: Kind
+    let text: String
+    var hex: String?
+}
+
+// MARK: - 格式化
+
+enum Fmt {
+    static let clock: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        return f
+    }()
+
+    static func duration(_ seconds: TimeInterval) -> String {
+        let total = Int(seconds.rounded())
+        if total < 60 { return String(format: "%02d:%02d", total / 60, total % 60) }
+        if total < 3600 { return String(format: "%02d:%02d", total / 60, total % 60) }
+        return String(format: "%d:%02d:%02d", total / 3600, (total % 3600) / 60, total % 60)
+    }
+}
+
+extension Data {
+    /// 空格分隔的十六进制，便于在日志里肉眼比对协议。
+    var hexDump: String {
+        map { String(format: "%02X", $0) }.joined(separator: " ")
+    }
+}
