@@ -78,6 +78,12 @@ final class HomebrewClient: ObservableObject {
     @Published private(set) var voiceLevel: Float = 0
     @Published private(set) var voiceErrorCount = 0
     @Published private(set) var voicePackets = 0
+    /// 正在按住 PTT 发射
+    @Published private(set) var isTransmitting = false
+    /// PTT 期间的输入电平，0…1，给界面画抖动的环
+    @Published private(set) var txLevel: Float = 0
+    /// 本次发射已经持续了多久（秒），松手后保留最后一次的值
+    @Published private(set) var txSeconds: Double = 0
 
     var activeCalls: [LiveCall] { calls.filter { $0.isActive } }
     var recentCalls: [LiveCall] { calls.filter { !$0.isActive } }
@@ -196,6 +202,20 @@ final class HomebrewClient: ObservableObject {
     /// 发出订阅那一刻的收帧计数，用来判断「是订阅没建立」还是「只是没人说话」。
     private var rxAtCall = 0
 
+    // MARK: - 按住发射（PTT）
+
+    private let mic = PttMicrophone()
+    private let encoder = HREncoder()
+    private var pttTask: Task<Void, Never>?
+    /// 采集到、还没编码的 20 ms 帧
+    private var pttFrames = [[Int16]]()
+    private var pttStreamId: UInt32 = 0
+    private var pttBurstIndex = 0
+    private var pttTalkgroup = 0
+    private var pttSlotFlag: UInt8 = 0
+    private var pttColorCode = 1
+    private var pttStartedAt: Date?
+
     /// 收到的帧按「dst@slot」汇总，每 15 秒报一次。
     ///
     /// 这是排查「收不到语音」最关键的一条信息：服务器到底在推什么。
@@ -246,6 +266,13 @@ final class HomebrewClient: ObservableObject {
         // 有人正在说话时别抢：插一个语音头进去会把这一句打断。
         if hasLiveCall {
             append(.warning, "TG \(talkgroup) 上还有通话在进行，这次先不订阅")
+            return
+        }
+
+        // 正按着 PTT 的时候不能再插一个语音头：两段 stream 会撞在一起，
+        // 对端听到的是断续的杂音，而且结束符会把正在说的那句一起结束掉。
+        if isTransmitting {
+            append(.info, "正在按住 PTT，松手之后再来订阅")
             return
         }
 
@@ -377,6 +404,174 @@ final class HomebrewClient: ObservableObject {
         let frame = HB.dmrFrame(seq: dmrSeq, src: src, dst: dst, peer: peer,
                                 flags: flags, streamId: streamId, payload: payload)
         send(frame, label: label, quiet: quiet)
+    }
+
+    // MARK: - 按住发射（PTT）
+
+    /// 按下 PTT：开麦克风、发语音头，然后每 60 ms 发一个携带真实语音的突发。
+    ///
+    /// 链路：
+    ///
+    ///     麦克风 48 kHz ──▶ 8 kHz / 160 采样 ──3 帧(60 ms)──▶ AMBE+2 编码 ──▶ 33 字节载荷
+    ///
+    /// 松手（`endPtt`）发结束符，服务器才会把这一句收进通话记录并释放时隙。
+    func beginPtt(talkgroup: Int) {
+        guard !isTransmitting else { return }
+        guard state == .online else {
+            append(.warning, "还没连上服务器，现在按 PTT 发不出去")
+            return
+        }
+        guard talkgroup > 0 else {
+            append(.warning, "先在通话组里填一个号码，PTT 才有地方发")
+            return
+        }
+        guard !isCalling else {
+            append(.warning, "正在订阅发射（约半秒），等它发完再按住 PTT")
+            return
+        }
+
+        let src = activeSettings.dmrId
+        guard src > 0, src <= 0xFF_FFFF else {
+            append(.warning, "DMR ID \(src) 不是 7 位编号，不能作为发射的源地址")
+            return
+        }
+        let peer = activeSettings.hotspotId
+        guard peer > 0 else {
+            append(.warning, "热点 ID 还没设置，服务器无法确认发射者身份")
+            return
+        }
+
+        let slot = activeSettings.callSlot == 1 ? 1 : 2
+        pttSlotFlag = slot == 2 ? 0x80 : 0x00
+        pttColorCode = min(15, max(0, activeSettings.colorCode))
+        pttTalkgroup = talkgroup
+        pttStreamId = UInt32.random(in: 1...0xFFFF_FFFE)
+        pttBurstIndex = 0
+        pttFrames.removeAll(keepingCapacity: true)
+        pttStartedAt = Date()
+        txSeconds = 0
+        encoder.reset()
+
+        // 采集一帧就排队，编码放在发射循环里做——编码要 2～3 ms，塞进采集回调会丢帧
+        mic.onFrame = { [weak self] frame in
+            guard let self else { return }
+            self.pttFrames.append(frame)
+            // 万一编码跟不上，只留最近 1 秒，别让延迟越滚越大
+            if self.pttFrames.count > 50 {
+                self.pttFrames.removeFirst(self.pttFrames.count - 50)
+            }
+        }
+
+        do {
+            try mic.start()
+        } catch {
+            mic.onFrame = nil
+            append(.error, "麦克风打不开：\(error.localizedDescription)")
+            append(.info, "去「设置 → DMRPilot → 麦克风」确认权限；模拟器没有麦克风，只能在真机上试")
+            return
+        }
+
+        // 发射期间不播放收到的语音：半双工，而且麦克风会把扬声器的声音再收进去，
+        // 变成一路回声。松手后 `endPtt` 会按原来的开关恢复。
+        voice.isMuted = true
+        isTransmitting = true
+        append(.tx, "🔴 按住发射 → TG \(talkgroup)（TS\(slot)，CC\(pttColorCode)，DMR ID \(src) → 热点 \(peer)）")
+
+        let head = DMRCallCodec.voicePayload(dst: talkgroup, src: src,
+                                             isTerminator: false, colorCode: UInt8(pttColorCode))
+        sendDmrFrame(src: src, dst: talkgroup, peer: peer,
+                     flags: pttSlotFlag | 0x20 | 0x01,
+                     streamId: pttStreamId, payload: head,
+                     label: "DMRD 语音头（PTT）")
+
+        startPttLoop(src: src, dst: talkgroup, peer: peer)
+    }
+
+    /// 松手：停采集、发两个结束符（丢一个也不会让时隙一直占着）。
+    func endPtt() {
+        guard isTransmitting else { return }
+        isTransmitting = false
+        txLevel = 0
+        pttTask?.cancel()
+        pttTask = nil
+        mic.onFrame = nil
+        mic.stop()
+
+        if let started = pttStartedAt {
+            txSeconds = Date().timeIntervalSince(started)
+        }
+        pttStartedAt = nil
+        voice.isMuted = !activeSettings.audioEnabled
+
+        let src = activeSettings.dmrId
+        let peer = activeSettings.hotspotId
+        let cc = UInt8(min(15, max(0, activeSettings.colorCode)))
+        guard pttTalkgroup > 0, src > 0 else { return }
+
+        let tail = DMRCallCodec.voicePayload(dst: pttTalkgroup, src: src,
+                                             isTerminator: true, colorCode: cc)
+        sendDmrFrame(src: src, dst: pttTalkgroup, peer: peer,
+                     flags: pttSlotFlag | 0x20 | 0x02,
+                     streamId: pttStreamId, payload: tail,
+                     label: "DMRD 语音结束符（PTT）")
+        sendDmrFrame(src: src, dst: pttTalkgroup, peer: peer,
+                     flags: pttSlotFlag | 0x20 | 0x02,
+                     streamId: pttStreamId, payload: tail,
+                     label: "DMRD 语音结束符（重发）", quiet: true)
+
+        let seconds = String(format: "%.1f", txSeconds)
+        append(.tx, "⬛ 停止发射（\(seconds) 秒，共 \(pttBurstIndex) 个语音突发）")
+        pttTalkgroup = 0
+        pttBurstIndex = 0
+    }
+
+    /// 发射循环：每 60 ms 取 3 帧（60 ms 音频）编码成一个突发发出去。
+    ///
+    /// DMR 一个突发正好装 3 个 20 ms 的 AMBE 帧，Homebrew 也是 60 ms 一个 DMRD，
+    /// 两边严格对齐；节奏乱了接收端会听到断续或变速。
+    private func startPttLoop(src: Int, dst: Int, peer: Int) {
+        pttTask?.cancel()
+        pttTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 60_000_000)
+                guard let self, !Task.isCancelled, self.isTransmitting else { return }
+
+                self.txLevel = self.mic.level
+                if let started = self.pttStartedAt {
+                    self.txSeconds = Date().timeIntervalSince(started)
+                }
+
+                var frames = [[Int16]]()
+                if self.pttFrames.count >= 3 {
+                    frames = Array(self.pttFrames.prefix(3))
+                    self.pttFrames.removeFirst(3)
+                } else {
+                    frames = self.pttFrames
+                    self.pttFrames.removeAll(keepingCapacity: true)
+                }
+                // 采集还没跟上（刚按下那一刻）就补静音，别让突发序列断掉
+                while frames.count < 3 {
+                    frames.append([Int16](repeating: 0, count: PttMicrophone.frameSamples))
+                }
+
+                let packed = self.encoder.encodeBurst(frames)
+                let n = self.pttBurstIndex % 6
+                let payload = DMRCallCodec.voiceBurst(frames27: packed,
+                                                      index: n,
+                                                      talkgroup: dst,
+                                                      src: src,
+                                                      colorCode: UInt8(self.pttColorCode))
+                // 超帧第 0 个突发带音频同步字（0x10），其余是嵌入信令（低 4 位 = 序号）
+                let flags = self.pttSlotFlag | (n == 0 ? 0x10 : UInt8(n))
+                self.sendDmrFrame(src: src, dst: dst, peer: peer,
+                                  flags: flags,
+                                  streamId: self.pttStreamId,
+                                  payload: payload,
+                                  label: "DMRD 语音突发 \(self.pttBurstIndex + 1)",
+                                  quiet: true)
+                self.pttBurstIndex += 1
+            }
+        }
     }
 
     // MARK: - 语音偏好
@@ -1331,6 +1526,19 @@ final class HomebrewClient: ObservableObject {
         lastCallAt = nil
         lastCallTalkgroup = nil
         isCalling = false
+        // 断开时如果还按着 PTT，必须把麦克风关掉：连接已经没了，
+        // 再采下去只是白耗电，而且松手时还会往一个死连接上写结束符。
+        pttTask?.cancel()
+        pttTask = nil
+        mic.onFrame = nil
+        mic.stop()
+        isTransmitting = false
+        txLevel = 0
+        pttFrames.removeAll(keepingCapacity: false)
+        pttTalkgroup = 0
+        pttBurstIndex = 0
+        pttStartedAt = nil
+        voice.isMuted = !activeSettings.audioEnabled
         pendingConfirmTalkgroup = nil
         subRetries = 0
         rxAtCall = 0

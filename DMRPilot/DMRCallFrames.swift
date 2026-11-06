@@ -444,6 +444,49 @@ enum DMRCallCodec {
         return bursts
     }
 
+    /// 一个「带真实语音数据」的突发（33 字节载荷），对应 DroidStar 的 `encode_data()` +
+    /// `encode_embedded_data()`：载荷里既放 3 个 AMBE 帧，也放同步字 / 嵌入信令。
+    ///
+    /// 载荷布局与 `DMRVoicePath.unpackFrames` 严格互逆：
+    ///
+    ///     0…12   连续语音比特
+    ///     13     高半字节 = 语音比特，低半字节 = DMREMB 的一部分
+    ///     14…18  同步字 / 嵌入信令 / 嵌入 LC 分片
+    ///     19     低半字节 = 语音比特，高半字节 = DMREMB
+    ///     20…32  连续语音比特
+    ///
+    /// `index` 是这一帧在超帧里的位置（0…5），决定放音频同步字还是嵌入信令；
+    /// `talkgroup` / `src` 用来在每个超帧里重复广播一次 LC 分片——对端丢了语音头，
+    /// 也能从突发里把「谁在跟哪个组说话」拼回来。
+    static func voiceBurst(frames27: [UInt8],
+                           index: Int,
+                           talkgroup: Int,
+                           src: Int,
+                           colorCode: UInt8 = 1) -> [UInt8] {
+        var packed = frames27
+        if packed.count < 27 {
+            packed.append(contentsOf: [UInt8](repeating: 0, count: 27 - packed.count))
+        }
+
+        var out = [UInt8](repeating: 0, count: 33)
+        for i in 0..<13 { out[i] = packed[i] }
+        out[13] = packed[13] & 0xF0
+        out[19] = packed[13] & 0x0F
+        for i in 0..<13 { out[20 + i] = packed[14 + i] }
+
+        let n = ((index % 6) + 6) % 6
+        if n == 0 {
+            for i in 0..<7 {
+                out[13 + i] = (out[13 + i] & ~syncMask[i]) | audioSync[i]
+            }
+        } else {
+            let bits = embeddedLC(dst: talkgroup, src: src)
+            let lcss = applyEmbeddedFragment(&out, bits: bits, index: n)
+            applyEmbeddedSignalling(&out, colorCode: colorCode, lcss: lcss)
+        }
+        return out
+    }
+
     private static let rawSilence: [UInt8] = [
         0xB9, 0xE8, 0x81, 0x52, 0x61, 0x73, 0x00, 0x2A, 0x6B, 0xB9, 0xE8,
         0x81, 0x52, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x73, 0x00,

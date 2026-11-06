@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import UIKit
 
 struct HotspotView: View {
     @EnvironmentObject private var app: AppState
@@ -13,6 +14,8 @@ struct HotspotView: View {
     @EnvironmentObject private var callsigns: CallsignDirectory
     @State private var showLog = false
     @State private var talkgroupDraft = ""
+    @State private var pttPressed = false
+    @State private var pttDenied = false
     @FocusState private var talkgroupFocused: Bool
 
     var body: some View {
@@ -38,6 +41,7 @@ struct HotspotView: View {
                     }
                 }
 
+                pttSection
                 talkgroupSection
                 speakerSection
                 audioSection
@@ -147,6 +151,125 @@ struct HotspotView: View {
             .controlSize(.large)
         }
         .padding(.vertical, 6)
+    }
+
+    // MARK: - PTT（按住说话）
+
+    /// 通话组上方的圆形 PTT：按住开始发射，松手停止。
+    ///
+    /// 交互用 `DragGesture(minimumDistance: 0)` 而不是 `Button`：Button 只有抬起时才有
+    /// 回调，拿不到「按住期间」的状态，也就没法做「按住发射 / 松手停止」。
+    private var pttSection: some View {
+        Section {
+            VStack(spacing: 10) {
+                pttButton
+
+                Text(pttStatusText)
+                    .font(.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(hotspot.isTransmitting ? Color.red : Color.secondary)
+                    .animation(.none, value: hotspot.txSeconds)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 4)
+        }
+    }
+
+    private var pttButton: some View {
+        let active = hotspot.isTransmitting
+        let level = CGFloat(max(0, min(1, hotspot.txLevel)))
+
+        return ZStack {
+            // 外圈随输入电平扩散：说话大声一点，环就大一点
+            Circle()
+                .stroke(Color.red.opacity(active ? 0.30 : 0.10), lineWidth: 5)
+                .frame(width: 146 + level * 26, height: 146 + level * 26)
+                .animation(.easeOut(duration: 0.12), value: level)
+
+            Circle()
+                .fill(LinearGradient(colors: active
+                                     ? [Color(red: 0.94, green: 0.30, blue: 0.26),
+                                        Color(red: 0.70, green: 0.09, blue: 0.07)]
+                                     : [Color(red: 0.44, green: 0.47, blue: 0.54),
+                                        Color(red: 0.27, green: 0.29, blue: 0.35)],
+                                     startPoint: .top, endPoint: .bottom))
+                .frame(width: 124, height: 124)
+                .overlay(
+                    Circle().stroke(Color.white.opacity(active ? 0.22 : 0.10), lineWidth: 1)
+                )
+                .shadow(color: active ? Color.red.opacity(0.45) : Color.black.opacity(0.16),
+                        radius: active ? 16 : 6, x: 0, y: 4)
+
+            Text("PTT")
+                .font(.system(size: 30, weight: .heavy, design: .rounded))
+                .kerning(1.5)
+                .foregroundStyle(.white)
+        }
+        .frame(width: 178, height: 178)
+        .scaleEffect(pttPressed ? 0.94 : 1)
+        .opacity(canTransmit ? 1 : 0.45)
+        .contentShape(Circle())
+        .animation(.easeOut(duration: 0.12), value: pttPressed)
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { _ in pressPtt() }
+                .onEnded { _ in releasePtt() }
+        )
+        .accessibilityLabel("按住发射")
+        .accessibilityHint("按住时使用麦克风向当前通话组发射，松手停止")
+    }
+
+    private var canTransmit: Bool {
+        hotspot.state == .online && app.settings.talkgroup > 0
+    }
+
+    private var pttStatusText: String {
+        if hotspot.isTransmitting {
+            return String(format: "正在发射 %.1f 秒", hotspot.txSeconds)
+                + " · TG \(app.settings.talkgroup)"
+        }
+        if pttDenied {
+            return "麦克风没授权：设置 → DMRPilot → 麦克风"
+        }
+        if hotspot.state != .online {
+            return "连上服务器后才能发射"
+        }
+        if app.settings.talkgroup <= 0 {
+            return "先在下面的「通话组」里填一个号码"
+        }
+        return "按住说话 · TG \(app.settings.talkgroup)"
+    }
+
+    private func pressPtt() {
+        guard !pttPressed else { return }
+        guard canTransmit else { return }
+        pttPressed = true
+        UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
+
+        Task { @MainActor in
+            let granted = await PttMicrophone.requestPermission()
+            guard granted else {
+                pttPressed = false
+                pttDenied = true
+                return
+            }
+            pttDenied = false
+            // 权限弹框期间用户可能已经松手了，这时候不该再开麦
+            guard pttPressed else { return }
+            hotspot.beginPtt(talkgroup: app.settings.talkgroup)
+            if !hotspot.isTransmitting {
+                // 开麦失败（没权限 / 没有可用输入）时把按钮状态收回来，
+                // 否则会一直显示成按下却不发射。
+                pttPressed = false
+            }
+        }
+    }
+
+    private func releasePtt() {
+        guard pttPressed || hotspot.isTransmitting else { return }
+        pttPressed = false
+        UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+        hotspot.endPtt()
     }
 
     // MARK: - 通话组

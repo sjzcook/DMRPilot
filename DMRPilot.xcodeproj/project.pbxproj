@@ -28,6 +28,8 @@
 		C1C2C3D4E5F6A7B8C9D00214 /* DMRVoicePath.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00115 /* DMRVoicePath.swift */; };
 		C1C2C3D4E5F6A7B8C9D00215 /* VoicePlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00116 /* VoicePlayer.swift */; };
 		C1C2C3D4E5F6A7B8C9D00216 /* VoicePipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00117 /* VoicePipeline.swift */; };
+		C1C2C3D4E5F6A7B8C9D00221 /* HalfrateEncoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00121 /* HalfrateEncoder.swift */; };
+		C1C2C3D4E5F6A7B8C9D00222 /* PttMicrophone.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00122 /* PttMicrophone.swift */; };
 		C1C2C3D4E5F6A7B8C9D0020C /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D0010C /* Assets.xcassets */; };
 		C1C2C3D4E5F6A7B8C9D00217 /* HostDirectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00118 /* HostDirectory.swift */; };
 		C1C2C3D4E5F6A7B8C9D00218 /* HostPickerField.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00119 /* HostPickerField.swift */; };
@@ -57,6 +59,8 @@
 		B1B2C3D4E5F6A7B8C9D00115 /* DMRVoicePath.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DMRVoicePath.swift; sourceTree = "<group>"; };
 		B1B2C3D4E5F6A7B8C9D00116 /* VoicePlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoicePlayer.swift; sourceTree = "<group>"; };
 		B1B2C3D4E5F6A7B8C9D00117 /* VoicePipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoicePipeline.swift; sourceTree = "<group>"; };
+		B1B2C3D4E5F6A7B8C9D00121 /* HalfrateEncoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HalfrateEncoder.swift; sourceTree = "<group>"; };
+		B1B2C3D4E5F6A7B8C9D00122 /* PttMicrophone.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PttMicrophone.swift; sourceTree = "<group>"; };
 		B1B2C3D4E5F6A7B8C9D0010C /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		B1B2C3D4E5F6A7B8C9D00118 /* HostDirectory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostDirectory.swift; sourceTree = "<group>"; };
 		B1B2C3D4E5F6A7B8C9D00119 /* HostPickerField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostPickerField.swift; sourceTree = "<group>"; };
@@ -128,6 +132,7 @@
 				B1B2C3D4E5F6A7B8C9D00113 /* HalfrateOptions.swift */,
 				B1B2C3D4E5F6A7B8C9D0010E /* HalfrateTables.swift */,
 				B1B2C3D4E5F6A7B8C9D00115 /* DMRVoicePath.swift */,
+				B1B2C3D4E5F6A7B8C9D00121 /* HalfrateEncoder.swift */,
 			);
 			path = Vocoder;
 			sourceTree = "<group>";
@@ -137,6 +142,7 @@
 			children = (
 				B1B2C3D4E5F6A7B8C9D00116 /* VoicePlayer.swift */,
 				B1B2C3D4E5F6A7B8C9D00117 /* VoicePipeline.swift */,
+				B1B2C3D4E5F6A7B8C9D00122 /* PttMicrophone.swift */,
 			);
 			path = Audio;
 			sourceTree = "<group>";
@@ -235,6 +241,8 @@
 				C1C2C3D4E5F6A7B8C9D00214 /* DMRVoicePath.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D00215 /* VoicePlayer.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D00216 /* VoicePipeline.swift in Sources */,
+				C1C2C3D4E5F6A7B8C9D00221 /* HalfrateEncoder.swift in Sources */,
+				C1C2C3D4E5F6A7B8C9D00222 /* PttMicrophone.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -302,6 +310,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "DMR Pilot";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "按住 PTT 时需要用麦克风采集语音，编码后发到 DMR 服务器。";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -332,6 +341,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "DMR Pilot";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "按住 PTT 时需要用麦克风采集语音，编码后发到 DMR 服务器。";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;

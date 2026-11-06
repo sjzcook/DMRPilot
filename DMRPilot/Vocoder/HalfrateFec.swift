@@ -83,6 +83,17 @@ enum HRFrame {
         standard[43] = b42
         return standard
     }
+
+    /// 标准布局 → 旋转布局（`standardFromRotated` 的逆）
+    static func rotatedFromStandard(_ standard: [UInt8]) -> [UInt8] {
+        var rotated = standard
+        let b40 = standard[40], b41 = standard[41], b42 = standard[42], b43 = standard[43]
+        rotated[40] = b41
+        rotated[41] = b42
+        rotated[42] = b43
+        rotated[43] = b40
+        return rotated
+    }
 }
 
 // MARK: - FEC
@@ -174,5 +185,57 @@ enum HRFec {
         var bits49 = [UInt8](repeating: 0, count: HRCore.frameBits)
         let errors = decodeBits(bits72, &bits49)
         return (bits49, errors)
+    }
+
+    // MARK: - 编码方向（发送用）
+
+    /// 49 帧比特 → 72 信道比特，正好是 `decodeBits` 的逆。
+    ///
+    /// 结构（与解码侧逐段对应）：
+    ///
+    ///     code[0..22]   第一段：12 数据比特 + 11 位 Golay 校验
+    ///     code[23]      整段的偶校验位
+    ///     code[24..46]  第二段：12 数据比特 + 11 位 Golay 校验，再异或第一段决定的扰码
+    ///     code[47..71]  剩下 25 比特原样（没有保护）
+    ///
+    /// 最后按 DMR 的 4×18 交织写成信道顺序：`bits72[channelPosition(i)] = code[i]`。
+    static func encodeBits(_ bits49: [UInt8]) -> [UInt8] {
+        var bits = bits49
+        if bits.count < HRCore.frameBits {
+            bits.append(contentsOf: [UInt8](repeating: 0, count: HRCore.frameBits - bits.count))
+        }
+
+        var code = [UInt8](repeating: 0, count: 72)
+
+        var first: UInt32 = 0
+        for i in 0..<12 { first = (first << 1) | UInt32(bits[i] & 1) }
+        let firstWord = (first << 11) | (golay23Parity(first) & 0x7FF)
+        for i in 0..<23 {
+            code[i] = UInt8((firstWord >> (22 - i)) & 1)
+        }
+        code[23] = UInt8((firstWord & 0x7F_FFFF).nonzeroBitCount & 1)
+
+        var second: UInt32 = 0
+        for i in 0..<12 { second = (second << 1) | UInt32(bits[12 + i] & 1) }
+        let secondWord = ((second << 11) | (golay23Parity(second) & 0x7FF)) ^ scrambleMask(first)
+        for i in 0..<23 {
+            code[24 + i] = UInt8((secondWord >> (22 - i)) & 1)
+        }
+
+        for i in 0..<25 { code[47 + i] = UInt8(bits[24 + i] & 1) }
+
+        var out = [UInt8](repeating: 0, count: 72)
+        for i in 0..<72 { out[channelPosition(i)] = code[i] }
+        return out
+    }
+
+    /// 49 帧比特 → 9 字节空口帧
+    static func encodeAirFrame(_ bits49: [UInt8]) -> [UInt8] {
+        let bits72 = encodeBits(bits49)
+        var air = [UInt8](repeating: 0, count: HRCore.airBytes)
+        for i in 0..<72 {
+            air[i >> 3] |= (bits72[i] & 1) << (7 - (i & 7))
+        }
+        return air
     }
 }

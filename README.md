@@ -30,7 +30,8 @@ DMRApp/
 │   ├── CallsignDirectory.swift  # DMR ID → 呼号（RadioID.net 查询 + 本地缓存）
 │   ├── DMRCallFrames.swift      # 语音头/结束符编码（RS + BPTC + Golay）+ DMRD 出站帧
 │   ├── LogConsoleView.swift     # 十六进制协议日志
-│   ├── Vocoder/                 # AMBE+2 半速率解码器（纯 Swift）
+│   ├── Vocoder/                 # AMBE+2 半速率编解码器（纯 Swift）
+│   │   ├── HalfrateEncoder.swift    # 发送方向：分析 + 码本量化（PTT 用）
 │   │   ├── HalfrateDecoder.swift    # 帧解码 + 丢帧隐藏 + 输出级
 │   │   ├── HalfrateCore.swift       # 常量、定点饱和、快速 log2/exp2/sqrt、FFT
 │   │   ├── HalfrateFec.swift        # Golay(23,12) / 交织 / 解扰
@@ -41,11 +42,14 @@ DMRApp/
 │   │   └── DMRVoicePath.swift       # DMRD 载荷 → 3 个空中帧 → PCM
 │   ├── Audio/
 │   │   ├── VoicePipeline.swift  # 每路通话一个解码器 + 播放调度
+│   │   ├── PttMicrophone.swift  # 麦克风采集 → 8 kHz / 160 采样
 │   │   └── VoicePlayer.swift    # AVAudioEngine 8 kHz 播放
 │   └── Assets.xcassets          # AppIcon / AccentColor
 ├── Logo/                        # 图标设计稿与对比图
 ├── tools/
 │   ├── gen_tables.py            # 从 DroidStar 源码抽取数值表生成 HalfrateTables.swift
+│   ├── dmr_check.py             # 语音头/突发的逐字节比对（对着 DroidStar 的 Python 复刻）
+│   ├── enc_check.py             # 编码器「量化 → 反量化」闭环检查
 │   └── gen_icon.py              # 用代码精确绘制 App icon
 └── README.md
 ```
@@ -132,6 +136,62 @@ python tools/gen_icon.py
   所以客户端在发出 `RPTL` 之前就直接拦下来报错，不会白等超时。
 - 反过来，如果某个热点在 SelfCare 里就是按 9 位 ID 注册的（少见），把 ESSID 留 0、DMR ID 直接填 9 位即可。
 
+
+### 按住说话（PTT）
+
+位置：**热点页 → 通话组上方的圆形 PTT 按钮**。
+
+- **按住**开始发射，**松手**停止。松手是一次真实的 DMR 发射流程：
+  `Voice LC Header` → 若干语音突发（每 60 ms 一个，每个装 3 个 20 ms 的 AMBE 帧）→ 结束符。
+- 只有「已连接 + 已填通话组」时按钮才可用；未连接时按住不会做任何事（日志里也不会刷警告）。
+- 首次按下会申请麦克风权限。拒绝之后按钮会提示去「设置 → DMRPilot → 麦克风」，
+  改完回来不用重连。
+- 发射期间**暂停播放**收到的语音：半双工，而且麦克风会把扬声器声音再收进去，变成回声。
+
+链路（全部在设备上完成，没有任何外部服务）：
+
+```
+麦克风 48 kHz ──AVAudioConverter──▶ 8 kHz / 16 bit / 单声道
+      ──每 160 采样一帧（20 ms）──▶ AMBE+2 编码（HalfrateEncoder）
+      ──3 帧 = 27 字节──▶ 33 字节 DMR 载荷（音频同步字 / 嵌入 LC / DMREMB）
+      ──DMRD──▶ 服务器
+```
+
+编码器是**分析 + 码本量化**，不是照抄某个参考实现（解码器有 DroidStar 可以逐行搬，
+编码器没有）：
+
+1. 归一化自相关估基音 → 选最近的码本音高索引（对数域比较，带 5% 迟滞，
+   避免逐帧跳动听起来像颤音）；
+2. 对每个谐波做单频 DFT（Goertzel）拿幅度，同时量「两个谐波中间」的电平；
+3. 谐波明显高出中间电平 → 该频带判为浊音，再和 32 个清浊码字比对（只用 0…17，
+   18 以上是脉冲/双音模式，用在语音上对端会解成嘀嘀声）；
+4. 谐波幅度的均值 → 增益码本（要减掉上一帧带过来的 0.5 倍增益）；
+5. 减掉预测与均值后的残差 → 分频带做正向 DCT，用 `shapeLow`(3 系数) / `shapeHigh`(4 系数)
+   / `detail` 码字逼近，最后**用解码端的 `shapeResidual` 实际重建一遍算误差**，
+   在 4×4 个候选里取最小的。
+
+有两个坑值得记下来，都是这次踩出来的：
+
+- **正向 DCT 不是转置就算**。`inverseDct` 用的是 DCT-III 归一化（第 0 行系数 1、其余 2），
+  列范数是 `n` 与 `2n`，直接拿转置当正变换会把系数整体放大十几倍，码本搜索全落到边缘项，
+  声音会变成一片沙沙的噪声。
+- **绝对电平不能硬编码**。码本里的增益是归一化量，跟 16 位满幅差一个未知常数；
+  写死一个偏移（比如「除以 256」）很可能轻得像耳语或者一开口就削顶。
+  现在改成启动时用解码器做一次**探针标定**：用已知参数解几帧、量出 RMS，
+  反推「RMS → 平均 log2 幅度」的偏移量。这样编码器和解码器天然对齐，
+  换掉解码器的调音参数也不会跑偏。
+
+`tools/enc_check.py` 是这套量化的 Python 镜像，跑一遍能看到闭环误差：
+
+```
+$ python tools/enc_check.py
+== 平缓滚降（浊音）：pitch=40 count=17 ==
+  frame 0: gain=30 low=260 high=78 details=[11, 14, 13, 1] 最大误差 0.85 bit
+  ...
+  平均最大误差 0.52 bit
+```
+
+0.5 bit 以内属于这套码本的正常量化粒度（增益步长本身就有 0.35 bit）。
 
 ### 通话组（TG）筛选
 
