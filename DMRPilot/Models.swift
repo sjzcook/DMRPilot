@@ -109,7 +109,19 @@ struct Settings: Codable, Equatable {
     /// 播放音量 0…1
     var audioVolume: Double = 0.9
 
-    var isIdentityReady: Bool { dmrId > 0 && !password.isEmpty }
+    var isIdentityReady: Bool { dmrId > 0 && !sanitizedPassword.isEmpty }
+
+    /// 真正参与 SHA256 的密码。
+    /// 去掉粘贴带进来的首尾空白，并把 iOS 智能标点换成 ASCII——
+    /// 弯引号（’ “ ”）和 ASCII 引号是两个不同字节，差一个就 MSTNAK。
+    var sanitizedPassword: String {
+        password
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\u{2018}", with: "'")
+            .replacingOccurrences(of: "\u{2019}", with: "'")
+            .replacingOccurrences(of: "\u{201C}", with: "\"")
+            .replacingOccurrences(of: "\u{201D}", with: "\"")
+    }
 
     // MARK: ESSID
 

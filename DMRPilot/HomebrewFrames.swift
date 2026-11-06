@@ -7,11 +7,12 @@
 //
 //  经典帧（BrandMeister 传统）：
 //    RPTL     8 字节   "RPTL" + id(4)
-//    RPTK    28 字节   "RPTK" + id(4) + password(20, \0 补齐)
+//    RPTACK  10 字节   "RPTACK" + 4 字节（RPTL 的应答里是挑战盐，其余是 id）
+//    RPTK    40 字节   "RPTK" + id(4) + SHA256(挑战盐 ‖ 密码)(32)   ← BM 只认这个
+//    RPTK    28 字节   "RPTK" + id(4) + 明文密码(20, \0 补齐)      ← 老 HBlink 兼容
 //    RPTC   302 字节   "RPTC" + id(4) + 配置块(294)
 //    RPTPING 11 字节   "RPTPING" + id(4)
 //    MSTPONG 11 字节   "MSTPONG" + id(4)
-//    RPTACK  10 字节   "RPTACK" + id(4)
 //    MSTNAK  10 字节   "MSTNAK" + id(4)
 //    DMRD    53 字节   "DMRD" + seq(1) + src(3) + dst(3) + peer(4) + bits(1)
 //                      + streamId(2) + payload(33) + ber(1) + rssi(1)
@@ -20,6 +21,7 @@
 //  心跳改成 "DMRP"。解析时按长度自适应，两种都能吃。
 //
 
+import CryptoKit
 import Foundation
 
 enum HB {
@@ -60,7 +62,23 @@ enum HB {
         Data([UInt8](loginTag.utf8) + bigEndian(id, count: 4))
     }
 
-    static func auth(id: Int, password: String) -> Data {
+    /// RPTK 挑战应答：id(4) + SHA256(挑战盐 ‖ 密码)，共 40 字节。
+    ///
+    /// 关键：RPTL 之后 master 回的 RPTACK 里，第 6…9 字节是 4 字节挑战盐；
+    /// 密码必须做 SHA256(salt + password) 再发，直接发明文会被当成密码错误回 MSTNAK。
+    /// 参考实现 BMWire.hbAuth / MMDVMHost DMRNetwork::writeAuthorisation 都是这个算法。
+    static func auth(id: Int, challenge: [UInt8], password: String) -> Data {
+        var hasher = SHA256()
+        hasher.update(data: Data(challenge))
+        hasher.update(data: Data(password.utf8))
+        let digest = [UInt8](hasher.finalize())
+        return Data([UInt8](authTag.utf8) + bigEndian(id, count: 4) + digest)
+    }
+
+    /// 传统 28 字节 RPTK：id(4) + 明文密码（20 字节，\0 补齐）。
+    /// 老版 HBlink / 部分自建网关只认这个；BrandMeister 会当密码错处理，
+    /// 所以只在标准鉴权被拒后回退试一次。
+    static func authLegacy(id: Int, password: String) -> Data {
         var passwordBytes = Array(password.utf8.prefix(20))
         while passwordBytes.count < 20 { passwordBytes.append(0) }
         return Data([UInt8](authTag.utf8) + bigEndian(id, count: 4) + passwordBytes)

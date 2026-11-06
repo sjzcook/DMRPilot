@@ -80,6 +80,10 @@ final class HomebrewClient: ObservableObject {
     private var loginAttempt = 0
     private var retryWork: DispatchWorkItem?
     private var lastServerPacket: Date?
+    /// RPTL 之后 master 下发的 4 字节挑战盐，RPTK 靠它算 SHA256。
+    private var challenge: [UInt8] = []
+    /// 标准 SHA256 鉴权被拒后，是否已经用传统明文 RPTK 重试过。
+    private var usedLegacyAuth = false
 
     /// AMBE+2 解码 + 播放
     private let voice = VoicePipeline()
@@ -120,6 +124,8 @@ final class HomebrewClient: ObservableObject {
         teardown()
         activeSettings = settings
         loginAttempt = 0
+        challenge = []
+        usedLegacyAuth = false
         rxFrames = 0
         txFrames = 0
         lastProblem = nil
@@ -129,7 +135,7 @@ final class HomebrewClient: ObservableObject {
         voice.isMuted = !settings.audioEnabled
         syncVoiceUI()
 
-        guard settings.dmrId > 0, !settings.password.isEmpty else {
+        guard settings.dmrId > 0, !settings.sanitizedPassword.isEmpty else {
             state = .failed("请先在设置里填写 DMR ID 与 Hotspot 密码")
             append(.error, "身份信息不完整：DMR ID 与 Hotspot 密码不能为空")
             return
@@ -284,9 +290,55 @@ final class HomebrewClient: ObservableObject {
         }
 
         state = .loggingIn
-        append(.info, "→ RPTL 登录请求（第 \(loginAttempt) 次）")
+        challenge = []
+        append(.info, "→ RPTL 登录请求（第 \(loginAttempt) 次），热点 ID \(activeSettings.hotspotId)")
         send(HB.login(id: activeSettings.hotspotId), label: "RPTL")
         armLoginTimeout()
+    }
+
+    /// RPTK：默认走标准 SHA256(挑战盐 ‖ 密码)；被拒回退后用传统明文。
+    private func sendRPTK() {
+        let password = activeSettings.sanitizedPassword
+        if usedLegacyAuth {
+            append(.warning, "→ RPTK 传统明文鉴权（兼容模式）")
+            send(HB.authLegacy(id: activeSettings.hotspotId, password: password), label: "RPTK")
+        } else {
+            send(HB.auth(id: activeSettings.hotspotId, challenge: challenge, password: password), label: "RPTK")
+        }
+    }
+
+    /// MSTNAK：按阶段给不同的解释，别把「ID 不认」和「密码不对」混成一句话。
+    private func handleNak() {
+        switch state {
+        case .loggingIn:
+            // RPTL 就被拒，说明 master 不认这个 ID（没注册 / 被占用 / ESSID 算错）。
+            append(.error, "本次上报热点 ID \(activeSettings.hotspotId)（DMR ID \(activeSettings.dmrId)，ESSID \(activeSettings.essid)）")
+            fail("服务器不认这个热点 ID（MSTNAK）：核对 DMR ID 与 ESSID 后缀是否和 SelfCare 里一致，或该 ID 正被其它设备占用", allowRetry: false)
+
+        case .authenticating where !usedLegacyAuth:
+            // 标准挑战应答被拒：先按老 HBlink 的明文格式再试一次，仍拒才算密码错。
+            usedLegacyAuth = true
+            append(.warning, "标准 SHA256 鉴权被拒（MSTNAK），改用传统明文 RPTK 重试一次")
+            sendRPTK()
+            armLoginTimeout()
+
+        case .authenticating:
+            append(.error, "热点 ID \(activeSettings.hotspotId) 的密码校验未通过；密码长度 \(activeSettings.sanitizedPassword.count)")
+            fail("密码不对（MSTNAK）：要填 SelfCare → Hotspot Security 里的 Hotspot 密码，不是 BrandMeister 网站的登录密码", allowRetry: false)
+
+        case .configuring:
+            fail("上报配置被拒（MSTNAK）：热点尚未在 SelfCare 注册，或资料不完整", allowRetry: false)
+
+        case .online:
+            // 在线后被清会话（别处用同一个 ID 登录过），按参考实现的做法重新登录。
+            append(.warning, "会话被 master 清除（MSTNAK），重新登录")
+            loginAttempt = 0
+            state = .connecting
+            sendLogin()
+
+        default:
+            append(.rx, "← MSTNAK（当前状态 \(state.label)）")
+        }
     }
 
     private func armLoginTimeout() {
@@ -376,9 +428,16 @@ final class HomebrewClient: ObservableObject {
             loginTimer = nil
             switch state {
             case .loggingIn:
+                // RPTL 的应答里，第 6…9 字节是 4 字节挑战盐，RPTK 必须做 SHA256(盐 ‖ 密码)。
+                guard bytes.count >= 10 else {
+                    append(.warning, "RPTACK 只有 \(bytes.count) 字节，拿不到挑战盐")
+                    fail("服务器应答异常：RPTACK 长度不足（\(bytes.count) 字节）")
+                    return
+                }
+                challenge = Array(bytes[6..<10])
                 state = .authenticating
-                append(.info, "← RPTACK 登录通过，→ RPTK 鉴权")
-                send(HB.auth(id: activeSettings.hotspotId, password: activeSettings.password), label: "RPTK")
+                append(.info, "← RPTACK 收到挑战盐 \(Data(challenge).hexDump)，→ RPTK 鉴权")
+                sendRPTK()
                 armLoginTimeout()
             case .authenticating:
                 state = .configuring
@@ -392,7 +451,7 @@ final class HomebrewClient: ObservableObject {
             }
 
         case "MSTN": // MSTNAK
-            fail("服务器拒绝登录（MSTNAK）：DMR ID 与 Hotspot 密码不匹配，或该 ID 已被占用", allowRetry: false)
+            handleNak()
 
         case "MSTC": // MSTCL
             fail("服务器主动断开连接（MSTCL）")
