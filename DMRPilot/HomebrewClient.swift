@@ -80,6 +80,9 @@ final class HomebrewClient: ObservableObject {
     private var loginAttempt = 0
     private var retryWork: DispatchWorkItem?
     private var lastServerPacket: Date?
+    /// RPTC 被 MSTNAK 后重发的次数，只给一次机会，避免把真问题拖成「一直重连」。
+    private var configRetries = 0
+    private var configRetryWork: DispatchWorkItem?
     /// RPTL 之后 master 下发的 4 字节挑战盐，RPTK 靠它算 SHA256。
     private var challenge: [UInt8] = []
     /// 标准 SHA256 鉴权被拒后，是否已经用传统明文 RPTK 重试过。
@@ -124,6 +127,7 @@ final class HomebrewClient: ObservableObject {
         teardown()
         activeSettings = settings
         loginAttempt = 0
+        configRetries = 0
         challenge = []
         usedLegacyAuth = false
         rxFrames = 0
@@ -138,6 +142,13 @@ final class HomebrewClient: ObservableObject {
         guard settings.dmrId > 0, !settings.sanitizedPassword.isEmpty else {
             state = .failed("请先在设置里填写 DMR ID 与 Hotspot 密码")
             append(.error, "身份信息不完整：DMR ID 与 Hotspot 密码不能为空")
+            return
+        }
+
+        // 呼号必须填：RPTC 配置块的前 8 字节就是它，留空等于给 master 一整包残缺资料。
+        guard !settings.normalizedCallsign.isEmpty else {
+            state = .failed("请先在设置里填写呼号（Callsign）")
+            append(.error, "呼号为空：RPTC 配置块会缺字段，BrandMeister 直接回 MSTNAK")
             return
         }
 
@@ -326,8 +337,32 @@ final class HomebrewClient: ObservableObject {
             append(.error, "热点 ID \(activeSettings.hotspotId) 的密码校验未通过；密码长度 \(activeSettings.sanitizedPassword.count)")
             fail("密码不对（MSTNAK）：要填 SelfCare → Hotspot Security 里的 Hotspot 密码，不是 BrandMeister 网站的登录密码", allowRetry: false)
 
+        case .configuring where configRetries < 1:
+            // 旧会话还没在 master 侧超时的时候，第一包 RPTC 经常换来一个 MSTNAK，
+            // 隔几秒重发通常就过了。只重试一次，再拒就是资料本身的问题。
+            configRetries += 1
+            let callsign = activeSettings.normalizedCallsign
+            let packet = HB.config(id: activeSettings.hotspotId, callsign: callsign)
+            append(.warning, "RPTC 被拒（MSTNAK），3 秒后重发一次配置")
+            append(.error, "本次上报：热点 ID \(activeSettings.hotspotId) · 呼号「\(callsign)」· \(packet.count) 字节")
+
+            configRetryWork?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                Task { @MainActor in
+                    guard let self, self.state == .configuring else { return }
+                    self.append(.info, "→ RPTC 重发配置")
+                    self.send(packet, label: "RPTC")
+                    self.armLoginTimeout()
+                }
+            }
+            configRetryWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
+
         case .configuring:
-            fail("上报配置被拒（MSTNAK）：热点尚未在 SelfCare 注册，或资料不完整", allowRetry: false)
+            let callsign = activeSettings.normalizedCallsign
+            append(.error, "本次上报：热点 ID \(activeSettings.hotspotId) · 呼号「\(callsign)」")
+            append(.error, "排查顺序：① SelfCare 里这个热点 ID 是否存在且已启用 ② 呼号是否和 SelfCare 里的一致（不是个人 DMR ID）③ 同一 ID 是否被手机端/盒子占用")
+            fail("上报配置被拒（MSTNAK）：热点 ID 或呼号对不上 SelfCare 里的登记信息", allowRetry: false)
 
         case .online:
             // 在线后被清会话（别处用同一个 ID 登录过），按参考实现的做法重新登录。
@@ -441,8 +476,10 @@ final class HomebrewClient: ObservableObject {
                 armLoginTimeout()
             case .authenticating:
                 state = .configuring
-                append(.info, "← RPTACK 鉴权通过，→ RPTC 上报配置")
-                send(HB.config(id: activeSettings.hotspotId, callsign: activeSettings.callsign), label: "RPTC")
+                let callsign = activeSettings.normalizedCallsign
+                let packet = HB.config(id: activeSettings.hotspotId, callsign: callsign)
+                append(.info, "← RPTACK 鉴权通过，→ RPTC 上报配置（\(packet.count) 字节，呼号「\(callsign)」）")
+                send(packet, label: "RPTC")
                 armLoginTimeout()
             case .configuring:
                 goOnline()
@@ -595,6 +632,8 @@ final class HomebrewClient: ObservableObject {
         loginToken += 1
         retryWork?.cancel()
         retryWork = nil
+        configRetryWork?.cancel()
+        configRetryWork = nil
 
         connection?.stateUpdateHandler = nil
         connection?.cancel()

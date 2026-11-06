@@ -82,7 +82,8 @@ enum HbTransport: String, Codable, CaseIterable, Identifiable {
 struct Settings: Codable, Equatable {
     /// 热点自身的 DMR ID（不是你的个人呼号 ID）
     var dmrId: Int = 0
-    /// 呼号，仅用于 RPTC 配置上报，可留空
+    /// 呼号，写进 RPTC 配置块的前 8 字节。不能留空——
+    /// BrandMeister 收到一整包没有呼号的配置会回 MSTNAK，看上去像「热点没注册」。
     var callsign: String = ""
     /// ESSID 后缀 0…99。0 = 不上报后缀，直接用 DMR ID 当热点 ID；
     /// 1…99 时按 BrandMeister 的规则换算成 9 位热点 ID，见 `hotspotId`。
@@ -109,7 +110,18 @@ struct Settings: Codable, Equatable {
     /// 播放音量 0…1
     var audioVolume: Double = 0.9
 
-    var isIdentityReady: Bool { dmrId > 0 && !sanitizedPassword.isEmpty }
+    var isIdentityReady: Bool { dmrId > 0 && !sanitizedPassword.isEmpty && !normalizedCallsign.isEmpty }
+
+    /// RPTC 里真正发出去的呼号。
+    ///
+    /// 只保留字母、数字和斜杠（BG7ABC/7 这类移动呼号合法），统一大写，最多 8 位
+    /// —— 配置块里呼号字段就是 8 字节，多出来的会被截断，中文字符更会变成乱码。
+    var normalizedCallsign: String {
+        let allowed = callsign
+            .uppercased()
+            .filter { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "/") }
+        return String(allowed.prefix(8))
+    }
 
     /// 真正参与 SHA256 的密码。
     /// 去掉粘贴带进来的首尾空白，并把 iOS 智能标点换成 ASCII——

@@ -37,7 +37,7 @@ struct SettingsView: View {
             HStack {
                 Text("呼号")
                 Spacer()
-                TextField("可选", text: $app.settings.callsign)
+                TextField("必填，如 BG7ABC", text: $app.settings.callsign)
                     .textInputAutocapitalization(.characters)
                     .autocorrectionDisabled()
                     .multilineTextAlignment(.trailing)
@@ -52,7 +52,7 @@ struct SettingsView: View {
         } header: {
             Text("身份")
         } footer: {
-            Text("DMR ID 是热点自己的编号。密码在 BrandMeister 自助页 SelfCare → Hotspot Security 设置，不是登录 BrandMeister 网站用的账号密码。")
+            Text("DMR ID 是热点自己的编号。密码在 BrandMeister 自助页 SelfCare → Hotspot Security 设置，不是登录 BrandMeister 网站用的账号密码。\n呼号会写进登录时的配置包（RPTC），留空会被服务器直接拒绝（MSTNAK）；填你本人呼号即可，SelfCare 的 Repeater/Hotspot 列表里也能看到。")
         }
     }
 
@@ -144,7 +144,7 @@ struct SettingsView: View {
             }
         } footer: {
             if !app.settings.isIdentityReady {
-                Text("填写 DMR ID 与 Hotspot 密码之后才能连接。")
+                Text("填写 DMR ID、呼号与 Hotspot 密码之后才能连接。")
             } else {
                 Text("当前状态：\(hotspot.state.label)")
             }

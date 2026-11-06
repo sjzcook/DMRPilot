@@ -89,53 +89,67 @@ enum HB {
         return Data([UInt8](tag.utf8) + bigEndian(id, count: 4))
     }
 
-    /// 配置上报。BrandMeister 只在自助页校验 ID + 密码，配置块内容基本不进库，
-    /// 但协议要求存在，所以按 HBlink3 的偏移表填一份合法结构。
+    /// 配置上报（302 字节）。
+    ///
+    /// 字段宽度与 MMDVMHost `DMRNetwork::writeConfig` 的格式串逐项对应：
+    ///
+    ///     "RPTC%08u%-8.8s%09u%09u%02u%02u%8.8s%9.9s%03d%-20.20s%-19.19s%c%-124.124s%-40.40s%-40.40s"
+    ///
+    /// 注意 id 是 **4 字节二进制**（不是 8 位文本），所以 4 + 4 + 294 = 302。
+    ///
+    /// 两个曾经踩过的坑，都会让 master 直接回 MSTNAK：
+    /// 1. 数字字段必须零补齐（`%02u` 得 "01"），只写 "1" 会留一个 NUL 字节；
+    /// 2. 尾部必须用空格 0x20 补齐，不能用 NUL —— master 按 C 字符串解析时会被截断，
+    ///    后面的呼号 / URL 全成了垃圾，整包配置被拒。
     static func config(
         id: Int,
         callsign: String,
-        rxFrequency: String = "430.00000",
-        txFrequency: String = "430.00000",
+        frequency: Int = 438_800_000,
         colorCode: Int = 1,
-        latitude: Double = 0,
-        longitude: Double = 0,
-        location: String = "DMRPilot",
-        description: String = "DMRPilot iOS",
-        slots: Int = 2
+        latitude: String = "0",
+        longitude: String = "0",
+        location: String = "",
+        description: String = "",
+        url: String = "www.qrz.com",
+        softwareID: String = "20200922",
+        packageID: String = "MMDVM_MMDVM_HS_Hat"
     ) -> Data {
-        var buffer = [UInt8](repeating: 0, count: 302)
+        var payload: [UInt8] = []
 
-        write(configTag, at: 0, length: 4, into: &buffer)
-        write(bigEndian(id, count: 4), at: 4, into: &buffer)
-        write(callsign, at: 8, length: 8, into: &buffer)          // 呼号
-        write(rxFrequency, at: 16, length: 9, into: &buffer)      // RX 频率
-        write(txFrequency, at: 25, length: 9, into: &buffer)      // TX 频率
-        write("1", at: 34, length: 2, into: &buffer)              // 功率
-        write("\(colorCode)", at: 36, length: 2, into: &buffer)   // 色码
-        write(String(format: "%.5f", latitude), at: 38, length: 8, into: &buffer)
-        write(String(format: "%.5f", longitude), at: 46, length: 9, into: &buffer)
-        write("0", at: 55, length: 3, into: &buffer)              // 天线高度
-        write(location, at: 58, length: 20, into: &buffer)        // 位置
-        write(description, at: 78, length: 19, into: &buffer)     // 描述
-        buffer[97] = UInt8(clamping: slots)                       // 时隙数
-        write("https://brandmeister.network", at: 98, length: 124, into: &buffer)
-        write("DMRPilot 1.0 (iOS)", at: 222, length: 40, into: &buffer)
-        write("DMRPilot", at: 262, length: 40, into: &buffer)
+        payload += ascii(callsign, width: 8, alignLeft: true)        // %-8.8s 呼号
+        payload += digits(frequency, width: 9)                       // %09u RX（Hz）
+        payload += digits(frequency, width: 9)                       // %09u TX（Hz）
+        payload += digits(1, width: 2)                               // %02u 时隙数
+        payload += digits(colorCode, width: 2)                       // %02u 色码
+        payload += ascii(latitude, width: 8, alignLeft: false)       // %8.8s
+        payload += ascii(longitude, width: 9, alignLeft: false)      // %9.9s
+        payload += digits(0, width: 3)                               // %03d 天线高度
+        payload += ascii(location, width: 20, alignLeft: true)       // %-20.20s
+        payload += ascii(description, width: 19, alignLeft: true)    // %-19.19s
+        payload += Array("4".utf8)                                   // %c
+        payload += ascii(url, width: 124, alignLeft: true)           // %-124.124s
+        payload += ascii(softwareID, width: 40, alignLeft: true)     // %-40.40s
+        payload += ascii(packageID, width: 40, alignLeft: true)      // %-40.40s
 
-        return Data(buffer)
+        if payload.count > 294 { payload = Array(payload.prefix(294)) }
+        while payload.count < 294 { payload.append(0x20) }
+
+        return Data([UInt8](configTag.utf8) + bigEndian(id, count: 4) + payload)
     }
 
-    private static func write(_ text: String, at offset: Int, length: Int, into buffer: inout [UInt8]) {
-        let bytes = Array(text.utf8.prefix(length))
-        for (i, byte) in bytes.enumerated() where offset + i < buffer.count {
-            buffer[offset + i] = byte
-        }
+    /// 定长 ASCII：超出截断，不足按 `%Ns` / `%-Ns` 补空格（0x20）。
+    private static func ascii(_ text: String, width: Int, alignLeft: Bool) -> [UInt8] {
+        let clipped = Array(text.utf8.prefix(width))
+        let padding = Array(repeating: UInt8(0x20), count: max(0, width - clipped.count))
+        return alignLeft ? clipped + padding : padding + clipped
     }
 
-    private static func write(_ bytes: [UInt8], at offset: Int, into buffer: inout [UInt8]) {
-        for (i, byte) in bytes.enumerated() where offset + i < buffer.count {
-            buffer[offset + i] = byte
-        }
+    /// 定长十进制，前导零补齐（对应 C 的 `%0Nu`）。
+    private static func digits(_ value: Int, width: Int) -> [UInt8] {
+        var text = String(max(0, value))
+        if text.count > width { text = String(text.suffix(width)) }
+        while text.count < width { text = "0" + text }
+        return Array(text.utf8)
     }
 
     // MARK: - 入站 DMRD 解析
