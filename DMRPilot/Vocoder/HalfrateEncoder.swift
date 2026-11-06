@@ -137,7 +137,6 @@ final class HREncoder {
         var bandScore = [Int](repeating: 0, count: 8)
         var bandSeen = [Int](repeating: 0, count: 8)
         for k in 0..<count {
-            let f = fundamental * Float(k + 1)
             var band = Int(fundamental * Float(k + 1) * 16.0)
             band = band < 0 ? 0 : (band > 7 ? 7 : band)
             bandSeen[band] += 1
@@ -304,7 +303,7 @@ final class HREncoder {
         for row in 0...HREncoder.maxVoicingIndex {
             var score = 0
             for b in 0..<8 {
-                let wanted = bandVoiced[b] ? 1.0 : 0.0
+                let wanted: Int32 = bandVoiced[b] ? 1 : 0
                 if HRTables.voicing[row * 8 + b] != wanted { score += 1 }
             }
             if score < bestScore {
@@ -510,7 +509,7 @@ final class HREncoder {
         var pcm = [Int16](repeating: 0, count: HRCore.frameSamples)
         var rms: Float = 0
         for pass in 0..<6 {
-            decoder.decode(bits: bits, pcm: &pcm)
+            _ = decoder.decode(bits: bits, pcm: &pcm)
             if pass >= 4 {
                 var sum: Float = 0
                 for v in pcm { sum += Float(v) * Float(v) }

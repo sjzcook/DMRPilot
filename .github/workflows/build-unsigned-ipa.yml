@@ -38,6 +38,47 @@ jobs:
       - name: Show project schemes
         run: xcodebuild -list -project DMRPilot.xcodeproj
 
+      # 工程文件是手改的 pbxproj，很容易出现「新文件没登记」或「对象 ID 撞车」。
+      # 后者尤其阴：重复的 ID 只有一条生效，另一个文件会被静默排除在编译之外，
+      # 最后报出来的却是别处「cannot find X in scope」，完全看不出根因。
+      - name: Verify project file list
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import collections
+          import pathlib
+          import re
+          import sys
+
+          proj_path = pathlib.Path("DMRPilot.xcodeproj/project.pbxproj")
+          proj = proj_path.read_text(encoding="utf-8")
+
+          bad = False
+
+          # 1) 对象 ID 不能重复
+          ids = re.findall(r"^\t\t([0-9A-F]{24}) ", proj, re.M)
+          for oid, count in collections.Counter(ids).items():
+              if count > 1:
+                  print(f"::error file={proj_path}::对象 ID {oid} 定义了 {count} 次，"
+                        "重复的 ID 只有一条生效，另一个文件会被静默排除")
+                  bad = True
+
+          # 2) 每个 Swift 源文件都要在工程里登记
+          for swift in sorted(pathlib.Path("DMRPilot").rglob("*.swift")):
+              if f"path = {swift.name};" not in proj:
+                  print(f"::error file={swift}::{swift} 没有登记进 project.pbxproj")
+                  bad = True
+
+          # 3) build file 指向的 fileRef 必须存在
+          refs = set(re.findall(r"^\t\t([0-9A-F]{24}) .*PBXFileReference", proj, re.M))
+          for oid in sorted(set(re.findall(r"fileRef = ([0-9A-F]{24})", proj)) - refs):
+              print(f"::error file={proj_path}::fileRef {oid} 没有对应的 PBXFileReference")
+              bad = True
+
+          sys.exit(1 if bad else 0)
+          PY
+
       - name: Archive without code signing
         shell: bash
         run: |
