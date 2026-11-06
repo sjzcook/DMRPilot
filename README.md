@@ -27,6 +27,7 @@ DMRApp/
 │   ├── SettingsView.swift       # 身份 / 服务器 / 行为
 │   ├── HostDirectory.swift      # DMRHosts.txt 下载 / 解析 / 缓存
 │   ├── HostPickerField.swift    # 服务器弹出选择器 + Hostname 搜索
+│   ├── CallsignDirectory.swift  # DMR ID → 呼号（RadioID.net 查询 + 本地缓存）
 │   ├── LogConsoleView.swift     # 十六进制协议日志
 │   ├── Vocoder/                 # AMBE+2 半速率解码器（纯 Swift）
 │   │   ├── HalfrateDecoder.swift    # 帧解码 + 丢帧隐藏 + 输出级
@@ -136,6 +137,22 @@ python tools/gen_icon.py
   仍然得靠 SelfCare 的 Static TG，或者在电台上用 Dynamic TG 呼一次。
 
 在 SelfCare 里把热点设成 **Static Talkgroup** 或打开 Dynamic，否则你只会收到「没人说话」的心跳——这是最常见的新手坑。
+
+### 当前讲话人
+
+位置：**热点页 → 通话组 下面**（「语音播放」上方）。显示这一句是谁在说：呼号、通话组、时隙、已说的时长，
+右边是「讲话中 / 已结束」和一格实时电平。
+
+- 呼号不是协议里带的。Homebrew 的 `DMRD` 帧头只有 3 字节源 ID 和 3 字节目的 ID，
+  DMR 的 LC（呼号信息）不下发，所以只能外部补：
+  1. RadioID.net 的 DMR 用户库 `database.radioid.net/api/dmr/user/?id=4601234`
+  2. 查不到再退到 BrandMeister 设备库 `api.brandmeister.network/v2/device/{id}`（中继台、热点在这有呼号）
+- 第一次听到某个人时会先显示数字 ID，查到后自动换成呼号；结果缓存在
+  `Caches/callsigns.json`，之后完全离线也能显示。
+- 查询是串行的、间隔 250 ms（RadioID 会限流）；同一个 ID 查不到时 10 分钟内不再重试。
+- 查不到就一直显示数字 ID，这通常意味着该 ID 没在 RadioID 入库，或者它是网关 / 中继台。
+- 「讲话中」的判定是「3 秒内还有语音帧」，因为部分 master 不推语音结束符；
+  收到结束符则立刻变成「已结束」，并固定显示这一句说了多久。
 
 ---
 

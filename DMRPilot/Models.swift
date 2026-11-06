@@ -220,6 +220,36 @@ struct LiveCall: Identifiable, Equatable {
     var slotText: String { "TS\(slot)" }
 }
 
+/// 当前（或刚刚）在说话的那个人。
+///
+/// Homebrew 的 DMRD 帧里只有数字 ID，呼号要靠 `CallsignDirectory` 另查，
+/// 所以这里只存协议层能拿到的字段。
+struct ActiveSpeaker: Equatable {
+    let src: Int
+    let dst: Int
+    let slot: Int
+    let isPrivate: Bool
+    let startedAt: Date
+    /// 最后一条语音帧的时间，用来判断「还在说」还是「已经说完」。
+    var lastVoiceAt: Date
+    /// 收到语音结束符的时间；nil 表示还没收到。
+    var endedAt: Date?
+
+    /// 3 秒内还有语音帧才算正在说话。
+    ///
+    /// 有些 master 不推语音结束符（或者结束符丢了），只看 `endedAt`
+    /// 会让「讲话中」永远不灭；反过来只看时间又会在长句的换气间隙闪。两条一起用。
+    func isSpeaking(at now: Date) -> Bool {
+        guard endedAt == nil else { return false }
+        return now.timeIntervalSince(lastVoiceAt) < 3
+    }
+
+    /// 这一句说了多久（收尾后固定为总时长）。
+    var talkTime: TimeInterval {
+        max(0, (endedAt ?? lastVoiceAt).timeIntervalSince(startedAt))
+    }
+}
+
 // MARK: - 协议日志
 
 struct LogEntry: Identifiable {

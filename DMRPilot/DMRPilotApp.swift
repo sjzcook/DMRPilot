@@ -16,6 +16,7 @@ struct DMRPilotApp: App {
             RootView()
                 .environmentObject(app)
                 .environmentObject(app.hotspot)
+                .environmentObject(app.callsigns)
                 .tint(.blue)
         }
     }

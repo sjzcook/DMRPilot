@@ -10,6 +10,7 @@ import SwiftUI
 struct HotspotView: View {
     @EnvironmentObject private var app: AppState
     @EnvironmentObject private var hotspot: HomebrewClient
+    @EnvironmentObject private var callsigns: CallsignDirectory
     @State private var showLog = false
     @State private var talkgroupDraft = ""
     @FocusState private var talkgroupFocused: Bool
@@ -38,13 +39,24 @@ struct HotspotView: View {
                 }
 
                 talkgroupSection
+                speakerSection
                 audioSection
             }
             .listStyle(.insetGrouped)
             .navigationTitle("热点")
-            .onAppear { talkgroupDraft = draftText(for: app.settings.talkgroup) }
+            .onAppear {
+                talkgroupDraft = draftText(for: app.settings.talkgroup)
+                // 切回本页时可能正有人在说话：onChange 不会补发，这里补一次。
+                if let id = hotspot.currentSpeaker?.src { callsigns.request(id) }
+            }
             .onChange(of: app.settings.talkgroup) { newValue in
                 talkgroupDraft = draftText(for: newValue)
+            }
+            // 换人说话时立刻查一次呼号；已知的和刚查过没结果的都会被 CallsignDirectory 跳过，
+            // 所以这里不用再判断，每句通话触发一次网络请求是可以接受的。
+            .onChange(of: hotspot.currentSpeaker?.src) { newValue in
+                guard let id = newValue else { return }
+                callsigns.request(id)
             }
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
@@ -224,6 +236,104 @@ struct HotspotView: View {
     private func commit(talkgroup: Int) {
         app.setTalkgroup(talkgroup)
         talkgroupDraft = draftText(for: talkgroup)
+    }
+
+    // MARK: - 当前讲话人
+
+    private var speakerSection: some View {
+        Section {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                speakerRow(at: context.date)
+            }
+        } header: {
+            Text("当前讲话人")
+        } footer: {
+            Text("呼号按 ID 从 RadioID.net 的用户库实时查询，并缓存在本机；查不到就显示数字 ID（该 ID 可能尚未入库，或来自中继台 / 网关）。")
+        }
+    }
+
+    @ViewBuilder
+    private func speakerRow(at now: Date) -> some View {
+        if let speaker = hotspot.currentSpeaker {
+            let speaking = speaker.isSpeaking(at: now)
+
+            HStack(spacing: 14) {
+                ZStack {
+                    Circle()
+                        .fill(speaking ? Color.accentColor.opacity(0.16) : Color.secondary.opacity(0.12))
+                        .frame(width: 44, height: 44)
+                    Image(systemName: speaking ? "waveform" : "person.fill")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(speaking ? Color.accentColor : Color.secondary)
+                }
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(speakerLine(for: speaker.src))
+                        .font(.title3.weight(.semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.65)
+
+                    Text(speakerSubtitle(speaker))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 6)
+
+                VStack(alignment: .trailing, spacing: 5) {
+                    Text(speaking ? "讲话中" : "已结束")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(speaking ? Color.accentColor : Color.secondary)
+
+                    if speaking {
+                        LevelMeter(level: Double(hotspot.voiceLevel))
+                            .frame(width: 54, height: 8)
+                    } else {
+                        Text(Fmt.duration(speaker.talkTime))
+                            .font(.caption2)
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .padding(.vertical, 4)
+            .animation(.easeInOut(duration: 0.2), value: speaking)
+        } else {
+            HStack(spacing: 12) {
+                Image(systemName: "person.wave.2")
+                    .foregroundStyle(.secondary)
+                Text(hotspot.state == .online ? "等待通话" : "未连接")
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+        }
+    }
+
+    /// 有呼号显示呼号，没有就退回数字 ID——宁可显示得糙一点，也不能空着。
+    private func speakerLine(for id: Int) -> String {
+        callsigns.callsign(for: id) ?? "\(id)"
+    }
+
+    private func speakerSubtitle(_ speaker: ActiveSpeaker) -> String {
+        var parts: [String] = []
+
+        if speaker.isPrivate {
+            parts.append("单呼")
+        } else if let name = app.name(for: speaker.dst) {
+            parts.append("\(name) · \(speaker.dst)")
+        } else {
+            parts.append("TG \(speaker.dst)")
+        }
+
+        parts.append("TS\(speaker.slot)")
+
+        // 主行已经是呼号时才重复显示 ID；主行本来就是 ID 的话没必要再来一遍。
+        if callsigns.callsign(for: speaker.src) != nil {
+            parts.append("ID \(speaker.src)")
+        }
+
+        return parts.joined(separator: " · ")
     }
 
     // MARK: - 语音设置

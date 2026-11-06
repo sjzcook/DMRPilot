@@ -63,6 +63,8 @@ final class HomebrewClient: ObservableObject {
     @Published private(set) var activeTalkgroup = 0
     /// 因为不属于当前 TG 而被跳过的帧数，用来判断「是没推下来还是被过滤了」。
     @Published private(set) var filteredFrames = 0
+    /// 当前（或最近一次）说话的人。呼号由 `CallsignDirectory` 另查，这里只有 ID。
+    @Published private(set) var currentSpeaker: ActiveSpeaker?
 
     // 语音解码状态（驱动 UI 的电平条与统计）
     @Published private(set) var isVoicePlaying = false
@@ -124,6 +126,7 @@ final class HomebrewClient: ObservableObject {
         activeTalkgroup = value
         activeSettings.talkgroup = value
         filteredFrames = 0
+        currentSpeaker = nil
 
         // 旧组正在播的音频先掐掉；还标着「通话中」的旧组通话要手动收尾，
         // 因为它之后的结束符会被过滤器挡掉，否则会一直挂在「正在通话」里。
@@ -632,6 +635,7 @@ final class HomebrewClient: ObservableObject {
             trimCalls()
             voice.begin(key: key)
             syncVoiceUI()
+            trackSpeaker(frame, at: now, isNewCall: true)
             append(.rx, "通话开始 \(frame.src) → \(frame.dst)　\(frame.isPrivate ? "单呼" : "组呼")　TS\(frame.slot)")
             return
         }
@@ -644,6 +648,7 @@ final class HomebrewClient: ObservableObject {
             }
             voice.end(key: key)
             syncVoiceUI()
+            closeSpeaker(frame, at: now)
             return
         }
 
@@ -651,6 +656,7 @@ final class HomebrewClient: ObservableObject {
         if !frame.isDataSync {
             voice.push(key: key, payload: frame.payload)
             syncVoiceUI()
+            trackSpeaker(frame, at: now, isNewCall: false)
         }
 
         if let index = calls.firstIndex(where: { $0.id == key && $0.isActive }) {
@@ -660,6 +666,44 @@ final class HomebrewClient: ObservableObject {
             calls.insert(makeCall(frame: frame, key: key, at: now), at: 0)
             trimCalls()
         }
+    }
+
+    /// 维护「当前讲话人」。
+    ///
+    /// 语音头是明确的「换人说话」信号；语音帧只是延续，但如果中间隔了 3 秒以上
+    /// （换气、或者 master 没推结束符），也当成新的一句重新计时。
+    private func trackSpeaker(_ frame: HB.DmrFrame, at date: Date, isNewCall: Bool) {
+        if !isNewCall,
+           var speaker = currentSpeaker,
+           speaker.src == frame.src,
+           speaker.dst == frame.dst,
+           speaker.slot == frame.slot,
+           speaker.endedAt == nil,
+           date.timeIntervalSince(speaker.lastVoiceAt) < 3 {
+            speaker.lastVoiceAt = date
+            currentSpeaker = speaker
+            return
+        }
+
+        currentSpeaker = ActiveSpeaker(
+            src: frame.src,
+            dst: frame.dst,
+            slot: frame.slot,
+            isPrivate: frame.isPrivate,
+            startedAt: date,
+            lastVoiceAt: date,
+            endedAt: nil
+        )
+    }
+
+    /// 收到语音结束符：这一句说完了。名字不清掉——界面上还要显示「刚才谁在说」。
+    private func closeSpeaker(_ frame: HB.DmrFrame, at date: Date) {
+        guard var speaker = currentSpeaker,
+              speaker.src == frame.src,
+              speaker.slot == frame.slot else { return }
+        speaker.lastVoiceAt = max(speaker.lastVoiceAt, date)
+        speaker.endedAt = date
+        currentSpeaker = speaker
     }
 
     private func makeCall(frame: HB.DmrFrame, key: String, at date: Date) -> LiveCall {
@@ -753,6 +797,7 @@ final class HomebrewClient: ObservableObject {
 
         voice.reset()
         syncVoiceUI()
+        currentSpeaker = nil
 
         connectedSince = nil
         lastServerPacket = nil

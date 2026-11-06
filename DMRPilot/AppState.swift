@@ -31,6 +31,8 @@ final class AppState: ObservableObject {
     let hotspot = HomebrewClient()
     /// DMRHosts.txt 服务器表，设置页的下拉列表用它。
     let hostStore = DMRHostStore()
+    /// DMR ID → 呼号。热点页的「当前讲话人」靠它把数字 ID 变成呼号。
+    let callsigns = CallsignDirectory()
     private let api = BrandMeisterAPI()
     private static let settingsKey = "dmrpilot.settings.v1"
 
@@ -51,6 +53,11 @@ final class AppState: ObservableObject {
             return "\(name) · \(id)"
         }
         return "TG \(id)"
+    }
+
+    /// 已知的呼号；还没查到返回 nil（调用方决定显示 ID 还是占位符）。
+    func callsign(for id: Int) -> String? {
+        callsigns.callsign(for: id)
     }
 
     // MARK: - 连接
