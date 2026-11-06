@@ -125,6 +125,16 @@ struct SettingsView: View {
 
             Toggle("连接后自动呼叫通话组", isOn: $app.settings.autoCallOnConnect)
 
+            Toggle("静默后自动续订", isOn: $app.settings.autoRenewTalkgroup)
+
+            if app.settings.autoRenewTalkgroup {
+                Picker("续订间隔", selection: $app.settings.talkgroupRenewMinutes) {
+                    Text("5 分钟").tag(5)
+                    Text("8 分钟").tag(8)
+                    Text("10 分钟").tag(10)
+                }
+            }
+
             Picker("呼叫时隙", selection: $app.settings.callSlot) {
                 Text("TS1").tag(1)
                 Text("TS2").tag(2)
@@ -132,7 +142,7 @@ struct SettingsView: View {
         } header: {
             Text("行为")
         } footer: {
-            Text("Homebrew 没有「订阅」指令：连上后先在通话组上发一次静音呼叫，BrandMeister 才会把这个组标成动态订阅，它的语音也才会推下来。\n呼叫时隙要和该组在 SelfCare 里挂的时隙一致——中国区多数 TG 在 TS2。热点页点「确定」切换组时也会自动呼叫一次。")
+            Text("Homebrew 没有「订阅」指令：连上后先在通话组上发一次静音呼叫，BrandMeister 才会把这个组标成动态订阅，它的语音也才会推下来。\n呼叫时隙要和该组在 SelfCare 里挂的时隙一致——中国区多数 TG 在 TS2。热点页点「确定」切换组时也会自动呼叫一次。\nBrandMeister 的动态订阅静默约 10 分钟会被释放，打开「静默后自动续订」后，App 会在该组连续没有语音时自动再呼叫一次（间隔取上面的值，建议 8 分钟，留出余量）。")
         }
     }
 

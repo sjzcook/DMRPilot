@@ -125,6 +125,16 @@ struct Settings: Codable, Equatable {
     /// 不发的话只能收到 SelfCare 里配成 Static TG 的那些。
     var autoCallOnConnect: Bool = true
 
+    /// 动态订阅静默一段时间后自动再呼叫一次。
+    ///
+    /// BrandMeister 的动态 TG 长时间没有活动会被释放，释放后再想听就得重新
+    /// 发一次静音呼叫。打开这个选项，连接期间只要该组静默超过
+    /// `talkgroupRenewMinutes` 分钟就自动续上一次。
+    var autoRenewTalkgroup: Bool = true
+
+    /// 续订间隔（分钟）。BM 大约 10 分钟释放动态 TG，默认 8 分钟留出余量。
+    var talkgroupRenewMinutes: Int = 8
+
     // MARK: 语音
 
     /// 是否解码并播放收到的 DMR 语音
@@ -205,6 +215,8 @@ extension Settings {
         talkgroup = try container.decodeIfPresent(Int.self, forKey: .talkgroup) ?? defaults.talkgroup
         callSlot = try container.decodeIfPresent(Int.self, forKey: .callSlot) ?? defaults.callSlot
         autoCallOnConnect = try container.decodeIfPresent(Bool.self, forKey: .autoCallOnConnect) ?? defaults.autoCallOnConnect
+        autoRenewTalkgroup = try container.decodeIfPresent(Bool.self, forKey: .autoRenewTalkgroup) ?? defaults.autoRenewTalkgroup
+        talkgroupRenewMinutes = try container.decodeIfPresent(Int.self, forKey: .talkgroupRenewMinutes) ?? defaults.talkgroupRenewMinutes
         audioEnabled = try container.decodeIfPresent(Bool.self, forKey: .audioEnabled) ?? defaults.audioEnabled
         audioVolume = try container.decodeIfPresent(Double.self, forKey: .audioVolume) ?? defaults.audioVolume
     }

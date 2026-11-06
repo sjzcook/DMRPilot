@@ -14,7 +14,11 @@ final class AppState: ObservableObject {
     // MARK: - 设置
 
     @Published var settings: Settings {
-        didSet { persistSettings() }
+        didSet {
+            persistSettings()
+            // 续订间隔、时隙这类设置改了不该要求重连
+            hotspot.applyBehaviour(settings)
+        }
     }
 
     // MARK: - 远端数据

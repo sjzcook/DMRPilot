@@ -192,7 +192,7 @@ struct HotspotView: View {
                 .font(.footnote)
             }
 
-            if hotspot.filteredFrames > 0 {
+            if hotspot.activeTalkgroup > 0, hotspot.filteredFrames > 0 {
                 HStack {
                     Text("已跳过其它通话组")
                     Spacer()
@@ -202,10 +202,21 @@ struct HotspotView: View {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             }
+
+            if hotspot.activeTalkgroup > 0, app.settings.autoRenewTalkgroup {
+                HStack {
+                    Text("静默自动续订")
+                    Spacer()
+                    Text("每 \(app.settings.talkgroupRenewMinutes) 分钟")
+                        .monospacedDigit()
+                }
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            }
         } header: {
             Text("通话组")
         } footer: {
-            Text("输入号码后点「确定」，只解码并播放这个通话组的语音；留空再点「确定」= 听全部。单呼只要发给你，照样会响。\nHomebrew 是「服务器推什么就收什么」：要听某个组，它得在 SelfCare 里是 STATIC TG（或在电台上动态呼一次），否则服务器不会把语音发下来。")
+            Text("输入号码后点「确定」，只解码并播放这个通话组的语音；留空再点「确定」= 听全部。单呼只要发给你，照样会响。\n点「确定」会向这个组发一次静音呼叫，BrandMeister 因此把它记为动态订阅，语音才会推下来；静默一段时间后 App 会自动再呼叫一次续上（设置 → 行为 里可调）。")
         }
     }
 

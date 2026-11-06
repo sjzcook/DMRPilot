@@ -128,6 +128,7 @@ final class HomebrewClient: ObservableObject {
         filteredFrames = 0
         currentSpeaker = nil
         pendingConfirmTalkgroup = nil
+        talkgroupAliveAt = nil
 
         // 旧组正在播的音频先掐掉；还标着「通话中」的旧组通话要手动收尾，
         // 因为它之后的结束符会被过滤器挡掉，否则会一直挂在「正在通话」里。
@@ -164,6 +165,20 @@ final class HomebrewClient: ObservableObject {
     /// 打一行确认日志——否则用户只能靠「有没有声音」猜。
     private var pendingConfirmTalkgroup: Int?
 
+    /// 当前 TG 最近一次「有语音下来」或「我们主动续订」的时刻。
+    /// 它是续订计时器的基准：超过设置里的分钟数没有任何动静，就再呼叫一次。
+    private var talkgroupAliveAt: Date?
+
+    /// 有没有「真的在进行」的通话。
+    ///
+    /// 不能直接看 `activeCalls`：部分 master 不推语音结束符，那些通话会一直挂在
+    /// `isActive == true` 上，把呼叫和续订永久挡住。语音帧是持续刷新的，
+    /// 所以「10 秒内没有更新」就当作已经结束。
+    private var hasLiveCall: Bool {
+        let now = Date()
+        return calls.contains { $0.isActive && now.timeIntervalSince($0.updatedAt) < 10 }
+    }
+
     /// 向某个通话组发一次极短的静音 PTT：语音头 → 静音突发 → 结束符。
     ///
     /// Homebrew 没有任何「订阅」指令，服务器只推它认为已经订阅的 TG。
@@ -178,7 +193,7 @@ final class HomebrewClient: ObservableObject {
         }
 
         // 有人正在说话时别抢：插一个语音头进去会把这一句打断。
-        if !activeCalls.isEmpty {
+        if hasLiveCall {
             append(.warning, "TG \(talkgroup) 上还有通话在进行，这次先不呼叫")
             return
         }
@@ -192,6 +207,7 @@ final class HomebrewClient: ObservableObject {
         // 上一轮还没发完（240ms 内），别插队——中途打断会留下半截呼叫。
         guard !isCalling else { return }
         isCalling = true
+        talkgroupAliveAt = now
 
         let src = activeSettings.hotspotId
         let slot = activeSettings.callSlot == 1 ? 1 : 2
@@ -257,6 +273,14 @@ final class HomebrewClient: ObservableObject {
             voiceLevel = 0
             isVoicePlaying = false
         }
+    }
+
+    /// 续订、呼叫相关的设置在连接期间改了也要立刻生效，不必重连。
+    func applyBehaviour(_ settings: Settings) {
+        activeSettings.autoRenewTalkgroup = settings.autoRenewTalkgroup
+        activeSettings.talkgroupRenewMinutes = settings.talkgroupRenewMinutes
+        activeSettings.callSlot = settings.callSlot
+        activeSettings.autoCallOnConnect = settings.autoCallOnConnect
     }
 
     /// 每个语音包都会调用，所以只在值真的变了才写 @Published——
@@ -638,6 +662,34 @@ final class HomebrewClient: ObservableObject {
 
         send(HB.ping(id: activeSettings.hotspotId, modern: activeSettings.modernPing),
              label: activeSettings.modernPing ? "DMRP" : "RPTPING")
+
+        renewTalkgroupIfIdle()
+    }
+
+    /// 动态 TG 的续订。
+    ///
+    /// BrandMeister 的动态订阅在静默一段时间后会被释放，释放之后服务器就不再推这个组，
+    /// 表现是「突然听不到了，但链路还在」。这里在静默超过设置值时补一次静音呼叫，
+    /// 让订阅一直续上，不用用户自己去点「确定」。
+    private func renewTalkgroupIfIdle() {
+        guard state == .online, !isCalling, activeTalkgroup > 0 else { return }
+        // 别的组正在通话时先等，否则每 5 秒一条「续订」日志刷满，而 call() 又会自己跳过。
+        guard !hasLiveCall else { return }
+        // 关掉「连接后自动呼叫」的用户就是不想让 App 自己发射，续订也不该偷偷发。
+        guard activeSettings.autoCallOnConnect, activeSettings.autoRenewTalkgroup else { return }
+
+        // 还没有基准时间（刚连上、自动呼叫还没跑）就先记一个，别一上来就补发。
+        guard let aliveAt = talkgroupAliveAt else {
+            talkgroupAliveAt = Date()
+            return
+        }
+
+        let minutes = max(1, activeSettings.talkgroupRenewMinutes)
+        let idle = Date().timeIntervalSince(aliveAt)
+        guard idle >= Double(minutes) * 60 else { return }
+
+        append(.info, "TG \(activeTalkgroup) 已静默 \(Int(idle / 60)) 分钟，自动续订动态订阅")
+        call(talkgroup: activeTalkgroup)
     }
 
     // MARK: - 入站分发
@@ -744,6 +796,8 @@ final class HomebrewClient: ObservableObject {
             pendingConfirmTalkgroup = nil
             append(.info, "✅ TG \(pending) 的语音已下发，动态订阅生效")
         }
+        // 有语音下来就说明订阅还活着，续订计时器从这一刻重新算。
+        talkgroupAliveAt = Date()
 
         let key = "\(frame.src)-\(frame.dst)-\(frame.slot)"
         let now = Date()
@@ -910,6 +964,7 @@ final class HomebrewClient: ObservableObject {
         lastCallTalkgroup = nil
         isCalling = false
         pendingConfirmTalkgroup = nil
+        talkgroupAliveAt = nil
 
         connection?.stateUpdateHandler = nil
         connection?.cancel()
