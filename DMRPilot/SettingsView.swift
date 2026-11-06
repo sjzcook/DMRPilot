@@ -37,7 +37,7 @@ struct SettingsView: View {
             HStack {
                 Text("呼号")
                 Spacer()
-                TextField("必填，如 BG7ABC", text: $app.settings.callsign)
+                TextField("如 BG7ABC", text: $app.settings.callsign)
                     .textInputAutocapitalization(.characters)
                     .autocorrectionDisabled()
                     .multilineTextAlignment(.trailing)
@@ -52,7 +52,7 @@ struct SettingsView: View {
         } header: {
             Text("身份")
         } footer: {
-            Text("DMR ID 是热点自己的编号。密码在 BrandMeister 自助页 SelfCare → Hotspot Security 设置，不是登录 BrandMeister 网站用的账号密码。\n呼号会写进登录时的配置包（RPTC），留空会被服务器直接拒绝（MSTNAK）；填你本人呼号即可，SelfCare 的 Repeater/Hotspot 列表里也能看到。")
+            Text("DMR ID 是热点自己的编号。密码在 BrandMeister 自助页 SelfCare → Hotspot Security 设置，不是登录 BrandMeister 网站用的账号密码。\n呼号只在「上报配置包 RPTC」打开时才会用到（写进配置块的前 8 字节），默认关闭时可以不填。")
         }
     }
 
@@ -109,10 +109,11 @@ struct SettingsView: View {
             }
 
             Toggle("新版心跳 DMRP", isOn: $app.settings.modernPing)
+            Toggle("上报配置包 RPTC", isOn: $app.settings.reportConfig)
         } header: {
             Text("服务器")
         } footer: {
-            Text("服务器表来自 ds.vu3lvo.com/DMRHosts.txt（Pi-Star 格式），选中后自动填好域名和端口，也可以切到「自定义服务器」手填。\nESSID 后缀用于同一个 DMR ID 下挂多个热点：上报 ID = DMR ID × 100 + (后缀 − 1)，留 0 表示直接用 DMR ID 登录。\nBrandMeister 热点标准走 UDP 62031 + 传统心跳 RPTPING。\n新版心跳 DMRP 对应 MMDVMHost 2024 之后的 55 字节帧，只有服务器明确要求时才打开。\nWebSocket 走 wss，仅部分自建 HBLink 或网关支持。")
+            Text("服务器表来自 ds.vu3lvo.com/DMRHosts.txt（Pi-Star 格式），选中后自动填好域名和端口，也可以切到「自定义服务器」手填。\nESSID 后缀用于同一个 DMR ID 下挂多个热点：上报 ID = DMR ID × 100 + (后缀 − 1)，留 0 表示直接用 DMR ID 登录。\nBrandMeister 热点标准走 UDP 62031 + 传统心跳 RPTPING。\n「上报配置包 RPTC」默认关闭：现代 MMDVMHost 已经不发这个 302 字节的配置包，BrandMeister 也不需要它，语音照样收发；个别 master 收到还会回 MSTNAK 把登录判失败。只有自建 HBLink 或要求登记资料的老 master 才需要打开。\n新版心跳 DMRP 对应 MMDVMHost 2024 之后的 55 字节帧，只有服务器明确要求时才打开。\nWebSocket 走 wss，仅部分自建 HBLink 或网关支持。")
         }
     }
 
@@ -144,7 +145,7 @@ struct SettingsView: View {
             }
         } footer: {
             if !app.settings.isIdentityReady {
-                Text("填写 DMR ID、呼号与 Hotspot 密码之后才能连接。")
+                Text("填写 DMR ID 与 Hotspot 密码之后才能连接。")
             } else {
                 Text("当前状态：\(hotspot.state.label)")
             }

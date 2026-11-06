@@ -85,9 +85,13 @@ final class HomebrewClient: ObservableObject {
     private var loginAttempt = 0
     private var retryWork: DispatchWorkItem?
     private var lastServerPacket: Date?
-    /// RPTC 被 MSTNAK 后重发的次数，只给一次机会，避免把真问题拖成「一直重连」。
+    /// RPTC 被 MSTNAK 后重登的次数，只给两次机会，避免把真问题拖成「一直重连」。
     private var configRetries = 0
     private var configRetryWork: DispatchWorkItem?
+    /// 已经在用 RPTPING 探测「配置被拒」到底是内容问题还是会话已死。
+    private var configProbed = false
+    /// 在线后被 master 清会话的次数，用来防止两台设备抢同一个 ID 时无限重连。
+    private var sessionNaks = 0
     /// RPTL 之后 master 下发的 4 字节挑战盐，RPTK 靠它算 SHA256。
     private var challenge: [UInt8] = []
     /// 标准 SHA256 鉴权被拒后，是否已经用传统明文 RPTK 重试过。
@@ -169,6 +173,8 @@ final class HomebrewClient: ObservableObject {
         activeSettings = settings
         loginAttempt = 0
         configRetries = 0
+        configProbed = false
+        sessionNaks = 0
         activeTalkgroup = settings.talkgroup
         filteredFrames = 0
         challenge = []
@@ -188,9 +194,10 @@ final class HomebrewClient: ObservableObject {
             return
         }
 
-        // 呼号必须填：RPTC 配置块的前 8 字节就是它，留空等于给 master 一整包残缺资料。
-        guard !settings.normalizedCallsign.isEmpty else {
-            state = .failed("请先在设置里填写呼号（Callsign）")
+        // 只有真的要上报配置包时，呼号才是必需的（它是 302 字节配置块的前 8 字节）。
+        // 默认不发 RPTC，所以留空也照样能连。
+        guard !settings.reportConfig || !settings.normalizedCallsign.isEmpty else {
+            state = .failed("请先填写呼号（Callsign），或关闭「上报配置包 RPTC」")
             append(.error, "呼号为空：RPTC 配置块会缺字段，BrandMeister 直接回 MSTNAK")
             return
         }
@@ -365,9 +372,13 @@ final class HomebrewClient: ObservableObject {
     private func handleNak() {
         switch state {
         case .loggingIn:
-            // RPTL 就被拒，说明 master 不认这个 ID（没注册 / 被占用 / ESSID 算错）。
+            // RPTL 就被拒：要么这个 ID 不存在/没注册，要么已经有一条会话占着它。
             append(.error, "本次上报热点 ID \(activeSettings.hotspotId)（DMR ID \(activeSettings.dmrId)，ESSID \(activeSettings.essid)）")
-            fail("服务器不认这个热点 ID（MSTNAK）：核对 DMR ID 与 ESSID 后缀是否和 SelfCare 里一致，或该 ID 正被其它设备占用", allowRetry: false)
+            if configRetries > 0 {
+                fail("重新登录被拒（MSTNAK）：该热点 ID 已被另一条会话占用，先把其它设备断开（手机 MMDVM / 盒子 / 另一台手机）再连", allowRetry: false)
+            } else {
+                fail("服务器不认这个热点 ID（MSTNAK）：核对 DMR ID 与 ESSID 后缀是否和 SelfCare 里一致，或该 ID 正被其它设备占用", allowRetry: false)
+            }
 
         case .authenticating where !usedLegacyAuth:
             // 标准挑战应答被拒：先按老 HBlink 的明文格式再试一次，仍拒才算密码错。
@@ -380,36 +391,54 @@ final class HomebrewClient: ObservableObject {
             append(.error, "热点 ID \(activeSettings.hotspotId) 的密码校验未通过；密码长度 \(activeSettings.sanitizedPassword.count)")
             fail("密码不对（MSTNAK）：要填 SelfCare → Hotspot Security 里的 Hotspot 密码，不是 BrandMeister 网站的登录密码", allowRetry: false)
 
-        case .configuring where configRetries < 1:
-            // 旧会话还没在 master 侧超时的时候，第一包 RPTC 经常换来一个 MSTNAK，
-            // 隔几秒重发通常就过了。只重试一次，再拒就是资料本身的问题。
+        case .configuring where !configProbed:
+            // MSTNAK 在这套协议里有两种含义：① 配置内容被拒；② 这条链路已被 master 判死
+            // （官方规范：收不到心跳后，重复器发来的任何包都回 MSTNAK，客户端应重新登录）。
+            // 先发一个 RPTPING 当探针：回 MSTPONG 说明链路是好的，只是不接受配置包
+            // ——现在的 MMDVMHost 早就不发 RPTC 了，这个包对收发语音没有影响。
+            configProbed = true
+            append(.warning, "RPTC 被拒绝（MSTNAK）：先发 RPTPING 探测链路是否还活着")
+            append(.error, "本次上报：热点 ID \(activeSettings.hotspotId) · 呼号「\(activeSettings.normalizedCallsign)」· 302 字节")
+            send(HB.ping(id: activeSettings.hotspotId, modern: false), label: "RPTPING 探测")
+            armLoginTimeout()
+
+        case .configuring where configRetries < 2:
+            // 探针也被 NAK：会话确实没了，按规范整轮重登（重发同一个 RPTC 是没用的）。
+            // 等 5 秒再登，给服务器把旧会话超时清掉的时间。
             configRetries += 1
-            let callsign = activeSettings.normalizedCallsign
-            let packet = HB.config(id: activeSettings.hotspotId, callsign: callsign)
-            append(.warning, "RPTC 被拒（MSTNAK），3 秒后重发一次配置")
-            append(.error, "本次上报：热点 ID \(activeSettings.hotspotId) · 呼号「\(callsign)」· \(packet.count) 字节")
+            configProbed = false
+            append(.warning, "会话已被 master 清除，5 秒后重新登录（第 \(configRetries) 次）")
 
             configRetryWork?.cancel()
             let work = DispatchWorkItem { [weak self] in
                 Task { @MainActor in
-                    guard let self, self.state == .configuring else { return }
-                    self.append(.info, "→ RPTC 重发配置")
-                    self.send(packet, label: "RPTC")
-                    self.armLoginTimeout()
+                    guard let self, self.state != .offline, self.state != .online else { return }
+                    self.challenge = []
+                    self.loginAttempt = 0
+                    self.usedLegacyAuth = false
+                    self.sendLogin()
                 }
             }
             configRetryWork = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: work)
 
         case .configuring:
             let callsign = activeSettings.normalizedCallsign
-            append(.error, "本次上报：热点 ID \(activeSettings.hotspotId) · 呼号「\(callsign)」")
-            append(.error, "排查顺序：① SelfCare 里这个热点 ID 是否存在且已启用 ② 呼号是否和 SelfCare 里的一致（不是个人 DMR ID）③ 同一 ID 是否被手机端/盒子占用")
-            fail("上报配置被拒（MSTNAK）：热点 ID 或呼号对不上 SelfCare 里的登记信息", allowRetry: false)
+            let packet = HB.config(id: activeSettings.hotspotId, callsign: callsign)
+            append(.error, "最后一次上报的 RPTC（\(packet.count) 字节），可对照官方字段表：")
+            append(.error, "RPTC 内容", hex: packet.hexDump)
+            append(.error, "排查顺序：① 同一个热点 ID 是否还被别的设备连着（手机 MMDVM、盒子、旧会话）② SelfCare 里这个 ID 是否启用 ③ 呼号是否与登记一致")
+            fail("服务器持续拒绝登录（MSTNAK）：该热点 ID 可能正被其它设备占用，或会话已被清除", allowRetry: false)
 
         case .online:
             // 在线后被清会话（别处用同一个 ID 登录过），按参考实现的做法重新登录。
-            append(.warning, "会话被 master 清除（MSTNAK），重新登录")
+            // 但要设上限，否则两个设备抢同一个 ID 时会变成无限重连。
+            sessionNaks += 1
+            if sessionNaks > 2 {
+                fail("服务器反复清除会话（MSTNAK）：这个热点 ID 正被另一条连接占用，先把其它设备断开再连", allowRetry: false)
+                return
+            }
+            append(.warning, "会话被 master 清除（MSTNAK），重新登录（第 \(sessionNaks) 次）")
             loginAttempt = 0
             state = .connecting
             sendLogin()
@@ -437,9 +466,12 @@ final class HomebrewClient: ObservableObject {
     private func loginTimedOut() {
         switch state {
         case .configuring:
-            // 部分 master 不回第三个 RPTACK，只要还在收包就认为链路已通
-            if let lastServerPacket, Date().timeIntervalSince(lastServerPacket) < silenceTimeout {
+            // 部分 master 不回第三个 RPTACK，只要还在收包就认为链路已通。
+            // 但探针发出去了还没回音，说明这个会话是死的，别再自欺欺人地判在线。
+            if !configProbed, let lastServerPacket, Date().timeIntervalSince(lastServerPacket) < silenceTimeout {
                 goOnline()
+            } else if configProbed {
+                fail("服务器既拒绝配置包、又不回应心跳：会话已失效，请稍等半分钟再连一次")
             } else {
                 fail("配置阶段超时，服务器无响应")
             }
@@ -463,6 +495,9 @@ final class HomebrewClient: ObservableObject {
         state = .online
         connectedSince = Date()
         loginAttempt = 0
+        configRetries = 0
+        configProbed = false
+        sessionNaks = 0
         append(.info, "✅ 已登录，进入在线状态，每 \(Int(pingInterval)) 秒心跳")
         startKeepAlive()
     }
@@ -518,7 +553,15 @@ final class HomebrewClient: ObservableObject {
                 sendRPTK()
                 armLoginTimeout()
             case .authenticating:
+                // 配置包（RPTC）是可选的：现代 master 不需要，部分还会因此回 MSTNAK。
+                // 默认跳过，直接进入在线状态；只有自建 HBLink 等老 master 才在设置里打开。
+                guard activeSettings.reportConfig else {
+                    append(.info, "← RPTACK 鉴权通过，直接上线（未上报 RPTC，现代 master 不需要）")
+                    goOnline()
+                    return
+                }
                 state = .configuring
+                configProbed = false
                 let callsign = activeSettings.normalizedCallsign
                 let packet = HB.config(id: activeSettings.hotspotId, callsign: callsign)
                 append(.info, "← RPTACK 鉴权通过，→ RPTC 上报配置（\(packet.count) 字节，呼号「\(callsign)」）")
@@ -536,8 +579,23 @@ final class HomebrewClient: ObservableObject {
         case "MSTC": // MSTCL
             fail("服务器主动断开连接（MSTCL）")
 
+        case "MSTA": // MSTACK —— 老规范里 master 收到 RPTC 回的就是这一帧
+            if state == .configuring {
+                append(.info, "← MSTACK 配置已接受")
+                goOnline()
+            } else {
+                append(.rx, "← MSTACK")
+            }
+
         case "MSTP", "DMRP":
-            append(.rx, "← 心跳应答")
+            if configProbed, state == .configuring {
+                // 探针回了 MSTPONG：会话是活的，只是不收 RPTC。语音走 DMRD，配置包可有可无。
+                configProbed = false
+                append(.info, "← MSTPONG 链路正常：服务器只是不接受配置包，不影响语音收发，直接上线")
+                goOnline()
+            } else {
+                append(.rx, "← 心跳应答")
+            }
 
         case "DMRD":
             handleDmrFrame(bytes)

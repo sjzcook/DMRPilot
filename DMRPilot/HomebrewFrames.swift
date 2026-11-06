@@ -106,27 +106,30 @@ enum HB {
         callsign: String,
         frequency: Int = 438_800_000,
         colorCode: Int = 1,
-        latitude: String = "0",
-        longitude: String = "0",
-        location: String = "",
-        description: String = "",
+        latitude: String = "+00.0000",
+        longitude: String = "+000.0000",
+        location: String = "DMRPilot",
+        description: String = "DMRPilot iOS",
         url: String = "www.qrz.com",
         softwareID: String = "20200922",
-        packageID: String = "MMDVM_MMDVM_HS_Hat"
+        packageID: String = "MMDVM_MMDVM_HS_Hat",
+        slots: Int = 2
     ) -> Data {
         var payload: [UInt8] = []
 
         payload += ascii(callsign, width: 8, alignLeft: true)        // %-8.8s 呼号
         payload += digits(frequency, width: 9)                       // %09u RX（Hz）
         payload += digits(frequency, width: 9)                       // %09u TX（Hz）
-        payload += digits(1, width: 2)                               // %02u 时隙数
+        payload += digits(1, width: 2)                               // %02u 功率（dBm）
         payload += digits(colorCode, width: 2)                       // %02u 色码
         payload += ascii(latitude, width: 8, alignLeft: false)       // %8.8s
         payload += ascii(longitude, width: 9, alignLeft: false)      // %9.9s
         payload += digits(0, width: 3)                               // %03d 天线高度
         payload += ascii(location, width: 20, alignLeft: true)       // %-20.20s
         payload += ascii(description, width: 19, alignLeft: true)    // %-19.19s
-        payload += Array("4".utf8)                                   // %c
+        // 时隙数：真实热点发 1 或 2。这个字节在旧版规范里属于描述字段的最后一位，
+        // 但新版（DMRHub / HBlink3）都按「时隙数」解析，填 4 之类会被当成非法值。
+        payload += digits(slots, width: 1)                           // %c
         payload += ascii(url, width: 124, alignLeft: true)           // %-124.124s
         payload += ascii(softwareID, width: 40, alignLeft: true)     // %-40.40s
         payload += ascii(packageID, width: 40, alignLeft: true)      // %-40.40s

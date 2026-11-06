@@ -101,6 +101,12 @@ struct Settings: Codable, Equatable {
     /// 使用新版心跳 `DMRP`（MMDVMHost 2024+ / 55 字节帧）。
     /// 传统 BrandMeister 走 `RPTPING` / 53 字节帧，默认关闭。
     var modernPing: Bool = false
+    /// 登录后是否上报 RPTC 配置包（呼号 / 频率 / 位置那一大坨 302 字节）。
+    ///
+    /// 默认**关闭**：现在 MMDVMHost 主线已经不发这个包了，BrandMeister 也不需要它，
+    /// 语音照样收发；反而有些 master 收到会回 MSTNAK，把整个登录判失败。
+    /// 只有自建 HBLink / 要求上报资料的老 master 才需要打开。
+    var reportConfig: Bool = false
     var autoReconnect: Bool = true
 
     /// 要收听的通话组（TG），0 表示全部。
@@ -118,7 +124,7 @@ struct Settings: Codable, Equatable {
     /// 播放音量 0…1
     var audioVolume: Double = 0.9
 
-    var isIdentityReady: Bool { dmrId > 0 && !sanitizedPassword.isEmpty && !normalizedCallsign.isEmpty }
+    var isIdentityReady: Bool { dmrId > 0 && !sanitizedPassword.isEmpty }
 
     /// RPTC 里真正发出去的呼号。
     ///
@@ -186,6 +192,7 @@ extension Settings {
         transport = try container.decodeIfPresent(HbTransport.self, forKey: .transport) ?? defaults.transport
         wsPath = try container.decodeIfPresent(String.self, forKey: .wsPath) ?? defaults.wsPath
         modernPing = try container.decodeIfPresent(Bool.self, forKey: .modernPing) ?? defaults.modernPing
+        reportConfig = try container.decodeIfPresent(Bool.self, forKey: .reportConfig) ?? defaults.reportConfig
         autoReconnect = try container.decodeIfPresent(Bool.self, forKey: .autoReconnect) ?? defaults.autoReconnect
         talkgroup = try container.decodeIfPresent(Int.self, forKey: .talkgroup) ?? defaults.talkgroup
         audioEnabled = try container.decodeIfPresent(Bool.self, forKey: .audioEnabled) ?? defaults.audioEnabled
