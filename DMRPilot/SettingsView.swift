@@ -122,8 +122,17 @@ struct SettingsView: View {
     private var behaviourSection: some View {
         Section {
             Toggle("断线自动重连", isOn: $app.settings.autoReconnect)
+
+            Toggle("连接后自动呼叫通话组", isOn: $app.settings.autoCallOnConnect)
+
+            Picker("呼叫时隙", selection: $app.settings.callSlot) {
+                Text("TS1").tag(1)
+                Text("TS2").tag(2)
+            }
         } header: {
             Text("行为")
+        } footer: {
+            Text("Homebrew 没有「订阅」指令：连上后先在通话组上发一次静音呼叫，BrandMeister 才会把这个组标成动态订阅，它的语音也才会推下来。\n呼叫时隙要和该组在 SelfCare 里挂的时隙一致——中国区多数 TG 在 TS2。热点页点「确定」切换组时也会自动呼叫一次。")
         }
     }
 

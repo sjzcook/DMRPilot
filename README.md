@@ -28,6 +28,7 @@ DMRApp/
 │   ├── HostDirectory.swift      # DMRHosts.txt 下载 / 解析 / 缓存
 │   ├── HostPickerField.swift    # 服务器弹出选择器 + Hostname 搜索
 │   ├── CallsignDirectory.swift  # DMR ID → 呼号（RadioID.net 查询 + 本地缓存）
+│   ├── DMRCallFrames.swift      # 语音头/结束符编码（RS + BPTC + Golay）+ DMRD 出站帧
 │   ├── LogConsoleView.swift     # 十六进制协议日志
 │   ├── Vocoder/                 # AMBE+2 半速率解码器（纯 Swift）
 │   │   ├── HalfrateDecoder.swift    # 帧解码 + 丢帧隐藏 + 输出级
@@ -131,12 +132,36 @@ python tools/gen_icon.py
 - 单呼不看过滤器：只要 `dst` 是本站点 ID，照样会响——私人呼叫不该被“只听某组”挡掉。
 - 页面会显示「已跳过其它通话组 N 帧」：N 一直涨说明服务器在推、只是组对不上；
   N 不动而「收帧」在涨，说明服务器压根没推语音，回去查 SelfCare 的 Static TG。
-- 为什么是「筛选」而不是「切换」：Homebrew 下客户端必须先发一个语音头（带 LC + RS(12,9) 编码）
-  才能请求链接新 TG，而本 App 目前只收不发。参考实现（DroidStar）也一样——主动订阅只在
-  ODTP（UDP 54006）下支持，Homebrew 下它只写一句「换 TG 需要 ODTP」。所以让服务器真的改推某个组，
-  仍然得靠 SelfCare 的 Static TG，或者在电台上用 Dynamic TG 呼一次。
+- 点「确定」时除了改本地过滤，还会**向这个组发一次呼叫**（见下一节）——
+  本地过滤只是「别的组不播」，要让服务器真的把语音推下来，得让它认为这个组被订阅了。
 
 在 SelfCare 里把热点设成 **Static Talkgroup** 或打开 Dynamic，否则你只会收到「没人说话」的心跳——这是最常见的新手坑。
+
+### 自动呼叫（激活动态 TG）
+
+位置：设置 → 行为（开关与时隙）、热点页 → 通话组（点「确定」触发）。
+
+- **连接成功后**自动向设置里的通话组发一次呼叫；**点「确定」切换组**时也发一次。
+  两者都受「连接后自动呼叫通话组」开关控制，时隙在「呼叫时隙」里选（默认 TS2）。
+- 一次呼叫 = 三帧：`Voice LC Header` → 一个静音语音突发 → `Voice Terminator`，间隔 120 ms，
+  总共约 240 ms，听起来是一次极短的 PTT。
+- 为什么必须这么做：Homebrew 协议**没有订阅指令**，master 只推它认为已订阅的 TG。
+  BrandMeister 把「有人在这个 TG 上发射」当成动态订阅，所以想让服务器改推某个组，只能发一次呼叫。
+  参考实现（DroidStar）在 Homebrew 下没有这个能力，它的主动订阅只在 ODTP（UDP 54006）上才有。
+- 语音头不是拼字符串，要三层编码：
+
+  ```
+  LC(9 字节) ──RS(12,9)──▶ 12 字节 ──BPTC(196,96)──▶ 33 字节 payload
+  ```
+
+  外加 slot type 的 `Golay(20,8)`、6 字节数据同步字、以及头/结束符各自异或的 CRC 常数
+  （`0x96` / `0x99`）。实现逐行移植自 MMDVMHost 的 `RS129.cpp` / `BPTC19696.cpp` /
+  `Hamming.cpp` / `Golay2087.cpp` / `Sync.cpp`，代码在 `DMRPilot/DMRCallFrames.swift`。
+- 有人正在通话时**不会**插播：插一个语音头进去会把这一句打断，所以这时跳过并写一行日志。
+- 同一个组 3 秒内重复点「确定」会被节流拦住；换别的组立刻能发。
+- 发出去的 `DMRD` 是**53 字节经典帧**（streamId 2 字节、payload 在偏移 18），
+  HBlink 与 BrandMeister 都认，比新版 55 字节兼容性更好。
+
 
 ### 当前讲话人
 

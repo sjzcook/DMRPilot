@@ -32,6 +32,7 @@
 		C1C2C3D4E5F6A7B8C9D00217 /* HostDirectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00118 /* HostDirectory.swift */; };
 		C1C2C3D4E5F6A7B8C9D00218 /* HostPickerField.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00119 /* HostPickerField.swift */; };
 		C1C2C3D4E5F6A7B8C9D00219 /* CallsignDirectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00120 /* CallsignDirectory.swift */; };
+		C1C2C3D4E5F6A7B8C9D00220 /* DMRCallFrames.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00121 /* DMRCallFrames.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -60,6 +61,7 @@
 		B1B2C3D4E5F6A7B8C9D00118 /* HostDirectory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostDirectory.swift; sourceTree = "<group>"; };
 		B1B2C3D4E5F6A7B8C9D00119 /* HostPickerField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostPickerField.swift; sourceTree = "<group>"; };
 		B1B2C3D4E5F6A7B8C9D00120 /* CallsignDirectory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallsignDirectory.swift; sourceTree = "<group>"; };
+		B1B2C3D4E5F6A7B8C9D00121 /* DMRCallFrames.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DMRCallFrames.swift; sourceTree = "<group>"; };
 		B1B2C3D4E5F6A7B8C9D0010D /* DMRPilot.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DMRPilot.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -107,6 +109,7 @@
 				B1B2C3D4E5F6A7B8C9D00118 /* HostDirectory.swift */,
 				B1B2C3D4E5F6A7B8C9D00119 /* HostPickerField.swift */,
 				B1B2C3D4E5F6A7B8C9D00120 /* CallsignDirectory.swift */,
+				B1B2C3D4E5F6A7B8C9D00121 /* DMRCallFrames.swift */,
 				A1B2C3D4E5F6A7B8C9D00010 /* Vocoder */,
 				A1B2C3D4E5F6A7B8C9D00011 /* Audio */,
 				B1B2C3D4E5F6A7B8C9D0010C /* Assets.xcassets */,
@@ -221,6 +224,7 @@
 				C1C2C3D4E5F6A7B8C9D00217 /* HostDirectory.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D00218 /* HostPickerField.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D00219 /* CallsignDirectory.swift in Sources */,
+				C1C2C3D4E5F6A7B8C9D00220 /* DMRCallFrames.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D0020D /* HalfrateTables.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D0020E /* HalfrateCore.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D0020F /* HalfrateFec.swift in Sources */,

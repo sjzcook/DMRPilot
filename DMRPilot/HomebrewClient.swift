@@ -146,8 +146,95 @@ final class HomebrewClient: ObservableObject {
         }
     }
 
-    // MARK: - 语音偏好
+    // MARK: - 呼叫（激活动态 TG）
 
+    /// 最近一次呼叫的时间与目标，只拦「同一组 3 秒内重复呼叫」，
+    /// 换成别的组立刻就能发。
+    private var lastCallAt: Date?
+    private var lastCallTalkgroup: Int?
+    private var callTask: Task<Void, Never>?
+    /// 一轮呼叫（三帧，约 240ms）还没发完。中途打断会留下一个没有结束符的语音头，
+    /// 服务器会把那个时隙占十几秒，所以宁可让这次请求落空。
+    private var isCalling = false
+    private var dmrSeq: UInt8 = 0
+
+    /// 向某个通话组发一次极短的静音 PTT：语音头 → 静音突发 → 结束符。
+    ///
+    /// Homebrew 没有任何「订阅」指令，服务器只推它认为已经订阅的 TG。
+    /// 发一次呼叫能让 BrandMeister 把这个组标成动态订阅，之后它的语音才会下来；
+    /// 光把本地过滤器改成这个 TG 是没用的（那就只是「别的组不播」而已）。
+    func call(talkgroup: Int) {
+        guard state == .online else { return }
+        guard talkgroup > 0, talkgroup <= 0xFF_FFFF else { return }
+
+        // 有人正在说话时别抢：插一个语音头进去会把这一句打断。
+        if !activeCalls.isEmpty {
+            append(.warning, "TG \(talkgroup) 上还有通话在进行，这次先不呼叫")
+            return
+        }
+
+        let now = Date()
+        if let lastCallAt, lastCallTalkgroup == talkgroup,
+           now.timeIntervalSince(lastCallAt) < 3 { return }
+        lastCallAt = now
+        lastCallTalkgroup = talkgroup
+
+        // 上一轮还没发完（240ms 内），别插队——中途打断会留下半截呼叫。
+        guard !isCalling else { return }
+        isCalling = true
+
+        let src = activeSettings.hotspotId
+        let slot = activeSettings.callSlot == 1 ? 1 : 2
+        let slotFlag: UInt8 = slot == 2 ? 0x80 : 0x00
+        let stream = UInt16.random(in: 1...0xFFFE)
+        let head = DMRCallCodec.voicePayload(dst: talkgroup, src: src, isTerminator: false)
+        let tail = DMRCallCodec.voicePayload(dst: talkgroup, src: src, isTerminator: true)
+
+        append(.info, "→ 呼叫 TG \(talkgroup)（TS\(slot)，静音 PTT）")
+
+        callTask?.cancel()
+        callTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.isCalling = false }
+
+            // 1. 语音头：master 认的就是这一帧，动态订阅在这一步建立
+            self.sendDmrFrame(src: src, dst: talkgroup, peer: src,
+                              flags: slotFlag | 0x20 | 0x01,
+                              streamId: stream,
+                              payload: head,
+                              label: "DMRD 语音头 → TG \(talkgroup)")
+
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            guard !Task.isCancelled else { return }
+
+            // 2. 一个静音突发：让这次呼叫像个真的 60ms PTT，不发音突有些不认
+            self.sendDmrFrame(src: src, dst: talkgroup, peer: src,
+                              flags: slotFlag,
+                              streamId: stream,
+                              payload: DMRCallCodec.silenceBurst,
+                              label: "DMRD 语音突发（静音）")
+
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            guard !Task.isCancelled else { return }
+
+            // 3. 结束符：不收尾的话服务器会把这个时隙占十几秒
+            self.sendDmrFrame(src: src, dst: talkgroup, peer: src,
+                              flags: slotFlag | 0x20 | 0x02,
+                              streamId: stream,
+                              payload: tail,
+                              label: "DMRD 结束符")
+        }
+    }
+
+    private func sendDmrFrame(src: Int, dst: Int, peer: Int, flags: UInt8,
+                              streamId: UInt16, payload: [UInt8], label: String) {
+        dmrSeq = dmrSeq &+ 1
+        let frame = HB.dmrFrame(seq: dmrSeq, src: src, dst: dst, peer: peer,
+                                flags: flags, streamId: streamId, payload: payload)
+        send(frame, label: label)
+    }
+
+    // MARK: - 语音偏好
     /// 用户在界面上改了开关/音量时调用，需要立刻生效而不必重连
     func applyAudioPreference(_ settings: Settings) {
         activeSettings.audioEnabled = settings.audioEnabled
@@ -503,6 +590,20 @@ final class HomebrewClient: ObservableObject {
         sessionNaks = 0
         append(.info, "✅ 已登录，进入在线状态，每 \(Int(pingInterval)) 秒心跳")
         startKeepAlive()
+
+        // 连上就向当前 TG 呼叫一次：不发的话服务器不会主动推这个组的语音，
+        // 只能听到 SelfCare 里配成 Static TG 的内容。
+        if activeSettings.autoCallOnConnect, activeSettings.talkgroup > 0 {
+            let talkgroup = activeSettings.talkgroup
+            Task { [weak self] in
+                // 稍等一下，别和首包心跳挤在一起
+                try? await Task.sleep(nanoseconds: 800_000_000)
+                guard let self, self.state == .online else { return }
+                self.call(talkgroup: talkgroup)
+            }
+        } else if activeSettings.autoCallOnConnect {
+            append(.info, "没有设置通话组，跳过自动呼叫")
+        }
     }
 
     // MARK: - 心跳
@@ -785,6 +886,11 @@ final class HomebrewClient: ObservableObject {
         retryWork = nil
         configRetryWork?.cancel()
         configRetryWork = nil
+        callTask?.cancel()
+        callTask = nil
+        lastCallAt = nil
+        lastCallTalkgroup = nil
+        isCalling = false
 
         connection?.stateUpdateHandler = nil
         connection?.cancel()

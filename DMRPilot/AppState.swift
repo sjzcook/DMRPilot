@@ -74,11 +74,21 @@ final class AppState: ObservableObject {
 
     /// 切换收听的 TG（0 = 全部）。写进设置（会持久化），同时通知连接层立刻生效，
     /// 不需要重连——Homebrew 的推送内容由服务器决定，这里只是本地的播放过滤。
+    ///
+    /// 切到一个具体 TG 时还会顺手向它发一次呼叫：本地过滤只能「不播别的组」，
+    /// 要让服务器真的把语音推下来，得让 master 认为这个组被订阅了。
     func setTalkgroup(_ talkgroup: Int) {
         let value = max(0, talkgroup)
-        guard settings.talkgroup != value else { return }
-        settings.talkgroup = value
-        hotspot.setTalkgroup(value)
+
+        if settings.talkgroup != value {
+            settings.talkgroup = value
+            hotspot.setTalkgroup(value)
+        }
+
+        // 值没变也照发：用户点「确定」的意思就是「我要听这个组，再激活一次」。
+        if value > 0 {
+            hotspot.call(talkgroup: value)
+        }
     }
 
     // MARK: - 远端刷新

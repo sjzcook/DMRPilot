@@ -117,6 +117,14 @@ struct Settings: Codable, Equatable {
     /// 或者已被别的设备动态链接过，否则服务器根本不会推下来。
     var talkgroup: Int = 0
 
+    /// 呼叫时用的时隙。BrandMeister 上大部分中文 TG 挂在 TS2，个别老组在 TS1。
+    var callSlot: Int = 2
+    /// 连上之后自动向当前 TG 发一次呼叫，让服务器把它标成动态订阅。
+    ///
+    /// Homebrew 没有订阅指令，只能靠「发一次 PTT」让 master 认这个组；
+    /// 不发的话只能收到 SelfCare 里配成 Static TG 的那些。
+    var autoCallOnConnect: Bool = true
+
     // MARK: 语音
 
     /// 是否解码并播放收到的 DMR 语音
@@ -195,6 +203,8 @@ extension Settings {
         reportConfig = try container.decodeIfPresent(Bool.self, forKey: .reportConfig) ?? defaults.reportConfig
         autoReconnect = try container.decodeIfPresent(Bool.self, forKey: .autoReconnect) ?? defaults.autoReconnect
         talkgroup = try container.decodeIfPresent(Int.self, forKey: .talkgroup) ?? defaults.talkgroup
+        callSlot = try container.decodeIfPresent(Int.self, forKey: .callSlot) ?? defaults.callSlot
+        autoCallOnConnect = try container.decodeIfPresent(Bool.self, forKey: .autoCallOnConnect) ?? defaults.autoCallOnConnect
         audioEnabled = try container.decodeIfPresent(Bool.self, forKey: .audioEnabled) ?? defaults.audioEnabled
         audioVolume = try container.decodeIfPresent(Double.self, forKey: .audioVolume) ?? defaults.audioVolume
     }
