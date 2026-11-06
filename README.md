@@ -25,6 +25,8 @@ DMRApp/
 │   ├── HotspotView.swift        # 状态卡 + 电平表 + 实时通话
 │   ├── DirectoryView.swift      # 设备查询 + 通话组搜索
 │   ├── SettingsView.swift       # 身份 / 服务器 / 行为
+│   ├── HostDirectory.swift      # DMRHosts.txt 下载 / 解析 / 缓存
+│   ├── HostPickerField.swift    # 服务器下拉列表 + Hostname 搜索
 │   ├── LogConsoleView.swift     # 十六进制协议日志
 │   ├── Vocoder/                 # AMBE+2 半速率解码器（纯 Swift）
 │   │   ├── HalfrateDecoder.swift    # 帧解码 + 丢帧隐藏 + 输出级
@@ -38,11 +40,35 @@ DMRApp/
 │   ├── Audio/
 │   │   ├── VoicePipeline.swift  # 每路通话一个解码器 + 播放调度
 │   │   └── VoicePlayer.swift    # AVAudioEngine 8 kHz 播放
-│   └── Assets.xcassets
+│   └── Assets.xcassets          # AppIcon / AccentColor
+├── Logo/                        # 图标设计稿与对比图
 ├── tools/
-│   └── gen_tables.py            # 从 DroidStar 源码抽取数值表生成 HalfrateTables.swift
+│   ├── gen_tables.py            # 从 DroidStar 源码抽取数值表生成 HalfrateTables.swift
+│   └── gen_icon.py              # 用代码精确绘制 App icon
 └── README.md
 ```
+
+---
+
+## 图标
+
+`AppIcon-1024.png` 不是画的，是 `tools/gen_icon.py` 用代码算出来的：4 倍超采样后
+LANCZOS 缩小，所以弧线和斜边在任何尺寸下都不发虚，也没有任何水印或版权问题。
+
+设计取**手持台（HT）**的剪影：扬声器槽、屏幕里的通话波形、天线尖上两道信号弧。
+之所以不用「竖杆 + 对称电波」，是因为那个构图和 WiFi 图标几乎同构，用户一眼会认错；
+也试过八木天线和桁架塔，但在 60 pt 尺度下八木读成"梯子"、桁架糊成一团，都放弃了。
+
+配色是深海军蓝底 `#0E1A2C`，符号纯白，波形用青→蓝渐变强调"这是数字语音不是模拟"。
+
+要改配色或几何，直接调 `gen_icon.py` 顶部的常量再跑一次即可：
+
+```bash
+python tools/gen_icon.py
+```
+
+`Logo/compare.png` 里是四个候选（`ht` / `ht_plain` / `tower` / `slots`），
+当前选用 `ht`。
 
 ---
 
@@ -62,7 +88,21 @@ DMRApp/
 |---|---|
 | **DMR ID**（热点自己的编号，不是你的个人 ID） | 自助页 SelfCare 创建 Hotspot 后分配 |
 | **Hotspot Security 密码** | SelfCare → 你的热点 → Hotspot Security（不是网站账号密码） |
-| 服务器 / 端口 | 默认 `api.brandmeister.network:62031`，不用改 |
+| 服务器 / 端口 | 设置页下拉列表里选，自动带出域名与端口 |
+
+### 服务器列表
+
+设置页的服务器不再是手填文本框，而是从 Pi-Star 格式的服务器表里选：
+
+- 数据源 `https://ds.vu3lvo.com/DMRHosts.txt`（镜像 `https://ds.vu3lvo.com/backup/DMRHosts.txt`），
+  首次进入设置页自动下载并缓存到 `Caches/DMRHosts.txt`，之后启动直接读缓存，点「更新」才会重拉。
+- 下拉列表上方是 **Hostname 搜索框**，按域名（顺带匹配表里的名字）过滤，输入即展开；
+  默认只列 BrandMeister 条目（42 台），切到「全部」能看到 XLX、DMR+、FreeDMR 等 1200 多条。
+- 选中一台后自动写入 `host` / `port`，`hostName` 只用来回显选中态；选「自定义服务器」则露出域名输入框，
+  自建 HBLink / 私服走这条路。
+- 解析规则与参考实现一致：跳过 `DMRGateway` / `DMR2YSF` / `DMR2NXDN` 三条本机网关记录，
+  第 3 列域名、第 4 列表内密码（`none` 视为空）、第 5 列端口；下载到 HTML 错误页时直接丢弃，不会污染缓存。
+
 
 在 SelfCare 里把热点设成 **Static Talkgroup** 或打开 Dynamic，否则你只会收到「没人说话」的心跳——这是最常见的新手坑。
 

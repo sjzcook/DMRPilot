@@ -86,6 +86,9 @@ struct Settings: Codable, Equatable {
     var callsign: String = ""
     /// BrandMeister 自助页 → Hotspot Security 里设置的密码
     var password: String = ""
+    /// 从 DMRHosts.txt 选中的服务器名字（如 BM_4602_China）；空字符串表示自定义域名。
+    /// 只用于回显下拉框选中态，连接时真正用的是 host / port。
+    var hostName: String = ""
     var host: String = "api.brandmeister.network"
     var port: Int = 62031
     var transport: HbTransport = .udp
@@ -117,6 +120,7 @@ extension Settings {
         dmrId = try container.decodeIfPresent(Int.self, forKey: .dmrId) ?? defaults.dmrId
         callsign = try container.decodeIfPresent(String.self, forKey: .callsign) ?? defaults.callsign
         password = try container.decodeIfPresent(String.self, forKey: .password) ?? defaults.password
+        hostName = try container.decodeIfPresent(String.self, forKey: .hostName) ?? defaults.hostName
         host = try container.decodeIfPresent(String.self, forKey: .host) ?? defaults.host
         port = try container.decodeIfPresent(Int.self, forKey: .port) ?? defaults.port
         transport = try container.decodeIfPresent(HbTransport.self, forKey: .transport) ?? defaults.transport

@@ -29,6 +29,8 @@
 		C1C2C3D4E5F6A7B8C9D00215 /* VoicePlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00116 /* VoicePlayer.swift */; };
 		C1C2C3D4E5F6A7B8C9D00216 /* VoicePipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00117 /* VoicePipeline.swift */; };
 		C1C2C3D4E5F6A7B8C9D0020C /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D0010C /* Assets.xcassets */; };
+		C1C2C3D4E5F6A7B8C9D00217 /* HostDirectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00118 /* HostDirectory.swift */; };
+		C1C2C3D4E5F6A7B8C9D00218 /* HostPickerField.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00119 /* HostPickerField.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -54,6 +56,8 @@
 		B1B2C3D4E5F6A7B8C9D00116 /* VoicePlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoicePlayer.swift; sourceTree = "<group>"; };
 		B1B2C3D4E5F6A7B8C9D00117 /* VoicePipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoicePipeline.swift; sourceTree = "<group>"; };
 		B1B2C3D4E5F6A7B8C9D0010C /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		B1B2C3D4E5F6A7B8C9D00118 /* HostDirectory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostDirectory.swift; sourceTree = "<group>"; };
+		B1B2C3D4E5F6A7B8C9D00119 /* HostPickerField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostPickerField.swift; sourceTree = "<group>"; };
 		B1B2C3D4E5F6A7B8C9D0010D /* DMRPilot.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DMRPilot.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -98,6 +102,8 @@
 				B1B2C3D4E5F6A7B8C9D00109 /* DirectoryView.swift */,
 				B1B2C3D4E5F6A7B8C9D0010A /* SettingsView.swift */,
 				B1B2C3D4E5F6A7B8C9D0010B /* LogConsoleView.swift */,
+				B1B2C3D4E5F6A7B8C9D00118 /* HostDirectory.swift */,
+				B1B2C3D4E5F6A7B8C9D00119 /* HostPickerField.swift */,
 				A1B2C3D4E5F6A7B8C9D00010 /* Vocoder */,
 				A1B2C3D4E5F6A7B8C9D00011 /* Audio */,
 				B1B2C3D4E5F6A7B8C9D0010C /* Assets.xcassets */,
@@ -209,6 +215,8 @@
 				C1C2C3D4E5F6A7B8C9D00209 /* DirectoryView.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D0020A /* SettingsView.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D0020B /* LogConsoleView.swift in Sources */,
+				C1C2C3D4E5F6A7B8C9D00217 /* HostDirectory.swift in Sources */,
+				C1C2C3D4E5F6A7B8C9D00218 /* HostPickerField.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D0020D /* HalfrateTables.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D0020E /* HalfrateCore.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D0020F /* HalfrateFec.swift in Sources */,

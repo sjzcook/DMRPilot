@@ -29,6 +29,8 @@ final class AppState: ObservableObject {
     // MARK: - 依赖
 
     let hotspot = HomebrewClient()
+    /// DMRHosts.txt 服务器表，设置页的下拉列表用它。
+    let hostStore = DMRHostStore()
     private let api = BrandMeisterAPI()
     private static let settingsKey = "dmrpilot.settings.v1"
 

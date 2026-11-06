@@ -60,15 +60,7 @@ struct SettingsView: View {
 
     private var serverSection: some View {
         Section {
-            HStack {
-                Text("服务器")
-                Spacer()
-                TextField("api.brandmeister.network", text: $app.settings.host)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .keyboardType(.URL)
-                    .multilineTextAlignment(.trailing)
-            }
+            HostPickerField(store: app.hostStore, settings: $app.settings)
 
             HStack {
                 Text("端口")
@@ -99,7 +91,7 @@ struct SettingsView: View {
         } header: {
             Text("服务器")
         } footer: {
-            Text("BrandMeister 热点标准走 UDP 62031 + 传统心跳 RPTPING。\n新版心跳 DMRP 对应 MMDVMHost 2024 之后的 55 字节帧，只有服务器明确要求时才打开。\nWebSocket 走 wss，仅部分自建 HBLink 或网关支持。")
+            Text("服务器表来自 ds.vu3lvo.com/DMRHosts.txt（Pi-Star 格式），选中后自动填好域名和端口，也可以切到「自定义服务器」手填。\nBrandMeister 热点标准走 UDP 62031 + 传统心跳 RPTPING。\n新版心跳 DMRP 对应 MMDVMHost 2024 之后的 55 字节帧，只有服务器明确要求时才打开。\nWebSocket 走 wss，仅部分自建 HBLink 或网关支持。")
         }
     }
 
