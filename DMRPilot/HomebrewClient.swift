@@ -212,11 +212,11 @@ final class HomebrewClient: ObservableObject {
         let src = activeSettings.hotspotId
         let slot = activeSettings.callSlot == 1 ? 1 : 2
         let slotFlag: UInt8 = slot == 2 ? 0x80 : 0x00
-        let stream = UInt16.random(in: 1...0xFFFE)
+        let stream = UInt32.random(in: 1...0xFFFF_FFFE)
         let head = DMRCallCodec.voicePayload(dst: talkgroup, src: src, isTerminator: false)
         let tail = DMRCallCodec.voicePayload(dst: talkgroup, src: src, isTerminator: true)
 
-        append(.info, "→ 呼叫 TG \(talkgroup)（TS\(slot)，静音 PTT）")
+        append(.info, "→ 呼叫 TG \(talkgroup)（TS\(slot)，静音 PTT，55 字节/帧）")
         append(.info, "BrandMeister 收到这次发射后会把它记为动态订阅，之后该组的语音就会推下来")
         pendingConfirmTalkgroup = talkgroup
 
@@ -255,7 +255,7 @@ final class HomebrewClient: ObservableObject {
     }
 
     private func sendDmrFrame(src: Int, dst: Int, peer: Int, flags: UInt8,
-                              streamId: UInt16, payload: [UInt8], label: String) {
+                              streamId: UInt32, payload: [UInt8], label: String) {
         dmrSeq = dmrSeq &+ 1
         let frame = HB.dmrFrame(seq: dmrSeq, src: src, dst: dst, peer: peer,
                                 flags: flags, streamId: streamId, payload: payload)

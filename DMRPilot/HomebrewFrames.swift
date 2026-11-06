@@ -190,7 +190,6 @@ enum HB {
     static func parseDmr(_ bytes: [UInt8]) -> DmrFrame? {
         guard bytes.count >= 53, tag(bytes) == dmrTag else { return nil }
 
-        let wide = bytes.count >= 55
         let bits = bytes[15]
 
         let slot = (bits & 0x80) != 0 ? 2 : 1
@@ -198,8 +197,11 @@ enum HB {
         let isDataSync = (bits & 0x20) != 0
         let isVoiceSync = (bits & 0x10) != 0
         let dataType = Int(bits & 0x0F)
-        let streamId = wide ? readBE(bytes, 16, 4) : readBE(bytes, 16, 2)
-        let offset = wide ? 20 : 18
+
+        // 布局在 53 与 55 字节版本里是一样的：streamId 占 16…19 共 4 字节，
+        // 载荷从偏移 20 开始；55 字节版本只是尾部多了 BER / RSSI 两个字节。
+        let streamId = readBE(bytes, 16, 4)
+        let offset = 20
         let payloadEnd = min(offset + 33, bytes.count)
 
         return DmrFrame(

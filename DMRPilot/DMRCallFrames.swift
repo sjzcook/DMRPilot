@@ -244,21 +244,31 @@ enum DMRCallCodec {
 
 extension HB {
 
-    /// 53 字节的经典 DMRD 帧（streamId 2 字节、payload 在偏移 18）。
+    /// 55 字节标准 DMRD 帧，与 MMDVMHost `CDMRNetwork::write` 逐字节一致。
     ///
-    /// 与 `parseDmr` 的窄帧分支对应，HBlink / BrandMeister 都认这个长度，
-    /// 比新版的 55 字节更保险。
+    /// ```
+    /// 0..3   "DMRD"
+    /// 4      seq
+    /// 5..7   src（3 字节）
+    /// 8..10  dst（3 字节）
+    /// 11..14 peer（4 字节，热点自己的 ID）
+    /// 15     flags：slot(0x80) | 单呼(0x40) | dataSync(0x20) | 数据类型
+    /// 16..19 streamId（**4 字节**，不是 2 字节）
+    /// 20..52 payload（33 字节）
+    /// 53     BER
+    /// 54     RSSI
+    /// ```
     ///
-    /// - Parameters:
-    ///   - flags: 第 15 字节：slot(0x80) | 单呼(0x40) | dataSync(0x20) | 数据类型
+    /// 之前这里写成「53 字节、streamId 2 字节、payload 从 18 开始」，整体错位 2 字节：
+    /// master 按偏移 20 取载荷，读到的就是错位的 LC，语音头解析失败，动态订阅建不起来。
     static func dmrFrame(seq: UInt8,
                          src: Int,
                          dst: Int,
                          peer: Int,
                          flags: UInt8,
-                         streamId: UInt16,
+                         streamId: UInt32,
                          payload: [UInt8]) -> Data {
-        var buffer = [UInt8](repeating: 0, count: 53)
+        var buffer = [UInt8](repeating: 0, count: 55)
 
         buffer[0] = 0x44    // D
         buffer[1] = 0x4D    // M
@@ -281,15 +291,17 @@ extension HB {
 
         buffer[15] = flags
 
-        buffer[16] = UInt8((Int(streamId) >> 8) & 0xFF)
-        buffer[17] = UInt8(Int(streamId) & 0xFF)
+        buffer[16] = UInt8((streamId >> 24) & 0xFF)
+        buffer[17] = UInt8((streamId >> 16) & 0xFF)
+        buffer[18] = UInt8((streamId >> 8) & 0xFF)
+        buffer[19] = UInt8(streamId & 0xFF)
 
         for i in 0..<min(33, payload.count) {
-            buffer[18 + i] = payload[i]
+            buffer[20 + i] = payload[i]
         }
 
-        buffer[51] = 0      // BER
-        buffer[52] = 0      // RSSI
+        buffer[53] = 0      // BER
+        buffer[54] = 0      // RSSI
 
         return Data(buffer)
     }
