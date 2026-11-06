@@ -127,6 +127,7 @@ final class HomebrewClient: ObservableObject {
         activeSettings.talkgroup = value
         filteredFrames = 0
         currentSpeaker = nil
+        pendingConfirmTalkgroup = nil
 
         // 旧组正在播的音频先掐掉；还标着「通话中」的旧组通话要手动收尾，
         // 因为它之后的结束符会被过滤器挡掉，否则会一直挂在「正在通话」里。
@@ -139,8 +140,10 @@ final class HomebrewClient: ObservableObject {
         syncVoiceUI()
 
         if value > 0 {
-            append(.info, "→ 只收听 TG \(value)")
-            append(.warning, "Homebrew 客户端无法主动改变服务器推送：该 TG 不是 SelfCare 里的 Static TG 时，语音根本不会发下来")
+            append(.info, "→ 只收听 TG \(value)（本地过滤，其它组不再解码）")
+            if state != .online {
+                append(.info, "连上之后会自动向 TG \(value) 呼叫一次，BrandMeister 才会把它标成动态订阅")
+            }
         } else {
             append(.info, "→ 收听全部通话组")
         }
@@ -157,6 +160,9 @@ final class HomebrewClient: ObservableObject {
     /// 服务器会把那个时隙占十几秒，所以宁可让这次请求落空。
     private var isCalling = false
     private var dmrSeq: UInt8 = 0
+    /// 刚呼叫过、还在等第一帧回音的 TG。收到它的语音就说明动态订阅真的生效了，
+    /// 打一行确认日志——否则用户只能靠「有没有声音」猜。
+    private var pendingConfirmTalkgroup: Int?
 
     /// 向某个通话组发一次极短的静音 PTT：语音头 → 静音突发 → 结束符。
     ///
@@ -164,8 +170,12 @@ final class HomebrewClient: ObservableObject {
     /// 发一次呼叫能让 BrandMeister 把这个组标成动态订阅，之后它的语音才会下来；
     /// 光把本地过滤器改成这个 TG 是没用的（那就只是「别的组不播」而已）。
     func call(talkgroup: Int) {
-        guard state == .online else { return }
         guard talkgroup > 0, talkgroup <= 0xFF_FFFF else { return }
+        guard state == .online else {
+            // 断线时点「确定」照样会走到这里，给一句明确的交代，别让人以为已经发出去了。
+            append(.info, "还没连上服务器：连上后会自动向 TG \(talkgroup) 呼叫一次")
+            return
+        }
 
         // 有人正在说话时别抢：插一个语音头进去会把这一句打断。
         if !activeCalls.isEmpty {
@@ -191,6 +201,8 @@ final class HomebrewClient: ObservableObject {
         let tail = DMRCallCodec.voicePayload(dst: talkgroup, src: src, isTerminator: true)
 
         append(.info, "→ 呼叫 TG \(talkgroup)（TS\(slot)，静音 PTT）")
+        append(.info, "BrandMeister 收到这次发射后会把它记为动态订阅，之后该组的语音就会推下来")
+        pendingConfirmTalkgroup = talkgroup
 
         callTask?.cancel()
         callTask = Task { [weak self] in
@@ -727,6 +739,12 @@ final class HomebrewClient: ObservableObject {
             return
         }
 
+        // 呼叫之后的第一个回音：说明动态订阅确实建立了。
+        if let pending = pendingConfirmTalkgroup {
+            pendingConfirmTalkgroup = nil
+            append(.info, "✅ TG \(pending) 的语音已下发，动态订阅生效")
+        }
+
         let key = "\(frame.src)-\(frame.dst)-\(frame.slot)"
         let now = Date()
 
@@ -891,6 +909,7 @@ final class HomebrewClient: ObservableObject {
         lastCallAt = nil
         lastCallTalkgroup = nil
         isCalling = false
+        pendingConfirmTalkgroup = nil
 
         connection?.stateUpdateHandler = nil
         connection?.cancel()
