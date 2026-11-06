@@ -179,10 +179,13 @@ enum HB {
         ///
         /// - 组呼：`dst` 就是 TG，直接比。
         /// - 单呼：`dst` 是对方 ID，跟自己没关系；只有「发给我的」和「我发出的」才算。
+        ///   目标既有可能是 7 位 DMR ID，也有可能是 9 位热点 ID（ESSID 模式）。
         /// - `talkgroup == 0` 时不做过滤，全部接收。
-        func belongs(toTalkgroup talkgroup: Int, myId: Int) -> Bool {
+        func belongs(toTalkgroup talkgroup: Int, myId: Int, hotspotId: Int = 0) -> Bool {
             guard talkgroup > 0 else { return true }
-            if isPrivate { return dst == myId || src == myId }
+            if isPrivate {
+                return dst == myId || src == myId || dst == hotspotId || src == hotspotId
+            }
             return dst == talkgroup
         }
     }

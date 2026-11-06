@@ -129,6 +129,13 @@ final class HomebrewClient: ObservableObject {
         currentSpeaker = nil
         pendingConfirmTalkgroup = nil
         talkgroupAliveAt = nil
+        callWatchdog?.cancel()
+        callWatchdog = nil
+        trafficStat.removeAll()
+        trafficTotal = 0
+        trafficFiltered = 0
+        warnedNoTraffic = false
+        lastTrafficReport = Date()
 
         // 旧组正在播的音频先掐掉；还标着「通话中」的旧组通话要手动收尾，
         // 因为它之后的结束符会被过滤器挡掉，否则会一直挂在「正在通话」里。
@@ -157,13 +164,27 @@ final class HomebrewClient: ObservableObject {
     private var lastCallAt: Date?
     private var lastCallTalkgroup: Int?
     private var callTask: Task<Void, Never>?
-    /// 一轮呼叫（三帧，约 240ms）还没发完。中途打断会留下一个没有结束符的语音头，
+    /// 一轮呼叫（头 + 8 个突发 + 尾，约 0.6 秒）还没发完。中途打断会留下一个没有结束符的语音头，
     /// 服务器会把那个时隙占十几秒，所以宁可让这次请求落空。
     private var isCalling = false
     private var dmrSeq: UInt8 = 0
+    /// 等回音的看门狗：25 秒没收到目标 TG 的帧就说清原因，别让界面一直沉默。
+    private var callWatchdog: Task<Void, Never>?
     /// 刚呼叫过、还在等第一帧回音的 TG。收到它的语音就说明动态订阅真的生效了，
     /// 打一行确认日志——否则用户只能靠「有没有声音」猜。
     private var pendingConfirmTalkgroup: Int?
+
+    /// 收到的帧按「dst@slot」汇总，每 15 秒报一次。
+    ///
+    /// 这是排查「收不到语音」最关键的一条信息：服务器到底在推什么。
+    /// 如果摘要里全是别的组，说明要的组没订阅上；如果摘要里就有它，
+    /// 说明订阅是好的，只是那一会儿没人讲话。
+    private var trafficStat: [String: Int] = [:]
+    private var trafficTotal = 0
+    private var trafficFiltered = 0
+    private var lastTrafficReport = Date()
+    /// 长时间一帧 DMRD 都没收到，只提醒一次，别每 15 秒重复。
+    private var warnedNoTraffic = false
 
     /// 当前 TG 最近一次「有语音下来」或「我们主动续订」的时刻。
     /// 它是续订计时器的基准：超过设置里的分钟数没有任何动静，就再呼叫一次。
@@ -204,21 +225,33 @@ final class HomebrewClient: ObservableObject {
         lastCallAt = now
         lastCallTalkgroup = talkgroup
 
-        // 上一轮还没发完（240ms 内），别插队——中途打断会留下半截呼叫。
+        // 上一轮还没发完（约 0.6 秒），别插队——中途打断会留下半截呼叫。
         guard !isCalling else { return }
         isCalling = true
         talkgroupAliveAt = now
 
-        let src = activeSettings.hotspotId
+        // 呼叫帧里的源地址必须是「本人 DMR ID」（7 位），不是 9 位热点 ID：
+        // DMRD 的 src 字段只有 3 字节（≤16777215），塞 hotspotId 会溢出，
+        // 变成一个别人的 DMR ID —— BrandMeister 会当冒用身份整帧丢弃，
+        // 表现就是「呼叫发出去了，但这个组永远没有语音下来」。
+        let src = activeSettings.dmrId
+        let peer = activeSettings.hotspotId
+        guard src > 0, src <= 0xFF_FFFF else {
+            isCalling = false
+            append(.warning, "DMR ID \(src) 不是 7 位编号，不能作为呼叫的源地址")
+            return
+        }
+
         let slot = activeSettings.callSlot == 1 ? 1 : 2
         let slotFlag: UInt8 = slot == 2 ? 0x80 : 0x00
         let stream = UInt32.random(in: 1...0xFFFF_FFFE)
         let head = DMRCallCodec.voicePayload(dst: talkgroup, src: src, isTerminator: false)
         let tail = DMRCallCodec.voicePayload(dst: talkgroup, src: src, isTerminator: true)
 
-        append(.info, "→ 呼叫 TG \(talkgroup)（TS\(slot)，静音 PTT，55 字节/帧）")
+        append(.info, "→ 呼叫 TG \(talkgroup)（TS\(slot)，DMR ID \(src) → 热点 \(peer)，静音 PTT）")
         append(.info, "BrandMeister 收到这次发射后会把它记为动态订阅，之后该组的语音就会推下来")
         pendingConfirmTalkgroup = talkgroup
+        startCallWatchdog(talkgroup)
 
         callTask?.cancel()
         callTask = Task { [weak self] in
@@ -226,27 +259,30 @@ final class HomebrewClient: ObservableObject {
             defer { self.isCalling = false }
 
             // 1. 语音头：master 认的就是这一帧，动态订阅在这一步建立
-            self.sendDmrFrame(src: src, dst: talkgroup, peer: src,
+            self.sendDmrFrame(src: src, dst: talkgroup, peer: peer,
                               flags: slotFlag | 0x20 | 0x01,
                               streamId: stream,
                               payload: head,
                               label: "DMRD 语音头 → TG \(talkgroup)")
 
-            try? await Task.sleep(nanoseconds: 120_000_000)
-            guard !Task.isCancelled else { return }
-
-            // 2. 一个静音突发：让这次呼叫像个真的 60ms PTT，不发音突有些不认
-            self.sendDmrFrame(src: src, dst: talkgroup, peer: src,
-                              flags: slotFlag,
-                              streamId: stream,
-                              payload: DMRCallCodec.silenceBurst,
-                              label: "DMRD 语音突发（静音）")
-
-            try? await Task.sleep(nanoseconds: 120_000_000)
-            guard !Task.isCancelled else { return }
+            // 2. 8 个静音突发，每 60ms 一帧（约半秒的真实 PTT）。
+            //    只发一帧有些 master 会当噪音丢掉，宁可像一次真的按键。
+            for index in 1...8 {
+                try? await Task.sleep(nanoseconds: 60_000_000)
+                if Task.isCancelled { return }
+                self.sendDmrFrame(src: src, dst: talkgroup, peer: peer,
+                                  flags: slotFlag,
+                                  streamId: stream,
+                                  payload: DMRCallCodec.silenceBurst,
+                                  label: "DMRD 语音突发 \(index)/8",
+                                  quiet: index > 1)
+            }
+            self.append(.tx, "→ 静音突发 8 帧（每 60ms 一帧）已发完")
 
             // 3. 结束符：不收尾的话服务器会把这个时隙占十几秒
-            self.sendDmrFrame(src: src, dst: talkgroup, peer: src,
+            try? await Task.sleep(nanoseconds: 60_000_000)
+            if Task.isCancelled { return }
+            self.sendDmrFrame(src: src, dst: talkgroup, peer: peer,
                               flags: slotFlag | 0x20 | 0x02,
                               streamId: stream,
                               payload: tail,
@@ -254,12 +290,28 @@ final class HomebrewClient: ObservableObject {
         }
     }
 
+    /// 呼叫之后等回音的超时。到点还没有该 TG 的帧，就把可能的原因说清楚，
+    /// 免得用户只看到「呼叫已发出」然后对着静音的扬声器发呆。
+    private func startCallWatchdog(_ talkgroup: Int) {
+        callWatchdog?.cancel()
+        callWatchdog = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 25_000_000_000)
+            guard let self, !Task.isCancelled else { return }
+            guard self.pendingConfirmTalkgroup == talkgroup else { return }
+            self.pendingConfirmTalkgroup = nil
+            self.append(.warning, "25 秒内没收到 TG \(talkgroup) 的语音：订阅可能没建立，或这个组此刻没人说话")
+            self.append(.info, "先看下一行「近期流量」：里面有这个组 = 订阅成功、只是没声音；"
+                + "只有别的组 = 订阅没生效（换 TS 或换一个正在有人讲的组，如 91 测一下）")
+        }
+    }
+
     private func sendDmrFrame(src: Int, dst: Int, peer: Int, flags: UInt8,
-                              streamId: UInt32, payload: [UInt8], label: String) {
+                              streamId: UInt32, payload: [UInt8], label: String,
+                              quiet: Bool = false) {
         dmrSeq = dmrSeq &+ 1
         let frame = HB.dmrFrame(seq: dmrSeq, src: src, dst: dst, peer: peer,
                                 flags: flags, streamId: streamId, payload: payload)
-        send(frame, label: label)
+        send(frame, label: label, quiet: quiet)
     }
 
     // MARK: - 语音偏好
@@ -277,10 +329,19 @@ final class HomebrewClient: ObservableObject {
 
     /// 续订、呼叫相关的设置在连接期间改了也要立刻生效，不必重连。
     func applyBehaviour(_ settings: Settings) {
+        let slotChanged = activeSettings.callSlot != settings.callSlot
         activeSettings.autoRenewTalkgroup = settings.autoRenewTalkgroup
         activeSettings.talkgroupRenewMinutes = settings.talkgroupRenewMinutes
         activeSettings.callSlot = settings.callSlot
         activeSettings.autoCallOnConnect = settings.autoCallOnConnect
+
+        // 时隙只在「发出去的那一刻」起作用，改完不重新呼叫等于没改。
+        // 这里顺手补一次（并绕开 3 秒节流），用户改完时隙就能直接看结果。
+        if slotChanged, state == .online, activeTalkgroup > 0, !isCalling {
+            lastCallAt = nil
+            append(.info, "时隙已改为 TS\(activeSettings.callSlot == 1 ? 1 : 2)，重新向 TG \(activeTalkgroup) 呼叫一次")
+            call(talkgroup: activeTalkgroup)
+        }
     }
 
     /// 每个语音包都会调用，所以只在值真的变了才写 @Published——
@@ -303,6 +364,11 @@ final class HomebrewClient: ObservableObject {
         sessionNaks = 0
         activeTalkgroup = settings.talkgroup
         filteredFrames = 0
+        trafficStat.removeAll()
+        trafficTotal = 0
+        trafficFiltered = 0
+        warnedNoTraffic = false
+        lastTrafficReport = Date()
         challenge = []
         usedLegacyAuth = false
         rxFrames = 0
@@ -663,7 +729,54 @@ final class HomebrewClient: ObservableObject {
         send(HB.ping(id: activeSettings.hotspotId, modern: activeSettings.modernPing),
              label: activeSettings.modernPing ? "DMRP" : "RPTPING")
 
+        reportTraffic()
         renewTalkgroupIfIdle()
+    }
+
+    /// 每 15 秒把「刚收到的帧都是哪些组」汇总成一行。
+    ///
+    /// 这一行是给排查用的：能看到服务器实际在推什么，就不用在
+    /// 「订阅没生效」和「那个组没人说话」之间瞎猜。
+    private func reportTraffic() {
+        guard trafficTotal > 0 else {
+            // 链路是活的（心跳有回），但服务器一帧语音都没推 —— 这本身就是结论：
+            // 订阅没建立，或者这一小段时间里真的没人讲话。
+            let idle = Date().timeIntervalSince(lastTrafficReport)
+            guard idle >= 30, !warnedNoTraffic else { return }
+            warnedNoTraffic = true
+            lastTrafficReport = Date()
+            append(.warning, "30 秒内没收到任何 DMRD 帧：服务器没向这个热点推流量，"
+                + "要么订阅没建立，要么这个组在这个时隙上没有活动")
+            return
+        }
+        let elapsed = Date().timeIntervalSince(lastTrafficReport)
+        guard elapsed >= 15 else { return }
+
+        // 当前组优先展示：有它没它，一眼就能判断订阅状态。
+        let target = activeTalkgroup
+        let sorted = trafficStat.sorted { $0.value > $1.value }
+        let mine = target > 0 ? sorted.filter { $0.key.hasPrefix("\(target)@") } : []
+        let rest = target > 0 ? sorted.filter { !$0.key.hasPrefix("\(target)@") } : sorted
+
+        let items = (mine + rest)
+            .prefix(4)
+            .map { entry -> String in
+                let parts = entry.key.split(separator: "@")
+                let dst = parts.first.map { String($0) } ?? entry.key
+                let slot = parts.count > 1 ? String(parts[1]) : "?"
+                let mark = (target > 0 && dst == String(target)) ? " ← 当前组" : ""
+                return "\(dst)(TS\(slot))×\(entry.value)\(mark)"
+            }
+            .joined(separator: "、")
+
+        let filtered = trafficFiltered > 0 ? "，其中 \(trafficFiltered) 帧不属于当前组已丢弃" : ""
+        append(.rx, "近期流量 \(Int(elapsed))s：\(items)，共 \(trafficTotal) 帧\(filtered)")
+
+        trafficStat.removeAll()
+        trafficTotal = 0
+        trafficFiltered = 0
+        warnedNoTraffic = false
+        lastTrafficReport = Date()
     }
 
     /// 动态 TG 的续订。
@@ -785,9 +898,18 @@ final class HomebrewClient: ObservableObject {
         lastHeard = Date()
         if case .configuring = state { goOnline() }
 
+        // 不管属于哪个组，先记一笔「服务器推了什么」，供 `reportTraffic` 汇总。
+        trafficStat["\(frame.dst)@\(frame.slot)", default: 0] += 1
+        trafficTotal += 1
+        warnedNoTraffic = false
+
         // 链路是活的，但这一帧不属于要听的 TG：计数后丢弃，不进通话列表、不进解码器。
-        guard frame.belongs(toTalkgroup: activeTalkgroup, myId: activeSettings.hotspotId) else {
+        // 单呼同时认 DMR ID 和 9 位热点 ID —— 有的 master 按热点 ID 寻址。
+        guard frame.belongs(toTalkgroup: activeTalkgroup,
+                            myId: activeSettings.dmrId,
+                            hotspotId: activeSettings.hotspotId) else {
             filteredFrames += 1
+            trafficFiltered += 1
             return
         }
 
@@ -907,11 +1029,13 @@ final class HomebrewClient: ObservableObject {
 
     // MARK: - 发送
 
-    private func send(_ data: Data, label: String) {
+    /// `quiet` 用于一次呼叫里的连续突发：帧照发、只记一次日志，
+    /// 否则半秒内十行 hexDump 会把人眼能看的日志全冲掉。
+    private func send(_ data: Data, label: String, quiet: Bool = false) {
         guard state != .offline else { return }
 
         txFrames += 1
-        append(.tx, "→ \(label)", hex: data.hexDump)
+        if !quiet { append(.tx, "→ \(label)", hex: data.hexDump) }
 
         switch activeSettings.transport {
         case .udp:
@@ -960,11 +1084,16 @@ final class HomebrewClient: ObservableObject {
         configRetryWork = nil
         callTask?.cancel()
         callTask = nil
+        callWatchdog?.cancel()
+        callWatchdog = nil
         lastCallAt = nil
         lastCallTalkgroup = nil
         isCalling = false
         pendingConfirmTalkgroup = nil
         talkgroupAliveAt = nil
+        trafficStat.removeAll()
+        trafficTotal = 0
+        trafficFiltered = 0
 
         connection?.stateUpdateHandler = nil
         connection?.cancel()
