@@ -171,6 +171,17 @@ enum HB {
 
         var isVoiceHeader: Bool { isDataSync && dataType == 1 }
         var isVoiceTerminator: Bool { isDataSync && dataType == 2 }
+
+        /// 这一帧是否属于用户选定的通话组。
+        ///
+        /// - 组呼：`dst` 就是 TG，直接比。
+        /// - 单呼：`dst` 是对方 ID，跟自己没关系；只有「发给我的」和「我发出的」才算。
+        /// - `talkgroup == 0` 时不做过滤，全部接收。
+        func belongs(toTalkgroup talkgroup: Int, myId: Int) -> Bool {
+            guard talkgroup > 0 else { return true }
+            if isPrivate { return dst == myId || src == myId }
+            return dst == talkgroup
+        }
     }
 
     static func parseDmr(_ bytes: [UInt8]) -> DmrFrame? {

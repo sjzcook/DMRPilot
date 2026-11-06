@@ -59,6 +59,11 @@ final class HomebrewClient: ObservableObject {
     @Published private(set) var lastProblem: String?
     @Published var isLoggingEnabled = true
 
+    /// 当前收听的 TG，0 = 全部。跟着设置走，但允许在热点页当场改。
+    @Published private(set) var activeTalkgroup = 0
+    /// 因为不属于当前 TG 而被跳过的帧数，用来判断「是没推下来还是被过滤了」。
+    @Published private(set) var filteredFrames = 0
+
     // 语音解码状态（驱动 UI 的电平条与统计）
     @Published private(set) var isVoicePlaying = false
     @Published private(set) var voiceLevel: Float = 0
@@ -98,6 +103,42 @@ final class HomebrewClient: ObservableObject {
         voice.volume = Float(activeSettings.audioVolume)
     }
 
+    // MARK: - 通话组
+
+    /// 启动时把设置里的 TG 同步进来。不写日志——还没连过，没必要刷屏。
+    func adoptTalkgroup(_ talkgroup: Int) {
+        activeTalkgroup = max(0, talkgroup)
+        activeSettings.talkgroup = activeTalkgroup
+    }
+
+    /// 切换收听的 TG（0 = 全部）。不需要重连：Homebrew 的推送内容由服务器决定，
+    /// 这里改的是本地播放过滤，顺手把旧 TG 还挂着的通话收尾、解码器复位。
+    func setTalkgroup(_ talkgroup: Int) {
+        let value = max(0, talkgroup)
+        guard value != activeTalkgroup else { return }
+
+        activeTalkgroup = value
+        activeSettings.talkgroup = value
+        filteredFrames = 0
+
+        // 旧组正在播的音频先掐掉；还标着「通话中」的旧组通话要手动收尾，
+        // 因为它之后的结束符会被过滤器挡掉，否则会一直挂在「正在通话」里。
+        voice.reset()
+        let now = Date()
+        for index in calls.indices where calls[index].isActive {
+            calls[index].isActive = false
+            calls[index].updatedAt = now
+        }
+        syncVoiceUI()
+
+        if value > 0 {
+            append(.info, "→ 只收听 TG \(value)")
+            append(.warning, "Homebrew 客户端无法主动改变服务器推送：该 TG 不是 SelfCare 里的 Static TG 时，语音根本不会发下来")
+        } else {
+            append(.info, "→ 收听全部通话组")
+        }
+    }
+
     // MARK: - 语音偏好
 
     /// 用户在界面上改了开关/音量时调用，需要立刻生效而不必重连
@@ -128,6 +169,8 @@ final class HomebrewClient: ObservableObject {
         activeSettings = settings
         loginAttempt = 0
         configRetries = 0
+        activeTalkgroup = settings.talkgroup
+        filteredFrames = 0
         challenge = []
         usedLegacyAuth = false
         rxFrames = 0
@@ -515,6 +558,12 @@ final class HomebrewClient: ObservableObject {
         rxFrames += 1
         lastHeard = Date()
         if case .configuring = state { goOnline() }
+
+        // 链路是活的，但这一帧不属于要听的 TG：计数后丢弃，不进通话列表、不进解码器。
+        guard frame.belongs(toTalkgroup: activeTalkgroup, myId: activeSettings.hotspotId) else {
+            filteredFrames += 1
+            return
+        }
 
         let key = "\(frame.src)-\(frame.dst)-\(frame.slot)"
         let now = Date()

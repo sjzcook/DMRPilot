@@ -103,6 +103,14 @@ struct Settings: Codable, Equatable {
     var modernPing: Bool = false
     var autoReconnect: Bool = true
 
+    /// 要收听的通话组（TG），0 表示全部。
+    ///
+    /// Homebrew 是「服务器推什么就收什么」的协议，客户端没有发射能力时无法改变
+    /// 服务器的订阅，所以这里的语义是**播放过滤**：只解码、播放、记账这个 TG 的通话，
+    /// 其余帧照样计数但不出声。BM 侧仍要保证这个 TG 是其 Static TG（SelfCare）
+    /// 或者已被别的设备动态链接过，否则服务器根本不会推下来。
+    var talkgroup: Int = 0
+
     // MARK: 语音
 
     /// 是否解码并播放收到的 DMR 语音
@@ -179,6 +187,7 @@ extension Settings {
         wsPath = try container.decodeIfPresent(String.self, forKey: .wsPath) ?? defaults.wsPath
         modernPing = try container.decodeIfPresent(Bool.self, forKey: .modernPing) ?? defaults.modernPing
         autoReconnect = try container.decodeIfPresent(Bool.self, forKey: .autoReconnect) ?? defaults.autoReconnect
+        talkgroup = try container.decodeIfPresent(Int.self, forKey: .talkgroup) ?? defaults.talkgroup
         audioEnabled = try container.decodeIfPresent(Bool.self, forKey: .audioEnabled) ?? defaults.audioEnabled
         audioVolume = try container.decodeIfPresent(Double.self, forKey: .audioVolume) ?? defaults.audioVolume
     }

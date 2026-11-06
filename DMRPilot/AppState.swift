@@ -36,6 +36,7 @@ final class AppState: ObservableObject {
 
     init() {
         settings = Self.loadSettings()
+        hotspot.adoptTalkgroup(settings.talkgroup)
     }
 
     // MARK: - 查询辅助
@@ -60,6 +61,17 @@ final class AppState: ObservableObject {
 
     func disconnect() {
         hotspot.disconnect()
+    }
+
+    // MARK: - 通话组
+
+    /// 切换收听的 TG（0 = 全部）。写进设置（会持久化），同时通知连接层立刻生效，
+    /// 不需要重连——Homebrew 的推送内容由服务器决定，这里只是本地的播放过滤。
+    func setTalkgroup(_ talkgroup: Int) {
+        let value = max(0, talkgroup)
+        guard settings.talkgroup != value else { return }
+        settings.talkgroup = value
+        hotspot.setTalkgroup(value)
     }
 
     // MARK: - 远端刷新

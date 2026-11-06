@@ -11,6 +11,8 @@ struct HotspotView: View {
     @EnvironmentObject private var app: AppState
     @EnvironmentObject private var hotspot: HomebrewClient
     @State private var showLog = false
+    @State private var talkgroupDraft = ""
+    @FocusState private var talkgroupFocused: Bool
 
     var body: some View {
         NavigationStack {
@@ -35,10 +37,15 @@ struct HotspotView: View {
                     }
                 }
 
+                talkgroupSection
                 audioSection
             }
             .listStyle(.insetGrouped)
             .navigationTitle("热点")
+            .onAppear { talkgroupDraft = draftText(for: app.settings.talkgroup) }
+            .onChange(of: app.settings.talkgroup) { newValue in
+                talkgroupDraft = draftText(for: newValue)
+            }
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
@@ -128,6 +135,95 @@ struct HotspotView: View {
             .controlSize(.large)
         }
         .padding(.vertical, 6)
+    }
+
+    // MARK: - 通话组
+
+    private var talkgroupSection: some View {
+        Section {
+            HStack(spacing: 12) {
+                Text("输入号码")
+
+                Spacer(minLength: 8)
+
+                TextField("全部", text: $talkgroupDraft)
+                    .keyboardType(.numberPad)
+                    .multilineTextAlignment(.trailing)
+                    .monospacedDigit()
+                    .focused($talkgroupFocused)
+                    .frame(maxWidth: 110)
+
+                Button("确定") { applyTalkgroup() }
+                    .buttonStyle(.borderless)
+                    .fontWeight(.semibold)
+                    .disabled(!canApplyTalkgroup)
+            }
+
+            HStack {
+                Text("正在收听")
+                Spacer()
+                Text(activeGroupText)
+                    .monospacedDigit()
+                    .foregroundStyle(hotspot.activeTalkgroup > 0 ? Color.accentColor : Color.secondary)
+            }
+
+            if draftValue > 16_777_215 {
+                Text("号码超出范围：DMR 目的地址是 24 位，最大 16777215")
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+            }
+
+            if hotspot.activeTalkgroup > 0 {
+                Button("恢复收听全部通话组") {
+                    commit(talkgroup: 0)
+                }
+                .font(.footnote)
+            }
+
+            if hotspot.filteredFrames > 0 {
+                HStack {
+                    Text("已跳过其它通话组")
+                    Spacer()
+                    Text("\(hotspot.filteredFrames) 帧")
+                        .monospacedDigit()
+                }
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("通话组")
+        } footer: {
+            Text("输入号码后点「确定」，只解码并播放这个通话组的语音；留空再点「确定」= 听全部。单呼只要发给你，照样会响。\nHomebrew 是「服务器推什么就收什么」：要听某个组，它得在 SelfCare 里是 STATIC TG（或在电台上动态呼一次），否则服务器不会把语音发下来。")
+        }
+    }
+
+    private var draftValue: Int {
+        Int(talkgroupDraft.trimmingCharacters(in: .whitespaces)) ?? 0
+    }
+
+    private var canApplyTalkgroup: Bool {
+        draftValue <= 16_777_215 && draftValue != app.settings.talkgroup
+    }
+
+    private var activeGroupText: String {
+        let talkgroup = hotspot.activeTalkgroup
+        guard talkgroup > 0 else { return "全部通话组" }
+        if let name = app.name(for: talkgroup) { return "\(name) · \(talkgroup)" }
+        return "TG \(talkgroup)"
+    }
+
+    private func draftText(for talkgroup: Int) -> String {
+        talkgroup > 0 ? "\(talkgroup)" : ""
+    }
+
+    private func applyTalkgroup() {
+        talkgroupFocused = false
+        commit(talkgroup: draftValue)
+    }
+
+    private func commit(talkgroup: Int) {
+        app.setTalkgroup(talkgroup)
+        talkgroupDraft = draftText(for: talkgroup)
     }
 
     // MARK: - 语音设置
