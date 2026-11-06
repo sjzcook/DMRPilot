@@ -404,7 +404,12 @@ final class HomebrewClient: ObservableObject {
         state = .connecting
         append(.info, "开始连接 \(settings.host):\(settings.port)（\(settings.transport.short)）")
         if settings.usesEssid {
-            append(.info, "热点 ID \(settings.hotspotId)（DMR ID \(settings.dmrId) + ESSID 后缀 \(settings.essidSuffix ?? 0)）")
+            let suffix = String(format: "%02d", settings.essidSuffix ?? 0)
+            append(.info, "登录 ID \(settings.hotspotId)（DMR ID \(settings.dmrId) + SSID \(suffix)）")
+        } else {
+            append(.warning, "没填 ESSID：将以 7 位 DMR ID \(settings.dmrId) 登录。"
+                + "BrandMeister 的热点是 9 位 ID（DMR ID + SSID，如 460123401），"
+                + "建议填 01 并与 SelfCare → My Hotspots 核对")
         }
 
         switch settings.transport {
@@ -692,6 +697,7 @@ final class HomebrewClient: ObservableObject {
         sessionNaks = 0
         append(.info, "✅ 已登录，进入在线状态，每 \(Int(pingInterval)) 秒心跳")
         startKeepAlive()
+        verifyHotspotRegistration()
 
         // 连上就向当前 TG 呼叫一次：不发的话服务器不会主动推这个组的语音，
         // 只能听到 SelfCare 里配成 Static TG 的内容。
@@ -709,6 +715,33 @@ final class HomebrewClient: ObservableObject {
     }
 
     // MARK: - 心跳
+
+    /// 上线后到 BrandMeister 设备库核对一次登录 ID。
+    ///
+    /// 「后台 My Hotspots 里看不到设备」几乎都是**登录 ID 和 SelfCare 里那台设备不一致**
+    /// （最常见的是 SSID 少 / 多了一位），而 master 并不会因此拒绝登录——
+    /// 表现就是「显示连接成功，但后台没有、语音也不来」。这里直接把核对结果写进日志。
+    private func verifyHotspotRegistration() {
+        let id = activeSettings.hotspotId
+        let host = activeSettings.host.lowercased()
+        let looksLikeBrandMeister = host.contains("brandmeister")
+
+        Task { [weak self] in
+            do {
+                let device = try await BrandMeisterAPI().device(id)
+                guard let self else { return }
+                let callsign = device.callsign ?? "未知呼号"
+                let master = device.lastKnownMaster.map { String($0) } ?? "未知"
+                self.append(.info, "BM 设备库核对：\(id) = \(callsign)，最后连过 master \(master)")
+            } catch {
+                guard let self else { return }
+                if looksLikeBrandMeister {
+                    self.append(.warning, "BM 设备库查不到 \(id)：这个 ID 不是已注册热点。"
+                        + "去 SelfCare → My Hotspots 核对 9 位 ID 与 ESSID 后缀（密码也要属于这台设备）")
+                }
+            }
+        }
+    }
 
     private func startKeepAlive() {
         keepAliveTimer?.invalidate()

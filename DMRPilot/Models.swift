@@ -176,17 +176,20 @@ struct Settings: Codable, Equatable {
 
     /// 实际登录用的热点 ID。
     ///
-    /// BrandMeister / MMDVM 的换算（DMR::set_dmr_params）：
-    ///     m_essid = dmrID * 100 + (后缀 - 1)
-    /// 即 7 位 ID 1234567 + 后缀 01 → 123456700，后缀 02 → 123456701。
-    /// 没有后缀时 master 直接把 DMR ID 当热点 ID。
+    /// BrandMeister 的 SSID 是**直接接在 DMR ID 后面两位**：
+    /// 1234567 + SSID 01 → `123456701`，SSID 02 → `123456702`（openSPOT / Pi-Star 一致）。
+    /// 换成算术就是 `DMR ID × 100 + 后缀`。
     ///
-    /// 填了 9 位热点 ID 再乘 100 会溢出 uint32、master 只会回 NAK，
-    /// 所以和参考实现一样先挡住（Int 在 64 位上不会溢出，但值是垃圾）。
+    /// 这里曾经写成 `×(100) + (后缀 − 1)`，填 01 算出来是 `…700`——比 SelfCare 里
+    /// 注册的 ID 小 1，master 收到的就是一个不存在的设备 ID：登录可能照样被接受，
+    /// 但 BM 后台「My Hotspots」里永远看不到设备，语音也不会推给这台热点。
     var hotspotId: Int {
         guard let suffix = essidSuffix, dmrId > 0, dmrId <= 42_949_672 else { return dmrId }
-        return dmrId * 100 + (suffix - 1)
+        return dmrId * 100 + suffix
     }
+
+    /// 带 SSID 的 9 位热点 ID，用于界面与日志（没有后缀时就是 DMR ID）。
+    var hotspotIdText: String { String(hotspotId) }
 
     /// 是否真的带着 ESSID 后缀登录（用于日志与界面提示）。
     var usesEssid: Bool { essidSuffix != nil }
