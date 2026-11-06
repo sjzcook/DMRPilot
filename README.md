@@ -313,6 +313,28 @@ App                          Master
 
 `HomebrewFrames.parseDmr` 统一按 4 字节 streamId / 偏移 20 解析，53 与 55 字节都能吃下。
 
+### 色码（CC）要不要填
+
+**连接不需要色码，接收也不需要。** 这是 Homebrew 协议本身决定的，跟「有没有配对」没有关系：
+
+| 环节 | 有没有色码 |
+|---|---|
+| `RPTL` / `RPTK` / `RPTACK` / `RPTPING` / `DMRP` | **没有**，这些帧里根本没有 CC 字段 |
+| `DMRD` 帧头（0–19 字节） | **没有**，只有源 / 目的 / peer / flags / streamId |
+| 接收判定 | **没有**，DroidStar 的 `process_udp()` 只判 `长度 55 && "DMRD" && flags & 0x20 && status == CONNECTED_RW` |
+| `RPTC` 配置包 | 有一个 `%02u` 字段，MMDVM 与 DroidStar 都**写死 `1`**，只是设备资料，不参与鉴权 |
+| 我们发出的 33 字节载荷 | slot type 高 4 位（语音头 / 结束符）、嵌入信令 `DMREMB` 高 4 位 |
+
+也就是说，CC 只是「空口上这一句语音属于哪个色码」，主要写给**收听方的电台**看：
+对方的电台设了 CC 过滤，CC 不一致就会把这段语音当噪音静音掉。BrandMeister 侧既不校验、
+也不按 CC 分发，所以它不会导致 `MSTNAK` / `MSTCL`，跟掉线、收不到语音都没有关系。
+
+- 默认 `1`：BrandMeister 上绝大多数中继和热点用 CC1，跟着用就行。
+- 只有明确知道目标中继用别的色码时才改（设置 → 行为 → 色码 CC，0…15）。
+- 改完会像改时隙一样**自动重新呼叫一次**，因为 CC 只体现在发出去的那几帧里。
+- 参考实现 DroidStar 更能说明问题：它界面上有 CC 下拉，但那个值只喂给 MMDVM 硬件（`serialmodem.cpp`），
+  网络路径里 `m_txcc` 从头到尾没被用过，`m_modeinfo.cc` 也没赋值——它对 BrandMeister 的 CC 完全不敏感。
+
 ### 心跳两套
 
 设置里「新版心跳 DMRP」：

@@ -249,10 +249,14 @@ final class HomebrewClient: ObservableObject {
         let slot = activeSettings.callSlot == 1 ? 1 : 2
         let slotFlag: UInt8 = slot == 2 ? 0x80 : 0x00
         let stream = UInt32.random(in: 1...0xFFFF_FFFE)
-        let head = DMRCallCodec.voicePayload(dst: talkgroup, src: src, isTerminator: false)
-        let tail = DMRCallCodec.voicePayload(dst: talkgroup, src: src, isTerminator: true)
+        // 色码只写进语音载荷（slot type 与 DMREMB），握手和收帧都不用它。
+        let cc = min(15, max(0, activeSettings.colorCode))
+        let head = DMRCallCodec.voicePayload(dst: talkgroup, src: src, isTerminator: false,
+                                             colorCode: UInt8(cc))
+        let tail = DMRCallCodec.voicePayload(dst: talkgroup, src: src, isTerminator: true,
+                                             colorCode: UInt8(cc))
 
-        append(.info, "→ 呼叫 TG \(talkgroup)（TS\(slot)，DMR ID \(src) → 热点 \(peer)，静音 PTT）")
+        append(.info, "→ 呼叫 TG \(talkgroup)（TS\(slot)，CC\(cc)，DMR ID \(src) → 热点 \(peer)，静音 PTT）")
         append(.info, "BrandMeister 收到这次发射后会把它记为动态订阅，之后该组的语音就会推下来")
         pendingConfirmTalkgroup = talkgroup
         startCallWatchdog(talkgroup)
@@ -280,7 +284,7 @@ final class HomebrewClient: ObservableObject {
                 self.sendDmrFrame(src: src, dst: talkgroup, peer: peer,
                                   flags: slotFlag | (n == 0 ? 0x10 : UInt8(n)),
                                   streamId: stream,
-                                  payload: DMRCallCodec.silenceBurst(index: index),
+                                  payload: DMRCallCodec.silenceBurst(index: index, colorCode: cc),
                                   label: "DMRD 语音突发 \(index + 1)/8",
                                   quiet: index > 0)
             }
@@ -337,16 +341,19 @@ final class HomebrewClient: ObservableObject {
     /// 续订、呼叫相关的设置在连接期间改了也要立刻生效，不必重连。
     func applyBehaviour(_ settings: Settings) {
         let slotChanged = activeSettings.callSlot != settings.callSlot
+        let ccChanged = activeSettings.colorCode != settings.colorCode
         activeSettings.autoRenewTalkgroup = settings.autoRenewTalkgroup
         activeSettings.talkgroupRenewMinutes = settings.talkgroupRenewMinutes
         activeSettings.callSlot = settings.callSlot
+        activeSettings.colorCode = settings.colorCode
         activeSettings.autoCallOnConnect = settings.autoCallOnConnect
 
-        // 时隙只在「发出去的那一刻」起作用，改完不重新呼叫等于没改。
-        // 这里顺手补一次（并绕开 3 秒节流），用户改完时隙就能直接看结果。
-        if slotChanged, state == .online, activeTalkgroup > 0, !isCalling {
+        // 时隙和色码都只体现在「发出去的那几帧」里，改完不重新呼叫等于没改。
+        // 这里顺手补一次（并绕开 3 秒节流），用户改完就能直接看结果。
+        if (slotChanged || ccChanged), state == .online, activeTalkgroup > 0, !isCalling {
             lastCallAt = nil
-            append(.info, "时隙已改为 TS\(activeSettings.callSlot == 1 ? 1 : 2)，重新向 TG \(activeTalkgroup) 呼叫一次")
+            let cc = min(15, max(0, activeSettings.colorCode))
+            append(.info, "发射参数改为 TS\(activeSettings.callSlot == 1 ? 1 : 2) / CC\(cc)，重新向 TG \(activeTalkgroup) 呼叫一次")
             call(talkgroup: activeTalkgroup)
         }
     }
@@ -659,7 +666,9 @@ final class HomebrewClient: ObservableObject {
 
         case .configuring:
             let callsign = activeSettings.normalizedCallsign
-            let packet = HB.config(id: activeSettings.hotspotId, callsign: callsign)
+            let packet = HB.config(id: activeSettings.hotspotId,
+                                   callsign: callsign,
+                                   colorCode: min(15, max(0, activeSettings.colorCode)))
             append(.error, "最后一次上报的 RPTC（\(packet.count) 字节），可对照官方字段表：")
             append(.error, "RPTC 内容", hex: packet.hexDump)
             append(.error, "排查顺序：① 同一个热点 ID 是否还被别的设备连着（手机 MMDVM、盒子、旧会话）② SelfCare 里这个 ID 是否启用 ③ 呼号是否与登记一致")
@@ -980,7 +989,9 @@ final class HomebrewClient: ObservableObject {
                 state = .configuring
                 configProbed = false
                 let callsign = activeSettings.normalizedCallsign
-                let packet = HB.config(id: activeSettings.hotspotId, callsign: callsign)
+                let packet = HB.config(id: activeSettings.hotspotId,
+                                       callsign: callsign,
+                                       colorCode: min(15, max(0, activeSettings.colorCode)))
                 append(.info, "← RPTACK 鉴权通过，→ RPTC 上报配置（\(packet.count) 字节，呼号「\(callsign)」）")
                 send(packet, label: "RPTC")
                 armLoginTimeout()

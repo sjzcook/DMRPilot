@@ -129,6 +129,23 @@ struct Settings: Codable, Equatable {
 
     /// 呼叫时用的时隙。BrandMeister 上大部分中文 TG 挂在 TS2，个别老组在 TS1。
     var callSlot: Int = 2
+
+    /// 色码（Color Code，0…15），只影响**我们发出去的语音帧**，不影响连接与接收。
+    ///
+    /// Homebrew 的握手（`RPTL` / `RPTK` / `RPTACK` / `RPTPING` / `DMRD` 头）里
+    /// 根本没有色码字段——参考实现 DroidStar 从头到尾没有拿它做过校验：
+    /// `process_udp()` 只判断 `buf.size() == 55 && "DMRD" && flags & 0x20 && status == CONNECTED_RW`。
+    /// 它只出现在两个地方：
+    ///
+    /// 1. `RPTC` 配置包的第 4 个字段（`%02u`，MMDVM / DroidStar 都写死 `1`），
+    ///    对 master 而言只是「这台设备的资料」，不参与鉴权、也不做流量过滤；
+    /// 2. 我们发出去的 33 字节语音载荷里——语音头/结束符的 slot type 高 4 位，
+    ///    以及每个超帧第 1…5 个突发的嵌入信令 `DMREMB` 高 4 位。
+    ///
+    /// 所以它只在「别人用固定 CC 的电台听我们」时才有意义：对端设了 CC 过滤、
+    /// 而我们的 CC 不同，就会把我们当成噪音静音掉。BrandMeister 上绝大多数中继
+    /// 与热点用 CC1，保持默认 1 即可。
+    var colorCode: Int = 1
     /// 连上之后自动向当前 TG 发一次呼叫，让服务器把它标成动态订阅。
     ///
     /// Homebrew 没有订阅指令，只能靠「发一次 PTT」让 master 认这个组；
@@ -233,6 +250,7 @@ extension Settings {
         autoReconnect = try container.decodeIfPresent(Bool.self, forKey: .autoReconnect) ?? defaults.autoReconnect
         talkgroup = try container.decodeIfPresent(Int.self, forKey: .talkgroup) ?? defaults.talkgroup
         callSlot = try container.decodeIfPresent(Int.self, forKey: .callSlot) ?? defaults.callSlot
+        colorCode = min(15, max(0, try container.decodeIfPresent(Int.self, forKey: .colorCode) ?? defaults.colorCode))
         autoCallOnConnect = try container.decodeIfPresent(Bool.self, forKey: .autoCallOnConnect) ?? defaults.autoCallOnConnect
         autoRenewTalkgroup = try container.decodeIfPresent(Bool.self, forKey: .autoRenewTalkgroup) ?? defaults.autoRenewTalkgroup
         talkgroupRenewMinutes = try container.decodeIfPresent(Int.self, forKey: .talkgroupRenewMinutes) ?? defaults.talkgroupRenewMinutes
