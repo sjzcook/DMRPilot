@@ -238,16 +238,38 @@ enum DMRCallCodec {
         return out
     }
 
-    /// 一个完整的静音语音突发（33 字节）。
+    /// 一个静音语音突发（33 字节），按突发序号决定该放「同步字」还是「嵌入信令」。
     ///
-    /// 底料是 MMDVMHost 的 `DMR_SILENCE_DATA`，但它**不含同步字**（第 13…19 字节是
-    /// `60 00 00 00 00 00 01` 这类残值），必须按掩码补上 MS 音频同步字，
-    /// 否则对端认不出这是一个语音突发。
-    static func silenceBurst(index: Int = 0) -> [UInt8] {
+    /// 底料是 MMDVMHost 的 `DMR_SILENCE_DATA`，它**不含同步字**（第 13…19 字节是
+    /// `60 00 00 00 00 00 01` 这类残值）。DMR 把一个超帧拆成 6 个突发：
+    ///
+    ///     n = (m_dmrcnt − 1) % 6
+    ///     n == 0 → 这 7 个字节放音频同步字（flags 低 4 位 0x10）
+    ///     n != 0 → 放嵌入信令 DMREMB（色码 + LCSS），flags 低 4 位就是 n
+    ///
+    /// 对应 DroidStar 的 `encode_data()` / `get_emb_data()`。之前这里不看序号，
+    /// 一律写同步字：对端会在不该有同步的位置读到同步，整段语音解不出来。
+    static func silenceBurst(index: Int, colorCode: Int = 1) -> [UInt8] {
         var out = rawSilence
-        for i in 0..<7 {
-            out[13 + i] = (out[13 + i] & ~syncMask[i]) | audioSync[i]
+        let n = ((index % 6) + 6) % 6
+
+        if n == 0 {
+            for i in 0..<7 {
+                out[13 + i] = (out[13 + i] & ~syncMask[i]) | audioSync[i]
+            }
+            return out
         }
+
+        // DMREMB[0] = 色码 << 4 | LCSS << 1，DMREMB[1] = 0（静音，没有嵌入 LC）
+        let emb0 = UInt8((colorCode << 4) & 0xF0)
+        let emb1: UInt8 = 0x00
+        out[13] = (out[13] & 0xF0) | ((emb0 >> 4) & 0x0F)
+        out[14] = (out[14] & 0x0F) | ((emb0 << 4) & 0xF0)
+        out[15] = 0x00
+        out[16] = 0x00
+        out[17] = 0x00
+        out[18] = (out[18] & 0xF0) | ((emb1 >> 4) & 0x0F)
+        out[19] = (out[19] & 0x0F) | ((emb1 << 4) & 0xF0)
         return out
     }
 

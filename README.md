@@ -111,8 +111,11 @@ python tools/gen_icon.py
 同一个 DMR ID 下要挂多个热点（或多台设备共用一个 ID），靠 ESSID 后缀区分。
 位置：**设置 → 服务器 → ESSID 后缀**。
 
-- **BrandMeister 的热点是 9 位 ID：DMR ID 后面直接接两位 SSID。** DMR ID `4601234` + SSID `01`
-  → `460123401`，SSID `02` → `460123402`。换算就是 `DMR ID × 100 + 后缀`。
+- **BrandMeister 的热点是 9 位 ID：7 位 Radio ID 后面追加两位别名。** 官方 openSPOT 说明的
+  原话就是「填 7 位 Radio ID，需要第二台热点就在后面追加两位」。所以 DMR ID `4601234` + 别名 `01`
+  → `460123401`，别名 `02` → `460123402`，换算就是 `DMR ID × 100 + 后缀`。
+- **不想算就直接填 9 位**：设置 → 服务器 →「自定义热点 ID」，把 SelfCare → My Hotspots 里
+  显示的那串数字原样贴进去，它优先于后缀换算。这是最不容易出错的方式。
 - `0`（默认）：不上报后缀，直接用 7 位 DMR ID 登录。多数 BrandMeister master **不认**这种登录——
   密码校验可能照样通过，但后台「My Hotspots」里不会出现这台设备，也不会给它推任何语音。
   除非你确实是在连自建 HBLink / 私服，否则**至少填 `01`**。
@@ -120,7 +123,9 @@ python tools/gen_icon.py
   日志里会打 `登录 ID 460123401（DMR ID 4601234 + SSID 01）`。
 - 这个 9 位 ID 必须和 SelfCare → My Hotspots 里显示的完全一致。**差一位的典型症状**：
   App 显示「已登录」、后台却看不到设备、收不到任何语音。
-  （早期版本把后缀算成 `×(100) + (后缀 − 1)`，填 `01` 得到 `…400`，正好会命中这个症状。）
+  （早期版本照抄 DroidStar 的 `×(100) + (后缀 − 1)`，填 `01` 得到 `…400`——一个 SelfCare 里
+  不存在的别名。master 收得下密码，却在配置阶段直接回 `MSTCL` 把会话关掉，
+  表现就是「刚连上就被服务器断开」。）
 - `RPTL` / `RPTK` / `RPTC` / `RPTPING` 四个帧里的 4 字节 ID 用的都是这个热点 ID，
   这也是 master 认设备、判断「同一 ID 重复登录」的依据。
 - DMR ID 必须填 7 位。填成 9 位热点 ID 再乘 100 会溢出 32 位，master 只会回 `MSTNAK`，
@@ -194,8 +199,11 @@ python tools/gen_icon.py
   等于告诉对端「这是中继台发的」，对端按 BS 解调会拿到坏 LC，这次呼叫在别人耳朵里根本不存在。
   静音语音突发同理，`DMR_SILENCE_DATA` 里不带同步字，必须按 `SYNC_MASK` 补
   `MS_SOURCED_AUDIO_SYNC`（`07 F7 D5 DD 57 DF D0`），否则对端认不出这是语音帧。
-- 语音突发的 `flags` 低 4 位带突发序号 `0…5`（对应 DroidStar 的 `(m_dmrcnt - 1) % 6`），
-  不是一律填 0。
+- **只有每个超帧的第 0 个突发带音频同步字**：`n = (计数 − 1) % 6`，`n == 0` 时第 13…19 字节
+  写 `MS_SOURCED_AUDIO_SYNC`、`flags` 低 4 位 `0x10`；`n = 1…5` 时同样这 7 个字节要放
+  嵌入信令 `DMREMB`（色码 + LCSS，静音时 LCSS = 0），`flags` 低 4 位就是 `n`。
+  对应 DroidStar 的 `encode_data()` / `get_emb_data()`。全都写同步字是错的——对端会在
+  不该出现同步的位置读到同步，整段解调失败。
 - 有人正在通话时**不会**插播：插一个语音头进去会把这一句打断，所以这时跳过并写一行日志。
 - 同一个组 3 秒内重复点「确定」会被节流拦住；换别的组立刻能发。
 - 呼叫帧的源地址是 **7 位 DMR ID**（`settings.dmrId`），不是 9 位热点 ID：
@@ -237,8 +245,8 @@ App                          Master
  |◀────────────  RPTACK (+盐) ──|  10 字节，后 4 字节是挑战盐
  |── RPTK  (+id + SHA256(盐‖密码)) ─▶|  40 字节
  |◀────────────  RPTACK ────────|
- |── RPTC  (302B 配置块) ──────▶|   默认**不发**，仅「上报配置包 RPTC」打开时
- |◀────────────  RPTACK/MSTACK ─|   收到才继续；不发就直接进入在线状态
+ |── RPTC  (302B 配置块) ──────▶|   默认就发（与 DroidStar 一致）
+ |◀────────────  RPTACK/MSTACK ─|   第三个 RPTACK 才算 CONNECTED_RW，之后才收 DMRD
  |── RPTPING (+id) ────────────▶|   每 5 秒
  |◀────────────  MSTPONG ───────|
  |◀────────────  DMRD ...  ─────|   语音/信令数据帧
@@ -247,16 +255,17 @@ App                          Master
 - **RPTK 必须做挑战应答**：密码不能直接发，要 `SHA256(RPTACK 里那 4 字节盐 ‖ 密码 UTF-8)`，共 40 字节。
   发明文 20 字节（旧版 28 字节帧）BrandMeister 一律回 `MSTNAK`——这是最容易踩的坑。
   老 HBlink / 部分自建网关只认明文，所以标准鉴权被拒后客户端会自动用明文再试一次，日志里会写明「兼容模式」。
-- **RPTC 默认不发**（设置里「上报配置包 RPTC（实验性）」默认关闭）。
-  参考实现 DroidStar 的 `dmr.cpp` 里**根本没有 RPTC**：握手只有两段
-  （`RPTL → RPTACK(盐) → RPTK → RPTACK → CONNECTED_RW`），拿到第二个 RPTACK 就直接收发。
-  `RPTC` 是 MMDVMHost 这类硬件热点用来往 SelfCare 页面喂设备资料的，
-  BrandMeister 对格式对不上的配置包会直接回 **`MSTCL` 把整条会话关掉**——
-  现象就是「刚显示已登录，紧接着被踢下线」。所以默认不发，别为了「让后台显示设备」去打开它：
-  设备能不能出现在 My Hotspots，取决于这串 9 位 ID 是否在 SelfCare 存在，不取决于这个包。
-  真要发时它是定长 302 字节：`RPTC(4) + id(4, 二进制) + 294`，字段表见
+- **RPTC 默认就发**，与参考实现 DroidStar 完全一致。它的 `DMR::process_udp` 是三段状态机：
+  `CONNECTING → DMR_AUTH → DMR_CONF → setup_connection()`，只有收到**第三个** `RPTACK`
+  （RPTC 的应答）才切到 `CONNECTED_RW`，在那之前收到的 `DMRD` 一律不处理。
+  > 注意 DroidStar 的 RPTC 是**逐字节拼**的（`out.append('R'); …`），
+  > 直接用 `grep RPTC` 搜是搜不到的——之前就是因为这个才误判成「它不发配置包」。
+
+  帧本身是定长 302 字节：`RPTC(4) + id(4, 二进制) + 294`，字段表见
   [BrandMeister Homebrew 规范](https://wiki.brandmeister.network/index.php/Homebrew_repeater_protocol/Spec)，
   数字字段要零补齐（`%02u` → `"01"`），尾部必须用空格 `0x20` 而不是 NUL 补齐。
+  万一服务器拒收（回 `MSTCL` 直接关会话），客户端会记下「本次不再发」，2 秒后按两段握手重连，
+  不需要用户自己去关开关。
 - `MSTNAK` 在这套协议里有两种含义，客户端靠「探针」区分：发一个 `RPTPING`，
   回 `MSTPONG` 说明链路是活的（只是不收 RPTC），直接上线；回 `MSTNAK` 说明会话已被清，
   按规范整轮重登（重发同一个包没用），最多两次。
@@ -268,6 +277,10 @@ App                          Master
   配置阶段被关 → 判定 RPTC 不被接受，本次自动改为不发配置包、2 秒后重连；
   在线被关 → 3 秒后重登，连续 2 次就停下并提示「这个 ID 正被另一台设备使用」；
   登录阶段被关 → 8 秒后重试（给服务器时间释放上一个会话），2 次后停下并提示核对 9 位 ID。
+  最常见的原因其实是**登录 ID 不存在**（例如别名填成了 `00`）：master 照样接受 `RPTK`，
+  到配置阶段才把整个会话关掉，所以日志里会看到「已鉴权 → 立刻 MSTCL」。
+- **收帧只在 `online` 状态处理**（DroidStar 的 `status == CONNECTED_RW` 判断）：
+  没走完握手时收到的 `DMRD` 只计数不播放，避免「界面显示未连接却在放音」。
 - 超时：15 秒收不到任何服务器数据包视为掉线，按设置里的开关决定是否 6 秒后自动重连。
 
 ### DMRD 帧布局
@@ -333,14 +346,15 @@ App                          Master
 
 **显示「已登录」，但 BrandMeister 后台 My Hotspots 里看不到设备**
 
-这是「登录 ID 不对」的典型表现，master 只在 `RPTK` 阶段校验密码，不会因为 ID 不存在而断开，
-所以 App 会一直显示在线。三种可能，按顺序排除：
+这是「登录 ID 不对」的典型表现：master 只在 `RPTK` 阶段校验密码，密码对了就往下走，
+到配置阶段发现这个 9 位 ID 不存在，才会回 `MSTCL` 把会话关掉。按顺序排除：
 
 | 现象（看日志） | 原因 | 处理 |
 |---|---|---|
-| 有 `没填 ESSID：将以 7 位 DMR ID … 登录` | BrandMeister 的热点是 **9 位** ID | 设置 → 服务器 → ESSID 后缀填 `01`（或 SelfCare 里那台的后缀） |
-| `登录 ID 460123400`，SelfCare 里是 `460123401` | 老版本把 SSID 算成「后缀 − 1」 | 升级到修正版，填 `01` 得到 `…401` |
-| `BM 设备库查不到 460123401` | 这个 ID 在 BM 上没有设备 | 去 SelfCare 看 My Hotspots 里的实际编号，或在 Hotspot Security 里重设密码后再连 |
+| 有 `没填 ESSID：将以 7 位 DMR ID … 登录` | BrandMeister 的热点是 **9 位** ID | 设置 → 服务器 → ESSID 后缀填 `01` |
+| `登录 ID 460123400`，SelfCare 里是 `460123401` | 老版本照抄 DroidStar 的「后缀 − 1」 | 升级到修正版；仍对不上就把 9 位数字填进「自定义热点 ID」 |
+| 鉴权通过后立刻 `MSTCL` | 别名不存在 / 那台设备没在 SelfCare 注册 | 同上，用「自定义热点 ID」直接填 SelfCare 里显示的号码 |
+| `BM 设备库查不到 460123401` | 这个 ID 在 BM 上没有设备 | 核对 SelfCare → My Hotspots，或在 Hotspot Security 重设密码后再连 |
 | `BM 设备库核对：460123401 = 你的呼号` | ID 是对的，设备在线 | 后台刷新一下；语音要靠下面那条「订阅通话组」 |
 
 **连上了但一直没通话**

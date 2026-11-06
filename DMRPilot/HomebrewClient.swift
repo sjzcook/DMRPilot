@@ -271,17 +271,18 @@ final class HomebrewClient: ObservableObject {
 
             // 2. 8 个静音突发，每 60ms 一帧（约半秒的真实 PTT）。
             //    只发一帧有些 master 会当噪音丢掉，宁可像一次真的按键。
-            //    flags 低 4 位带突发序号 0…5，与 DroidStar 的 `(m_dmrcnt - 1) % 6` 一致。
-            for index in 1...8 {
+            //    flags 低 4 位与载荷要和 DroidStar 的 `encode_data()` 对齐：
+            //    每 6 个突发是一个超帧，第 0 个带音频同步字（0x10），其余是 1…5。
+            for index in 0..<8 {
                 try? await Task.sleep(nanoseconds: 60_000_000)
                 if Task.isCancelled { return }
-                let burst = UInt8((index - 1) % 6)
+                let n = index % 6
                 self.sendDmrFrame(src: src, dst: talkgroup, peer: peer,
-                                  flags: slotFlag | burst,
+                                  flags: slotFlag | (n == 0 ? 0x10 : UInt8(n)),
                                   streamId: stream,
-                                  payload: DMRCallCodec.silenceBurst(index: index - 1),
-                                  label: "DMRD 语音突发 \(index)/8",
-                                  quiet: index > 1)
+                                  payload: DMRCallCodec.silenceBurst(index: index),
+                                  label: "DMRD 语音突发 \(index + 1)/8",
+                                  quiet: index > 0)
             }
             self.append(.tx, "→ 静音突发 8 帧（每 60ms 一帧）已发完")
 
@@ -423,9 +424,11 @@ final class HomebrewClient: ObservableObject {
 
         state = .connecting
         append(.info, "开始连接 \(settings.host):\(settings.port)（\(settings.transport.short)）")
-        if settings.usesEssid {
+        if settings.hotspotIdOverride > 0 {
+            append(.info, "登录 ID \(settings.hotspotId)（设置里直接指定，忽略 ESSID 换算）")
+        } else if settings.usesEssid {
             let suffix = String(format: "%02d", settings.essidSuffix ?? 0)
-            append(.info, "登录 ID \(settings.hotspotId)（DMR ID \(settings.dmrId) + SSID \(suffix)）")
+            append(.info, "登录 ID \(settings.hotspotId)（DMR ID \(settings.dmrId) + 两位别名 \(suffix)）")
         } else {
             append(.warning, "没填 ESSID：将以 7 位 DMR ID \(settings.dmrId) 登录。"
                 + "BrandMeister 的热点是 9 位 ID（DMR ID + SSID，如 460123401），"
@@ -831,7 +834,8 @@ final class HomebrewClient: ObservableObject {
                 guard let self else { return }
                 if looksLikeBrandMeister {
                     self.append(.warning, "BM 设备库查不到 \(id)：这个 ID 不是已注册热点。"
-                        + "去 SelfCare → My Hotspots 核对 9 位 ID 与 ESSID 后缀（密码也要属于这台设备）")
+                        + "去 SelfCare → My Hotspots 看一眼真实的 9 位号码，"
+                        + "直接填进设置 → 服务器 →「自定义热点 ID」最稳（比调后缀少绕一圈）")
                 }
             }
         }
@@ -1030,7 +1034,16 @@ final class HomebrewClient: ObservableObject {
 
         rxFrames += 1
         lastHeard = Date()
-        if case .configuring = state { goOnline() }
+
+        // DroidStar 只在 `CONNECTED_RW` 之后才处理 DMRD（`m_modeinfo.status` 判断）。
+        // 这里同样要求「已在线」：还在握手、或已经掉线时收到的语音帧一律不计入、
+        // 不播放，避免出现「界面显示未连接却在放音」这种自相矛盾的状态。
+        if case .configuring = state {
+            // 反过来的兜底：能收到语音说明链路早通了，只是第三个 RPTACK 没等到。
+            append(.info, "← 收到语音时握手还没走完，按已连接处理")
+            goOnline()
+        }
+        guard state == .online else { return }
 
         // 不管属于哪个组，先记一笔「服务器推了什么」，供 `reportTraffic` 汇总。
         trafficStat["\(frame.dst)@\(frame.slot)", default: 0] += 1

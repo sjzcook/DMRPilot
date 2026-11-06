@@ -107,7 +107,7 @@ struct HotspotView: View {
             }
 
             HStack(spacing: 0) {
-                Metric(title: app.settings.usesEssid ? "热点 ID" : "DMR ID",
+                Metric(title: (app.settings.usesEssid || app.settings.hotspotIdOverride > 0) ? "热点 ID" : "DMR ID",
                        value: app.settings.dmrId > 0 ? "\(app.settings.hotspotId)" : "未设置")
                 Divider().frame(height: 30)
                 Metric(title: "传输", value: app.settings.transport.short)

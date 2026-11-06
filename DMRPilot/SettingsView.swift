@@ -81,7 +81,16 @@ struct SettingsView: View {
                     .labelsHidden()
             }
 
-            if app.settings.usesEssid {
+            HStack {
+                Text("自定义热点 ID")
+                Spacer()
+                TextField("可空", text: hotspotOverrideBinding)
+                    .keyboardType(.numberPad)
+                    .multilineTextAlignment(.trailing)
+                    .frame(maxWidth: 120)
+            }
+
+            if app.settings.usesEssid || app.settings.hotspotIdOverride > 0 {
                 HStack {
                     Text("登录热点 ID")
                     Spacer()
@@ -113,7 +122,7 @@ struct SettingsView: View {
         } header: {
             Text("服务器")
         } footer: {
-            Text("服务器表来自 ds.vu3lvo.com/DMRHosts.txt（Pi-Star 格式），选中后自动填好域名和端口，也可以切到「自定义服务器」手填。\nESSID 后缀按参考实现 DroidStar 的规则换算：登录 ID = DMR ID × 100 + (后缀 − 1)，所以后缀 1 → …00、后缀 2 → …01。上面那行「登录热点 ID」就是要发给服务器的 9 位号码，请和 SelfCare → My Hotspots 里显示的数字逐位对照，不一致就调后缀。留 0 表示直接用 7 位 DMR ID 登录（BrandMeister 不认，会收不到任何语音）。\nBrandMeister 热点标准走 UDP 62031 + 传统心跳 RPTPING。\n「上报配置包 RPTC」默认关闭：参考实现 DroidStar 的握手只有 RPTL → RPTK → 两个 RPTACK，拿到第二个就进入收发状态，全程没有 RPTC。BrandMeister 对格式不合的 302 字节配置包会直接回 MSTCL 关掉会话（现象：连上的一瞬间被踢下线），所以这里默认不发；只有自建 HBLink 或需要在后台登记设备资料时才打开。\n新版心跳 DMRP 对应 MMDVMHost 2024 之后的 55 字节帧，只有服务器明确要求时才打开。\nWebSocket 走 wss，仅部分自建 HBLink 或网关支持。")
+            Text("服务器表来自 ds.vu3lvo.com/DMRHosts.txt（Pi-Star 格式），选中后自动填好域名和端口，也可以切到「自定义服务器」手填。\nBrandMeister 的热点是 9 位：7 位 Radio ID 后面追加两位别名，所以登录 ID = DMR ID × 100 + 后缀（DMR ID 4601234 + 后缀 01 → 460123401）。上面那行「登录热点 ID」就是要发给服务器的号码，请和 SelfCare → My Hotspots 里显示的数字逐位对照。不想算就把那串 9 位数字直接填进「自定义热点 ID」，它优先于后缀换算。后缀留 0 表示用 7 位 DMR ID 直接登录（BrandMeister 不认，收不到任何语音）。\nBrandMeister 热点标准走 UDP 62031 + 传统心跳 RPTPING。\n「上报配置包 RPTC」默认打开，与参考实现 DroidStar 一致：它的握手是 RPTL → RPTK → RPTC → 第三个 RPTACK 才算进入收发状态。万一服务器不接受这个包（回 MSTCL 直接关会话），客户端会自动改成不发并重连一次，不用手动关。\n新版心跳 DMRP 对应 MMDVMHost 2024 之后的 55 字节帧，只有服务器明确要求时才打开。\nWebSocket 走 wss，仅部分自建 HBLink 或网关支持。")
         }
     }
 
@@ -222,6 +231,17 @@ struct SettingsView: View {
         Binding(
             get: { String(app.settings.essid) },
             set: { app.settings.essid = min(99, max(0, Int($0.filter(\.isNumber)) ?? 0)) }
+        )
+    }
+
+    /// 自定义 9 位热点 ID：留空（0）就按 ESSID 换算。
+    private var hotspotOverrideBinding: Binding<String> {
+        Binding(
+            get: { app.settings.hotspotIdOverride > 0 ? String(app.settings.hotspotIdOverride) : "" },
+            set: {
+                let digits = String($0.filter(\.isNumber).prefix(9))
+                app.settings.hotspotIdOverride = Int(digits) ?? 0
+            }
         )
     }
 }

@@ -88,6 +88,9 @@ struct Settings: Codable, Equatable {
     /// ESSID 后缀 0…99。0 = 不上报后缀，直接用 DMR ID 当热点 ID；
     /// 1…99 时按 BrandMeister 的规则换算成 9 位热点 ID，见 `hotspotId`。
     var essid: Int = 0
+    /// 直接指定 9 位热点 ID（SelfCare → My Hotspots 里显示的那串数字）。
+    /// 非 0 时优先于 ESSID 换算，用来绕开「别名到底从 0 还是 1 开始」这种猜谜。
+    var hotspotIdOverride: Int = 0
     /// BrandMeister 自助页 → Hotspot Security 里设置的密码
     var password: String = ""
     /// 从 DMRHosts.txt 选中的服务器名字（如 BM_4602_China）；空字符串表示自定义域名。
@@ -103,19 +106,17 @@ struct Settings: Codable, Equatable {
     var modernPing: Bool = false
     /// 登录成功后是否上报 `RPTC` 配置包（302 字节：呼号 / 频率 / 位置 / 软件名）。
     ///
-    /// 默认**关闭**。参考实现 DroidStar 的 `DMR::process_udp` 里根本没有 RPTC：
-    /// 它的握手只有两段
+    /// 默认**打开**，与参考实现 DroidStar 一致：它的 `DMR::process_udp` 是三段状态机
     ///
-    ///     RPTL → RPTACK(盐) → RPTK → RPTACK → CONNECTED_RW
+    ///     RPTL → RPTACK(盐) → RPTK → RPTACK → RPTC → RPTACK → setup_connection()
     ///
-    /// 拿到第二个 RPTACK 就直接进入收发状态，`RPTC` 只在 MMDVMHost 这类「硬件热点」
-    /// 上出现，用来把设备资料喂给 SelfCare 页面。BrandMeister 对格式不合规的配置包
-    /// 会直接 `MSTCL` 关掉整条会话——表现就是「连上的一瞬间被踢下线」。
+    /// 只有走完第三段（RPTC 的应答）才切到 `CONNECTED_RW`，那之前收到的 `DMRD`
+    /// 一律不处理。注意 DroidStar 的 RPTC 是逐字节拼的（`out.append('R')…`），
+    /// 所以按字符串搜 "RPTC" 是搜不到的。
     ///
-    /// 这里换了一个新 key（原来叫 `skipConfig` / 更早叫 `reportConfig`），
-    /// 老存档里的值一律忽略，升级后默认回到「不发配置包」的可靠流程。
-    /// 只有自建 HBLink / 需要在后台登记资料时才手动打开。
-    var sendConfig: Bool = false
+    /// 万一服务器不接受这个包（回 `MSTCL` 关会话），客户端会自动改成不发并重连一次，
+    /// 不需要用户自己去关开关。
+    var sendConfig: Bool = true
     var autoReconnect: Bool = true
 
     /// 要收听的通话组（TG），0 表示全部。
@@ -185,17 +186,21 @@ struct Settings: Codable, Equatable {
 
     /// 实际登录用的热点 ID。
     ///
-    /// 与参考实现 DroidStar `DMR::set_dmr_params` 完全一致：
+    /// BrandMeister 官方文档（openSPOT 配置页）说得很直白：填 **7 位 Radio ID**，
+    /// 需要第二台热点就**在后面追加两位别名**，例如 `4601234` + `01` → `460123401`。
+    /// 也就是 `DMR ID × 100 + 别名`。
     ///
-    ///     m_essid = dmrID * 100 + (essid - 1)
+    /// 这里曾经照抄过 DroidStar 的 `×(100) + (别名 − 1)`（填 01 得 `…400`，别名 00）。
+    /// DroidStar 的 ESSID 下拉是 “None/00/01/…/99” 且自己又减了 1，那是它的界面怪癖；
+    /// 照抄的结果是登录了一个 SelfCare 里不存在的别名，master 收得下密码、
+    /// 却在配置阶段回 `MSTCL` 把会话关掉——看上去就是「刚连上就被服务器断开」。
     ///
-    /// 即界面上的「ESSID 后缀 1」对应 `…00`，后缀 2 对应 `…01`。
-    /// 这个后缀只是**序号**，跟 SelfCare 里那台设备到底叫 `…00` 还是 `…01` 无关，
-    /// 所以设置页会把换算结果「登录热点 ID」直接显示出来——以后台显示的 9 位数字为准，
-    /// 对不上就调后缀，直到两边逐位一致。
+    /// 另外留了一个 `hotspotIdOverride`：直接把 SelfCare → My Hotspots 里显示的
+    /// 9 位数字填进来，就完全不用猜换算规则了。
     var hotspotId: Int {
+        if hotspotIdOverride >= 10_000_000 { return hotspotIdOverride }
         guard let suffix = essidSuffix, dmrId > 0, dmrId <= 42_949_672 else { return dmrId }
-        return dmrId * 100 + (suffix - 1)
+        return dmrId * 100 + suffix
     }
 
     /// 带 SSID 的 9 位热点 ID，用于界面与日志（没有后缀时就是 DMR ID）。
@@ -216,6 +221,7 @@ extension Settings {
         dmrId = try container.decodeIfPresent(Int.self, forKey: .dmrId) ?? defaults.dmrId
         callsign = try container.decodeIfPresent(String.self, forKey: .callsign) ?? defaults.callsign
         essid = try container.decodeIfPresent(Int.self, forKey: .essid) ?? defaults.essid
+        hotspotIdOverride = try container.decodeIfPresent(Int.self, forKey: .hotspotIdOverride) ?? defaults.hotspotIdOverride
         password = try container.decodeIfPresent(String.self, forKey: .password) ?? defaults.password
         hostName = try container.decodeIfPresent(String.self, forKey: .hostName) ?? defaults.hostName
         host = try container.decodeIfPresent(String.self, forKey: .host) ?? defaults.host
