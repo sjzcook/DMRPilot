@@ -2,13 +2,18 @@
 //  DMRCallFrames.swift
 //  DMRPilot
 //
-//  「呼叫」= 向某个通话组发一次极短的 PTT：
+//  「订阅」= 向某个通话组发一次极短的 PTT（就是 DroidStar 里按一下话筒）：
 //
-//      Voice LC Header  →  一个静音语音突发  →  Voice Terminator
+//      Voice LC Header → 6 个语音突发（一个完整超帧，带嵌入 LC）→ Voice Terminator
 //
-//  BrandMeister 把热点收到的这次呼叫当作「有人在这个 TG 上发射」，
+//  BrandMeister 把热点收到的这次发射当作「有人在这个 TG 上说话」，
 //  于是把它标记成动态订阅，之后这个组的语音才会推下来。
 //  Homebrew 协议本身没有「订阅」指令，这是唯一能让服务器改推某个 TG 的办法。
+//
+//  为什么必须是一个「完整」的超帧：DMR 的语音头只带一次 LC，接收端/服务器若错过
+//  那一帧，就只能靠语音突发里的嵌入信令（每 4 个突发拼回一整段 LC）恢复。
+//  参考实现 DroidStar 的 `encode_data()` 每个突发都会写嵌入 LC + `DMREMB`，
+//  这里照抄：突发 1…4 带 LC 分片，突发 5 只有 EMB。
 //
 //  语音头的 33 字节不是拼字符串，要三层编码：
 //
@@ -19,8 +24,8 @@
 //
 //  注意：**不要只做 encode→decode 往返验证**。编解码两端一起写错时往返照样“通过”，
 //  这里就踩过——RS 反馈抽头错了一级，往返一致，但发到空口上整段 LC 都是坏的。
-//  正确的验证方式是把 33 字节输出和参考实现逐字节比对（Python 复刻 DroidStar 的
-//  full_lc_encode 后确认一致）。
+//  正确的验证方式是把 33 字节输出和参考实现逐字节比对（tools/dmr_ref.py 是
+//  DroidStar dmr.cpp 的 Python 复刻，已验证语音头/结束符/6 个突发全部一致）。
 //
 
 import Foundation
@@ -252,39 +257,191 @@ enum DMRCallCodec {
         return out
     }
 
-    /// 一个静音语音突发（33 字节），按突发序号决定该放「同步字」还是「嵌入信令」。
-    ///
-    /// 底料是 MMDVMHost 的 `DMR_SILENCE_DATA`，它**不含同步字**（第 13…19 字节是
-    /// `60 00 00 00 00 00 01` 这类残值）。DMR 把一个超帧拆成 6 个突发：
-    ///
-    ///     n = (m_dmrcnt − 1) % 6
-    ///     n == 0 → 这 7 个字节放音频同步字（flags 低 4 位 0x10）
-    ///     n != 0 → 放嵌入信令 DMREMB（色码 + LCSS），flags 低 4 位就是 n
-    ///
-    /// 对应 DroidStar 的 `encode_data()` / `get_emb_data()`。之前这里不看序号，
-    /// 一律写同步字：对端会在不该有同步的位置读到同步，整段语音解不出来。
-    static func silenceBurst(index: Int, colorCode: Int = 1) -> [UInt8] {
-        var out = rawSilence
-        let n = ((index % 6) + 6) % 6
+    // MARK: - 嵌入 LC（语音突发里的信令）
 
-        if n == 0 {
-            for i in 0..<7 {
-                out[13 + i] = (out[13 + i] & ~syncMask[i]) | audioSync[i]
+    /// QR(16,7) 编码表，等价于 DroidStar / MMDVM 的 `ENCODING_TABLE_1676`。
+    /// 7 bit 信息（色码 + LCSS）→ 16 bit 系统码，写进每个突发的嵌入信令 `DMREMB`。
+    ///
+    /// 没有这张表，`DMREMB` 就只是裸的 7 个信息位、缺 9 位校验，对端按 DMR 规范
+    /// 解嵌入信令时校验失败，会认为这一串突发「没有信令」——色码与 LC 分片全部丢失。
+    private static let qr1676: [UInt16] = [
+        0x0000, 0x0273, 0x04E5, 0x0696, 0x09C9, 0x0BBA, 0x0D2C, 0x0F5F,
+        0x11E2, 0x1391, 0x1507, 0x1774, 0x182B, 0x1A58, 0x1CCE, 0x1EBD,
+        0x21B7, 0x23C4, 0x2552, 0x2721, 0x287E, 0x2A0D, 0x2C9B, 0x2EE8,
+        0x3055, 0x3226, 0x34B0, 0x36C3, 0x399C, 0x3BEF, 0x3D79, 0x3F0A,
+        0x411E, 0x436D, 0x45FB, 0x4788, 0x48D7, 0x4AA4, 0x4C32, 0x4E41,
+        0x50FC, 0x528F, 0x5419, 0x566A, 0x5935, 0x5B46, 0x5DD0, 0x5FA3,
+        0x60A9, 0x62DA, 0x644C, 0x663F, 0x6960, 0x6B13, 0x6D85, 0x6FF6,
+        0x714B, 0x7338, 0x75AE, 0x77DD, 0x7882, 0x7AF1, 0x7C67, 0x7E14,
+        0x804F, 0x823C, 0x84AA, 0x86D9, 0x8986, 0x8BF5, 0x8D63, 0x8F10,
+        0x91AD, 0x93DE, 0x9548, 0x973B, 0x9864, 0x9A17, 0x9C81, 0x9EF2,
+        0xA1F8, 0xA38B, 0xA51D, 0xA76E, 0xA831, 0xAA42, 0xACD4, 0xAEA7,
+        0xB01A, 0xB269, 0xB4FF, 0xB68C, 0xB9D3, 0xBBA0, 0xBD36, 0xBF45,
+        0xC151, 0xC322, 0xC5B4, 0xC7C7, 0xC898, 0xCAEB, 0xCC7D, 0xCE0E,
+        0xD0B3, 0xD2C0, 0xD456, 0xD625, 0xD97A, 0xDB09, 0xDD9F, 0xDFEC,
+        0xE0E6, 0xE295, 0xE403, 0xE670, 0xE92F, 0xEB5C, 0xEDCA, 0xEFB9,
+        0xF104, 0xF377, 0xF5E1, 0xF792, 0xF8CD, 0xFABE, 0xFC28, 0xFE5B,
+    ]
+
+    /// Hamming(16,11,4)：11 个信息位 → 后面补 5 个校验位（`encode16114`）。
+    private static func hamming16114(_ d: inout [Bool], base: Int) {
+        d[base + 11] = xor([d[base], d[base + 1], d[base + 2], d[base + 3],
+                            d[base + 5], d[base + 7], d[base + 8]])
+        d[base + 12] = xor([d[base + 1], d[base + 2], d[base + 3], d[base + 4],
+                            d[base + 6], d[base + 8], d[base + 9]])
+        d[base + 13] = xor([d[base + 2], d[base + 3], d[base + 4], d[base + 5],
+                            d[base + 7], d[base + 9], d[base + 10]])
+        d[base + 14] = xor([d[base], d[base + 1], d[base + 2], d[base + 4],
+                            d[base + 6], d[base + 7], d[base + 10]])
+        d[base + 15] = xor([d[base], d[base + 2], d[base + 5], d[base + 6],
+                            d[base + 8], d[base + 9], d[base + 10]])
+    }
+
+    /// 9 字节 LC → 128 bit 嵌入信令块（DroidStar `encode_embedded_data()`）。
+    ///
+    /// 128 bit 分两次交给 6 个突发：突发 1…4 各带走 32 bit，突发 5 不带（LCSS=0）。
+    /// 这样即使接收端丢了语音头，也能从语音突发里把「谁发给哪个组」拼回来。
+    private static func embeddedLC(dst: Int, src: Int) -> [Bool] {
+        var lc = [UInt8](repeating: 0, count: 9)
+        lc[0] = 0x00                                            // FLCO：组呼
+        lc[1] = 0x00                                            // FID：ETSI
+        lc[2] = 0x00                                            // 服务选项
+        lc[3] = UInt8((dst >> 16) & 0xFF)
+        lc[4] = UInt8((dst >> 8) & 0xFF)
+        lc[5] = UInt8(dst & 0xFF)
+        lc[6] = UInt8((src >> 16) & 0xFF)
+        lc[7] = UInt8((src >> 8) & 0xFF)
+        lc[8] = UInt8(src & 0xFF)
+
+        var data = [Bool](repeating: false, count: 128)
+
+        // 5 bit CRC：9 字节求和 mod 31，塞进第 2…6 行的最后一个信息位
+        var crc = 0
+        for byte in lc { crc += Int(byte) }
+        crc %= 31
+        data[42] = (crc & 0x10) != 0
+        data[58] = (crc & 0x08) != 0
+        data[74] = (crc & 0x04) != 0
+        data[90] = (crc & 0x02) != 0
+        data[106] = (crc & 0x01) != 0
+
+        // 72 个信息位铺进 7 行：前两行 11 位，其余每行 10 位
+        var source: [Bool] = []
+        for byte in lc {
+            for bit in 0..<8 { source.append((byte >> UInt8(7 - bit)) & 1 != 0) }
+        }
+        let rows: [(Int, Int)] = [(0, 11), (16, 11), (32, 10), (48, 10),
+                                  (64, 10), (80, 10), (96, 10)]
+        var cursor = 0
+        for (start, count) in rows {
+            for offset in 0..<count {
+                data[start + offset] = source[cursor]
+                cursor += 1
             }
-            return out
         }
 
-        // DMREMB[0] = 色码 << 4 | LCSS << 1，DMREMB[1] = 0（静音，没有嵌入 LC）
-        let emb0 = UInt8((colorCode << 4) & 0xF0)
-        let emb1: UInt8 = 0x00
+        for row in 0..<7 { hamming16114(&data, base: row * 16) }
+
+        // 列校验：第 8 行是前 7 行逐列异或
+        for column in 0..<16 {
+            var parity = false
+            for row in 0..<7 { parity = parity != data[row * 16 + column] }
+            data[112 + column] = parity
+        }
+
+        // 按列读出，得到最终 128 bit 顺序
+        var raw = [Bool](repeating: false, count: 128)
+        var index = 0
+        for position in 0..<128 {
+            raw[position] = data[index]
+            index += 16
+            if index > 127 { index -= 127 }
+        }
+        return raw
+    }
+
+    /// 把 128 bit 里属于第 `index` 个突发的那 32 bit 写进载荷，返回 LCSS。
+    ///
+    /// LCSS 是「这是第几段 LC」：1 = 第一段，2 = 第二段，3 = 中间段，0 = 没有 LC。
+    /// 顺序不能反：LCSS 最后写，因为它和 LC 分片共用第 13…19 字节的位。
+    private static func applyEmbeddedFragment(_ out: inout [UInt8],
+                                              bits: [Bool],
+                                              index: Int) -> UInt8 {
+        guard (1..<5).contains(index) else {
+            out[14] &= 0xF0
+            out[15] = 0x00
+            out[16] = 0x00
+            out[17] = 0x00
+            out[18] &= 0x0F
+            return 0
+        }
+
+        let piece = index - 1
+        var block = [Bool](repeating: false, count: 40)
+        for i in 0..<32 { block[4 + i] = bits[piece * 32 + i] }
+
+        let b0 = pack(block, at: 0)
+        let b1 = pack(block, at: 8)
+        let b2 = pack(block, at: 16)
+        let b3 = pack(block, at: 24)
+        let b4 = pack(block, at: 32)
+
+        out[14] = (out[14] & 0xF0) | (b0 & 0x0F)
+        out[15] = b1
+        out[16] = b2
+        out[17] = b3
+        out[18] = (out[18] & 0x0F) | (b4 & 0xF0)
+
+        switch piece {
+        case 0: return 1
+        case 3: return 2
+        default: return 3
+        }
+    }
+
+    /// 嵌入信令 `DMREMB`：色码 + LCSS，再用 QR(16,7) 补 9 位校验。
+    private static func applyEmbeddedSignalling(_ out: inout [UInt8],
+                                                colorCode: UInt8,
+                                                lcss: UInt8) {
+        let info = ((colorCode << 4) & 0xF0) | ((lcss << 1) & 0x06)
+        let code = qr1676[Int((info >> 1) & 0x7F)]
+        let emb0 = UInt8(code >> 8)
+        let emb1 = UInt8(code & 0xFF)
+
         out[13] = (out[13] & 0xF0) | ((emb0 >> 4) & 0x0F)
         out[14] = (out[14] & 0x0F) | ((emb0 << 4) & 0xF0)
-        out[15] = 0x00
-        out[16] = 0x00
-        out[17] = 0x00
         out[18] = (out[18] & 0xF0) | ((emb1 >> 4) & 0x0F)
         out[19] = (out[19] & 0x0F) | ((emb1 << 4) & 0xF0)
-        return out
+    }
+
+    /// 一次呼叫的 6 个语音突发 —— 正好一个超帧，等价于 DroidStar 的 `encode_data()`。
+    ///
+    /// DMR 把一个超帧拆成 6 个突发（每 60ms 一个）：
+    ///
+    ///     第 0 个 → 第 13…19 字节放音频同步字（出站 flags 低 4 位 0x10）
+    ///     第 1…4 个 → 嵌入 LC 分片（LCSS 1 / 3 / 3 / 2）
+    ///     第 5 个 → 只有 EMB（LCSS 0），不带 LC
+    ///
+    /// 底料是 MMDVMHost 的 `DMR_SILENCE_DATA`（不含同步字）。之前这里一律写同步字、
+    /// 而且不带嵌入 LC，等于发出一串「没有信令的静音」：对端能收到载波，却拼不出
+    /// 这一串属于哪个组，动态订阅看起来就像没建立。
+    static func voiceBursts(talkgroup: Int, src: Int, colorCode: UInt8 = 1) -> [[UInt8]] {
+        let bits = embeddedLC(dst: talkgroup, src: src)
+        var bursts: [[UInt8]] = []
+
+        for index in 0..<6 {
+            var out = rawSilence
+            if index == 0 {
+                for i in 0..<7 {
+                    out[13 + i] = (out[13 + i] & ~syncMask[i]) | audioSync[i]
+                }
+            } else {
+                let lcss = applyEmbeddedFragment(&out, bits: bits, index: index)
+                applyEmbeddedSignalling(&out, colorCode: colorCode, lcss: lcss)
+            }
+            bursts.append(out)
+        }
+        return bursts
     }
 
     private static let rawSilence: [UInt8] = [

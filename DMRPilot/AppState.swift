@@ -77,9 +77,9 @@ final class AppState: ObservableObject {
     // MARK: - 通话组
 
     /// 切换收听的 TG（0 = 全部）。写进设置（会持久化），同时通知连接层立刻生效，
-    /// 不需要重连——Homebrew 的推送内容由服务器决定，这里只是本地的播放过滤。
+    /// 不需要重连——Homebrew 的推送内容由服务器决定。
     ///
-    /// 切到一个具体 TG 时还会顺手向它发一次呼叫：本地过滤只能「不播别的组」，
+    /// 切到一个具体 TG 时还会顺手向它订阅一次：本地只能决定「播不播」，
     /// 要让服务器真的把语音推下来，得让 master 认为这个组被订阅了。
     func setTalkgroup(_ talkgroup: Int) {
         let value = max(0, talkgroup)

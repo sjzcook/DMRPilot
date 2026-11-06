@@ -172,11 +172,22 @@ struct HotspotView: View {
             }
 
             HStack {
-                Text("正在收听")
+                Text("订阅目标")
                 Spacer()
                 Text(activeGroupText)
                     .monospacedDigit()
                     .foregroundStyle(hotspot.activeTalkgroup > 0 ? Color.accentColor : Color.secondary)
+            }
+
+            if let pushed = hotspot.serverTalkgroup, pushed != hotspot.activeTalkgroup {
+                HStack {
+                    Text("服务器实际下发")
+                    Spacer()
+                    Text("TG \(pushed)")
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+                .font(.footnote)
             }
 
             if draftValue > 16_777_215 {
@@ -216,7 +227,7 @@ struct HotspotView: View {
         } header: {
             Text("通话组")
         } footer: {
-            Text("输入号码后点「确定」，只解码并播放这个通话组的语音；留空再点「确定」= 听全部。单呼只要发给你，照样会响。\n点「确定」会向这个组发一次约半秒的静音呼叫（语音头 + 8 个突发 + 结束符），BrandMeister 因此把它记为动态订阅，语音才会推下来；静默一段时间后 App 会自动再呼叫一次续上（设置 → 行为 里可调）。\n日志里的「近期流量」会列出服务器实际推下来的组：有「← 当前组」= 订阅成功，只有别的组 = 订阅没生效。")
+            Text("输入号码后点「确定」，App 会向这个组订阅一次；留空再点「确定」= 听全部。单呼只要发给你，照样会响。\n订阅 = 一次完整发射：语音头 + 6 个语音突发（一个超帧，带嵌入 LC）+ 结束符，约 0.5 秒。BrandMeister 收到后把它记为动态订阅，这个组的语音才会推下来；静默一段时间后 App 会自动再来一次续上（设置 → 行为 里可调）。\n接收侧照参考实现 DroidStar：服务器推什么就解什么，不按目的地址丢帧。所以「正在收听」和「服务器实际下发」可能不是同一个组 —— BrandMeister 推的是这台热点被订阅的全部组，包括 SelfCare 里的静态组。想只听选中的那一个，去设置 → 行为 关掉「跟随服务器下发的通话组」。")
         }
     }
 

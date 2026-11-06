@@ -121,13 +121,22 @@ struct Settings: Codable, Equatable {
 
     /// 要收听的通话组（TG），0 表示全部。
     ///
-    /// Homebrew 是「服务器推什么就收什么」的协议，这个值首先是**播放过滤**：
-    /// 只解码、播放、记账这个 TG 的通话，其余帧照样计数但不出声。
-    /// 要让服务器真的把这个组推下来，还得靠 `autoCallOnConnect` 那次静音呼叫
-    /// 建立动态订阅；两者配合才等于「切到某个组」。
+    /// Homebrew 是「服务器推什么就收什么」的协议，这个值首先是**订阅目标**：
+    /// 连上后（或切换组时）向它发一次 PTT，让 BrandMeister 把它记成动态订阅。
+    /// 至于本地要不要按它过滤，见 `followServerTalkgroups`。
     var talkgroup: Int = 0
 
-    /// 呼叫时用的时隙。BrandMeister 上大部分中文 TG 挂在 TS2，个别老组在 TS1。
+    /// 服务器推什么就播什么（对齐参考实现 DroidStar 的接收侧）。
+    ///
+    /// DroidStar 的 `process_udp()` 只判「55 字节 + DMRD + 已连接」，从不拿目的地址
+    /// 跟本地选的 TG 比 —— 推什么就解什么。BrandMeister 推下来的是「这台热点被订阅的
+    /// 组」，其中还包括 SelfCare 里配的静态组，很可能跟选中的 TG 不是同一个。
+    /// 按 TG 硬丢帧就会表现成「订阅没建立、什么都不响」，其实语音一直在下来。
+    ///
+    /// 默认跟随；关掉就退化成严格过滤，只听 `talkgroup` 那一个组。
+    var followServerTalkgroups: Bool = true
+
+    /// 订阅发射用的时隙。BrandMeister 上大部分中文 TG 挂在 TS2，个别老组在 TS1。
     var callSlot: Int = 2
 
     /// 色码（Color Code，0…15），只影响**我们发出去的语音帧**，不影响连接与接收。
@@ -146,16 +155,17 @@ struct Settings: Codable, Equatable {
     /// 而我们的 CC 不同，就会把我们当成噪音静音掉。BrandMeister 上绝大多数中继
     /// 与热点用 CC1，保持默认 1 即可。
     var colorCode: Int = 1
-    /// 连上之后自动向当前 TG 发一次呼叫，让服务器把它标成动态订阅。
+    /// 连上之后自动向当前 TG 订阅一次，让服务器把它标成动态订阅。
     ///
-    /// Homebrew 没有订阅指令，只能靠「发一次 PTT」让 master 认这个组；
-    /// 不发的话只能收到 SelfCare 里配成 Static TG 的那些。
+    /// Homebrew 没有订阅指令，只能靠「按一次 PTT」让 master 认这个组——
+    /// 就是参考实现 DroidStar 里人手动按话筒那一下。不发的话只能收到
+    /// SelfCare 里配成 Static TG 的那些。
     var autoCallOnConnect: Bool = true
 
-    /// 动态订阅静默一段时间后自动再呼叫一次。
+    /// 动态订阅静默一段时间后自动再订阅一次。
     ///
     /// BrandMeister 的动态 TG 长时间没有活动会被释放，释放后再想听就得重新
-    /// 发一次静音呼叫。打开这个选项，连接期间只要该组静默超过
+    /// 发一次。打开这个选项，连接期间只要该组静默超过
     /// `talkgroupRenewMinutes` 分钟就自动续上一次。
     var autoRenewTalkgroup: Bool = true
 
@@ -249,6 +259,7 @@ extension Settings {
         sendConfig = try container.decodeIfPresent(Bool.self, forKey: .sendConfig) ?? defaults.sendConfig
         autoReconnect = try container.decodeIfPresent(Bool.self, forKey: .autoReconnect) ?? defaults.autoReconnect
         talkgroup = try container.decodeIfPresent(Int.self, forKey: .talkgroup) ?? defaults.talkgroup
+        followServerTalkgroups = try container.decodeIfPresent(Bool.self, forKey: .followServerTalkgroups) ?? defaults.followServerTalkgroups
         callSlot = try container.decodeIfPresent(Int.self, forKey: .callSlot) ?? defaults.callSlot
         colorCode = min(15, max(0, try container.decodeIfPresent(Int.self, forKey: .colorCode) ?? defaults.colorCode))
         autoCallOnConnect = try container.decodeIfPresent(Bool.self, forKey: .autoCallOnConnect) ?? defaults.autoCallOnConnect

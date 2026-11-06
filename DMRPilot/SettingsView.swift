@@ -134,6 +134,8 @@ struct SettingsView: View {
 
             Toggle("连接后自动呼叫通话组", isOn: $app.settings.autoCallOnConnect)
 
+            Toggle("跟随服务器下发的通话组", isOn: $app.settings.followServerTalkgroups)
+
             Toggle("静默后自动续订", isOn: $app.settings.autoRenewTalkgroup)
 
             if app.settings.autoRenewTalkgroup {
@@ -157,7 +159,7 @@ struct SettingsView: View {
         } header: {
             Text("行为")
         } footer: {
-            Text("Homebrew 没有「订阅」指令：连上后先在通话组上发一次静音呼叫，BrandMeister 才会把这个组标成动态订阅，它的语音也才会推下来。\n呼叫时隙要和该组在 SelfCare 里挂的时隙一致——中国区多数 TG 在 TS2。热点页点「确定」切换组时也会自动呼叫一次。\nBrandMeister 的动态订阅静默约 10 分钟会被释放，打开「静默后自动续订」后，App 会在该组连续没有语音时自动再呼叫一次（间隔取上面的值，建议 8 分钟，留出余量）。\n色码只写进我们发出去的语音帧（slot type 与嵌入信令 DMREMB）和上报配置包里的资料字段，**连接与接收都不需要它**：Homebrew 握手没有任何色码校验，收帧也不按色码过滤。只有收听方电台固定了 CC 时才需要跟它一致，BrandMeister 上一般是 CC1。")
+            Text("Homebrew 没有「订阅」指令：连上后在通话组上发一次完整 PTT（语音头 + 6 个突发 + 结束符，带嵌入 LC），BrandMeister 才会把这个组标成动态订阅，它的语音也才会推下来。热点页点「确定」切换组时也会自动来一次。\n「跟随服务器下发的通话组」对应参考实现 DroidStar 的接收策略：它收到 DMRD 就直接解，从不按目的地址过滤。BrandMeister 推的是这台热点被订阅的组，其中可能包含 SelfCare 里的静态组——如果它跟你在上面选的不一样，按 TG 硬丢帧就会表现成「订阅没建立」，其实语音一直在下来。关掉这个开关才会严格只听选中的那一个组。\n订阅时隙要和该组在 SelfCare 里挂的时隙一致——中国区多数 TG 在 TS2。\nBrandMeister 的动态订阅静默约 10 分钟会被释放，打开「静默后自动续订」后，App 会在该组连续没有语音时自动再发一次（间隔取上面的值，建议 8 分钟，留出余量）。\n色码只写进我们发出去的语音帧（slot type 与嵌入信令 DMREMB）和上报配置包里的资料字段，**连接与接收都不需要它**：Homebrew 握手没有任何色码校验，收帧也不按色码过滤。只有收听方电台固定了 CC 时才需要跟它一致，BrandMeister 上一般是 CC1。")
         }
     }
 

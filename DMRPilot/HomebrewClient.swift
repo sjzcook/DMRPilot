@@ -61,6 +61,13 @@ final class HomebrewClient: ObservableObject {
 
     /// 当前收听的 TG，0 = 全部。跟着设置走，但允许在热点页当场改。
     @Published private(set) var activeTalkgroup = 0
+    /// 服务器**实际**在推的通话组。
+    ///
+    /// 它经常不等于设置里选的那个：BrandMeister 推的是「这台热点被订阅的组」，
+    /// 其中可能包含 SelfCare 里配的静态组。DroidStar 的接收侧根本不看目的地址
+    /// （`process_udp()` 只认「55 字节 + DMRD」），推什么就解什么；这里把实际
+    /// 那个组记下来，界面上能一眼看到「真正在听的是哪一路」。
+    @Published private(set) var serverTalkgroup: Int?
     /// 因为不属于当前 TG 而被跳过的帧数，用来判断「是没推下来还是被过滤了」。
     @Published private(set) var filteredFrames = 0
     /// 当前（或最近一次）说话的人。呼号由 `CallsignDirectory` 另查，这里只有 ID。
@@ -131,6 +138,7 @@ final class HomebrewClient: ObservableObject {
         activeSettings.talkgroup = value
         filteredFrames = 0
         currentSpeaker = nil
+        serverTalkgroup = nil
         pendingConfirmTalkgroup = nil
         talkgroupAliveAt = nil
         subRetries = 0
@@ -153,34 +161,40 @@ final class HomebrewClient: ObservableObject {
         syncVoiceUI()
 
         if value > 0 {
-            append(.info, "→ 只收听 TG \(value)（本地过滤，其它组不再解码）")
+            if activeSettings.followServerTalkgroups {
+                append(.info, "→ 目标 TG \(value)：会向它订阅一次，但服务器推什么就播什么")
+            } else {
+                append(.info, "→ 只收听 TG \(value)（本地过滤，其它组不再解码）")
+            }
             if state != .online {
-                append(.info, "连上之后会自动向 TG \(value) 呼叫一次，BrandMeister 才会把它标成动态订阅")
+                append(.info, "连上之后会自动向 TG \(value) 订阅一次，BrandMeister 才会把它标成动态订阅")
             }
         } else {
             append(.info, "→ 收听全部通话组")
         }
     }
 
-    // MARK: - 呼叫（激活动态 TG）
+    // MARK: - 订阅（激活动态 TG）
 
-    /// 最近一次呼叫的时间与目标，只拦「同一组 3 秒内重复呼叫」，
+    /// 最近一次订阅的时间与目标，只拦「同一组 3 秒内重复发射」，
     /// 换成别的组立刻就能发。
     private var lastCallAt: Date?
     private var lastCallTalkgroup: Int?
     private var callTask: Task<Void, Never>?
-    /// 一轮呼叫（头 + 12 个突发 + 尾，约 0.8 秒）还没发完。中途打断会留下一个没有结束符的语音头，
-    /// 服务器会把那个时隙占十几秒，所以宁可让这次请求落空。
+    /// 一轮订阅发射（语音头 + 6 个突发 + 结束符，约 0.5 秒）还没发完。
+    /// 中途打断会留下一个没有结束符的语音头，服务器会把那个时隙占十几秒，
+    /// 所以宁可让这次请求落空。
     private var isCalling = false
     private var dmrSeq: UInt8 = 0
-    /// 等回音的看门狗：8 秒没收到目标 TG 的帧就补发一次呼叫，最多 3 次。
+    /// 等回音的看门狗：10 秒内一帧都没收到才补发一次订阅。
     private var callWatchdog: Task<Void, Never>?
-    /// 刚呼叫过、还在等第一帧回音的 TG。收到它的语音就说明动态订阅真的生效了，
+    /// 刚订阅过、还在等第一帧回音的 TG。收到它的语音就说明动态订阅真的生效了，
     /// 打一行确认日志——否则用户只能靠「有没有声音」猜。
     private var pendingConfirmTalkgroup: Int?
-    /// 当前 TG 已经补发过几次呼叫。BrandMeister 偶尔会把刚上线时的那一帧丢掉
-    /// （peer 还没完全登记完），只发一次就等的做法会白白错过一个可用的订阅。
+    /// 当前 TG 已经补发过几次订阅。DroidStar 不补发（人工按键），这里只留一次兜底。
     private var subRetries = 0
+    /// 发出订阅那一刻的收帧计数，用来判断「是订阅没建立」还是「只是没人说话」。
+    private var rxAtCall = 0
 
     /// 收到的帧按「dst@slot」汇总，每 15 秒报一次。
     ///
@@ -208,22 +222,30 @@ final class HomebrewClient: ObservableObject {
         return calls.contains { $0.isActive && now.timeIntervalSince($0.updatedAt) < 10 }
     }
 
-    /// 向某个通话组发一次极短的静音 PTT：语音头 → 静音突发 → 结束符。
+    /// 向某个通话组发一次极短的 PTT —— 这就是「订阅」。
     ///
-    /// Homebrew 没有任何「订阅」指令，服务器只推它认为已经订阅的 TG。
-    /// 发一次呼叫能让 BrandMeister 把这个组标成动态订阅，之后它的语音才会下来；
-    /// 光把本地过滤器改成这个 TG 是没用的（那就只是「别的组不播」而已）。
+    /// 对齐参考实现 DroidStar：它在 Homebrew 上也是**按一下话筒**来激活动态组
+    /// （`dmr_tgid_changed()` 只是把目的地址换成新 TG，真正让 master 认这个组的
+    /// 是随后 `encode_header(DT_VOICE_LC_HEADER)` 那一帧）。
+    ///
+    ///     语音头 → 一个完整超帧（6 个突发，带嵌入 LC）→ 结束符
+    ///
+    /// 一次完整超帧而不是「头发完就收」：嵌入 LC 让对端在我们丢了语音头时
+    /// 也能拼出「谁发给哪个组」，这是 DroidStar 每次发射都在做的事。
+    ///
+    /// Homebrew 没有任何「订阅」指令，服务器只推它认为已经订阅的 TG；
+    /// 光改本地过滤器是没用的（那只是「别的组不播」而已）。
     func call(talkgroup: Int) {
         guard talkgroup > 0, talkgroup <= 0xFF_FFFF else { return }
         guard state == .online else {
             // 断线时点「确定」照样会走到这里，给一句明确的交代，别让人以为已经发出去了。
-            append(.info, "还没连上服务器：连上后会自动向 TG \(talkgroup) 呼叫一次")
+            append(.info, "还没连上服务器：连上后会自动向 TG \(talkgroup) 订阅一次")
             return
         }
 
         // 有人正在说话时别抢：插一个语音头进去会把这一句打断。
         if hasLiveCall {
-            append(.warning, "TG \(talkgroup) 上还有通话在进行，这次先不呼叫")
+            append(.warning, "TG \(talkgroup) 上还有通话在进行，这次先不订阅")
             return
         }
 
@@ -235,20 +257,20 @@ final class HomebrewClient: ObservableObject {
         lastCallAt = now
         lastCallTalkgroup = talkgroup
 
-        // 上一轮还没发完（约 0.8 秒），别插队——中途打断会留下半截呼叫。
+        // 上一轮还没发完（约 0.5 秒），别插队——中途打断会留下半截发射。
         guard !isCalling else { return }
         isCalling = true
         talkgroupAliveAt = now
 
-        // 呼叫帧里的源地址必须是「本人 DMR ID」（7 位），不是 9 位热点 ID：
+        // 发射帧里的源地址必须是「本人 DMR ID」（7 位），不是 9 位热点 ID：
         // DMRD 的 src 字段只有 3 字节（≤16777215），塞 hotspotId 会溢出，
         // 变成一个别人的 DMR ID —— BrandMeister 会当冒用身份整帧丢弃，
-        // 表现就是「呼叫发出去了，但这个组永远没有语音下来」。
+        // 表现就是「订阅发出去了，但这个组永远没有语音下来」。
         let src = activeSettings.dmrId
         let peer = activeSettings.hotspotId
         guard src > 0, src <= 0xFF_FFFF else {
             isCalling = false
-            append(.warning, "DMR ID \(src) 不是 7 位编号，不能作为呼叫的源地址")
+            append(.warning, "DMR ID \(src) 不是 7 位编号，不能作为发射的源地址")
             return
         }
 
@@ -261,10 +283,12 @@ final class HomebrewClient: ObservableObject {
                                              colorCode: UInt8(cc))
         let tail = DMRCallCodec.voicePayload(dst: talkgroup, src: src, isTerminator: true,
                                              colorCode: UInt8(cc))
+        let bursts = DMRCallCodec.voiceBursts(talkgroup: talkgroup, src: src, colorCode: UInt8(cc))
 
-        append(.info, "→ 呼叫 TG \(talkgroup)（TS\(slot)，CC\(cc)，DMR ID \(src) → 热点 \(peer)，静音 PTT）")
+        append(.info, "→ 订阅 TG \(talkgroup)（TS\(slot)，CC\(cc)，DMR ID \(src) → 热点 \(peer)，一次完整发射）")
         append(.info, "BrandMeister 收到这次发射后会把它记为动态订阅，之后该组的语音就会推下来")
         pendingConfirmTalkgroup = talkgroup
+        rxAtCall = rxFrames
         startCallWatchdog(talkgroup)
 
         callTask?.cancel()
@@ -279,24 +303,22 @@ final class HomebrewClient: ObservableObject {
                               payload: head,
                               label: "DMRD 语音头 → TG \(talkgroup)")
 
-            // 2. 12 个静音突发，每 60ms 一帧（约 0.8 秒的真实 PTT）。
-            //    只发一帧有些 master 会当噪音丢掉；太短的发射在统计上也容易被判成
-            //    「无效呼叫」，动态订阅就建不起来。宁可像一次真的按键。
-            //    flags 低 4 位与载荷要和 DroidStar 的 `encode_data()` 对齐：
-            //    每 6 个突发是一个超帧，第 0 个带音频同步字（0x10），其余是 1…5。
-            let bursts = 12
-            for index in 0..<bursts {
+            // 2. 一个完整超帧：6 个突发，每 60ms 一个。
+            //    第 0 个带音频同步字（flags 低 4 位 0x10），第 1…4 个带嵌入 LC 分片，
+            //    第 5 个只有 EMB —— 与 DroidStar 的 `encode_data()` 逐字节一致。
+            //    以前这里发 12 个不带嵌入 LC 的静音：载波是有的，但对端拼不出
+            //    「这一段属于哪个组」，看着就像订阅没建立。
+            for index in 0..<bursts.count {
                 try? await Task.sleep(nanoseconds: 60_000_000)
                 if Task.isCancelled { return }
-                let n = index % 6
                 self.sendDmrFrame(src: src, dst: talkgroup, peer: peer,
-                                  flags: slotFlag | (n == 0 ? 0x10 : UInt8(n)),
+                                  flags: slotFlag | (index == 0 ? UInt8(0x10) : UInt8(index)),
                                   streamId: stream,
-                                  payload: DMRCallCodec.silenceBurst(index: index, colorCode: cc),
-                                  label: "DMRD 语音突发 \(index + 1)/\(bursts)",
+                                  payload: bursts[index],
+                                  label: "DMRD 语音突发 \(index + 1)/\(bursts.count)",
                                   quiet: index > 0)
             }
-            self.append(.tx, "→ 静音突发 \(bursts) 帧（每 60ms 一帧）已发完")
+            self.append(.tx, "→ 订阅发射完成：语音头 + \(bursts.count) 个突发（含嵌入 LC）+ 结束符")
 
             // 3. 结束符：不收尾的话服务器会把这个时隙占十几秒
             try? await Task.sleep(nanoseconds: 60_000_000)
@@ -309,31 +331,42 @@ final class HomebrewClient: ObservableObject {
         }
     }
 
-    /// 呼叫之后等回音的超时。到点还没有该 TG 的帧，就把可能的原因说清楚，
-    /// 免得用户只看到「呼叫已发出」然后对着静音的扬声器发呆。
+    /// 订阅之后等回音的超时。
+    ///
+    /// DroidStar 是人工按键，天然没有「补发」这回事；我们连上就自动发，
+    /// 所以要自己兜一次。判断依据只看「这期间有没有收到**任何** DMRD 帧」：
+    ///
+    /// - 有帧 → 链路和订阅都活着（可能推的是别的组，见「跟随服务器下发的通话组」），
+    ///   不要再补发，否则只是在别人的通话里插噪音；
+    /// - 一帧都没有 → 大概率是刚上线时那一帧被 master 丢了，补一次就够了。
     private func startCallWatchdog(_ talkgroup: Int) {
         callWatchdog?.cancel()
         callWatchdog = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            try? await Task.sleep(nanoseconds: 10_000_000_000)
             guard let self, !Task.isCancelled else { return }
             guard self.pendingConfirmTalkgroup == talkgroup else { return }
 
-            // 第一帧没来，先别急着下结论。刚上线时 peer 可能还没在 master 上
-            // 完全登记好，那一帧会被丢掉；DroidStar 是人工按键，天然避开了这个窗口，
-            // 我们是自动呼叫，所以要自己补。
-            if self.subRetries < 2 {
+            if self.rxFrames > self.rxAtCall {
+                self.pendingConfirmTalkgroup = nil
+                self.subRetries = 0
+                let pushed = self.serverTalkgroup.map { String($0) } ?? "其它"
+                self.append(.info, "订阅后已收到语音流量，链路正常（当前推的是 \(pushed)），不再补发")
+                return
+            }
+
+            if self.subRetries < 1 {
                 self.subRetries += 1
                 self.pendingConfirmTalkgroup = nil
-                self.append(.warning, "8 秒内没收到 TG \(talkgroup) 的语音，补发第 \(self.subRetries + 1) 次呼叫（共 3 次）")
+                self.append(.warning, "10 秒内一帧语音都没收到，补发一次订阅（共 2 次）")
                 self.lastCallAt = nil          // 绕开 3 秒节流
                 self.call(talkgroup: talkgroup)
                 return
             }
 
             self.pendingConfirmTalkgroup = nil
-            self.append(.warning, "已连续呼叫 3 次仍未收到 TG \(talkgroup) 的语音：订阅没建立，或这个组此刻没人说话")
-            self.append(.info, "先看下一行「近期流量」：里面有这个组 = 订阅成功、只是没声音；"
-                + "只有别的组 = 订阅没生效（换 TS 或换一个正在有人讲的组，如 91 测一下）")
+            self.append(.warning, "连续 2 次订阅后仍没有任何语音：要么这个组此刻没人说话，要么订阅没落在这个热点上")
+            self.append(.info, "核对三件事：① DMR ID（7 位）与 9 位热点 ID 是否属于同一台设备；"
+                + "② 密码是不是 SelfCare → Hotspot Security 里那串；③ 这个 TG 在 SelfCare 里挂的时隙是否和「呼叫时隙」一致")
         }
     }
 
@@ -359,7 +392,7 @@ final class HomebrewClient: ObservableObject {
         }
     }
 
-    /// 续订、呼叫相关的设置在连接期间改了也要立刻生效，不必重连。
+    /// 续订、订阅相关的设置在连接期间改了也要立刻生效，不必重连。
     func applyBehaviour(_ settings: Settings) {
         let slotChanged = activeSettings.callSlot != settings.callSlot
         let ccChanged = activeSettings.colorCode != settings.colorCode
@@ -368,13 +401,14 @@ final class HomebrewClient: ObservableObject {
         activeSettings.callSlot = settings.callSlot
         activeSettings.colorCode = settings.colorCode
         activeSettings.autoCallOnConnect = settings.autoCallOnConnect
+        activeSettings.followServerTalkgroups = settings.followServerTalkgroups
 
-        // 时隙和色码都只体现在「发出去的那几帧」里，改完不重新呼叫等于没改。
+        // 时隙和色码都只体现在「发出去的那几帧」里，改完不重新订阅等于没改。
         // 这里顺手补一次（并绕开 3 秒节流），用户改完就能直接看结果。
         if (slotChanged || ccChanged), state == .online, activeTalkgroup > 0, !isCalling {
             lastCallAt = nil
             let cc = min(15, max(0, activeSettings.colorCode))
-            append(.info, "发射参数改为 TS\(activeSettings.callSlot == 1 ? 1 : 2) / CC\(cc)，重新向 TG \(activeTalkgroup) 呼叫一次")
+            append(.info, "发射参数改为 TS\(activeSettings.callSlot == 1 ? 1 : 2) / CC\(cc)，重新向 TG \(activeTalkgroup) 订阅一次")
             call(talkgroup: activeTalkgroup)
         }
     }
@@ -826,18 +860,20 @@ final class HomebrewClient: ObservableObject {
         startKeepAlive()
         verifyHotspotRegistration()
 
-        // 连上就向当前 TG 呼叫一次：不发的话服务器不会主动推这个组的语音，
+        // 连上就向当前 TG 订阅一次：不发的话服务器不会主动推这个组的语音，
         // 只能听到 SelfCare 里配成 Static TG 的内容。
         if activeSettings.autoCallOnConnect, activeSettings.talkgroup > 0 {
             let talkgroup = activeSettings.talkgroup
             Task { [weak self] in
-                // 稍等一下，别和首包心跳挤在一起
-                try? await Task.sleep(nanoseconds: 800_000_000)
+                // 等 2 秒再发射。DroidStar 是人工按键，天然比上线晚几秒；
+                // 我们自动发，就得自己留出 master 把这个热点登记进时隙的时间，
+                // 否则第一帧会被丢掉，看起来就是「订阅没建立」。
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
                 guard let self, self.state == .online else { return }
                 self.call(talkgroup: talkgroup)
             }
         } else if activeSettings.autoCallOnConnect {
-            append(.info, "没有设置通话组，跳过自动呼叫")
+            append(.info, "没有设置通话组，跳过自动订阅")
         }
     }
 
@@ -943,10 +979,13 @@ final class HomebrewClient: ObservableObject {
     /// 动态 TG 的续订。
     ///
     /// BrandMeister 的动态订阅在静默一段时间后会被释放，释放之后服务器就不再推这个组，
-    /// 表现是「突然听不到了，但链路还在」。这里在静默超过设置值时补一次静音呼叫，
+    /// 表现是「突然听不到了，但链路还在」。这里在静默超过设置值时补一次订阅发射，
     /// 让订阅一直续上，不用用户自己去点「确定」。
     private func renewTalkgroupIfIdle() {
-        guard state == .online, !isCalling, activeTalkgroup > 0 else { return }
+        // 续订的是「服务器实际在推的那个组」：它可能来自 SelfCare 的静态组，
+        // 跟设置里选的不一样，续错组等于白发。
+        let target = serverTalkgroup ?? activeTalkgroup
+        guard state == .online, !isCalling, target > 0 else { return }
         // 别的组正在通话时先等，否则每 5 秒一条「续订」日志刷满，而 call() 又会自己跳过。
         guard !hasLiveCall else { return }
         // 关掉「连接后自动呼叫」的用户就是不想让 App 自己发射，续订也不该偷偷发。
@@ -962,8 +1001,8 @@ final class HomebrewClient: ObservableObject {
         let idle = Date().timeIntervalSince(aliveAt)
         guard idle >= Double(minutes) * 60 else { return }
 
-        append(.info, "TG \(activeTalkgroup) 已静默 \(Int(idle / 60)) 分钟，自动续订动态订阅")
-        call(talkgroup: activeTalkgroup)
+        append(.info, "TG \(target) 已静默 \(Int(idle / 60)) 分钟，自动续订动态订阅")
+        call(talkgroup: target)
     }
 
     // MARK: - 入站分发
@@ -1081,22 +1120,37 @@ final class HomebrewClient: ObservableObject {
         trafficStat["\(frame.dst)@\(frame.slot)", default: 0] += 1
         trafficTotal += 1
         warnedNoTraffic = false
+        // 单呼（dst 是自己的 DMR ID / 热点 ID）不代表这个组被订阅，不记进 serverTalkgroup，
+        // 否则续订会拿着一个 DMR ID 去当 TG 发。
+        if !frame.isPrivate, serverTalkgroup != frame.dst { serverTalkgroup = frame.dst }
 
-        // 链路是活的，但这一帧不属于要听的 TG：计数后丢弃，不进通话列表、不进解码器。
-        // 单呼同时认 DMR ID 和 9 位热点 ID —— 有的 master 按热点 ID 寻址。
-        guard frame.belongs(toTalkgroup: activeTalkgroup,
-                            myId: activeSettings.dmrId,
-                            hotspotId: activeSettings.hotspotId) else {
+        // 接收策略照 DroidStar：`process_udp()` 只判「55 字节 + DMRD + 已连接」，
+        // **不拿目的地址跟选中的 TG 比**，服务器推什么就解什么。
+        //
+        // 这一点很关键：BrandMeister 推的是「这台热点被订阅的组」，其中还包括
+        // SelfCare 里配的静态组。以前这里硬按选中的 TG 丢帧，只要静态组和选中的
+        // 不是同一个，就会表现成「订阅没建立、什么都不响」——其实语音一直在下来。
+        // 关掉「跟随服务器下发的通话组」才恢复严格过滤（只听选中的那个组）。
+        let belongs = frame.belongs(toTalkgroup: activeTalkgroup,
+                                    myId: activeSettings.dmrId,
+                                    hotspotId: activeSettings.hotspotId)
+        if !belongs, !activeSettings.followServerTalkgroups {
             filteredFrames += 1
             trafficFiltered += 1
             return
         }
 
-        // 呼叫之后的第一个回音：说明动态订阅确实建立了。
+        // 订阅之后的第一个回音才是「动态订阅建立」的证据；如果推来的是别的组，
+        // 说明链路没问题、只是订阅落在了另一个组上，也要明确说出来。
         if let pending = pendingConfirmTalkgroup {
             pendingConfirmTalkgroup = nil
             subRetries = 0
-            append(.info, "✅ TG \(pending) 的语音已下发，动态订阅生效")
+            if belongs {
+                append(.info, "✅ TG \(pending) 的语音已下发，动态订阅生效")
+            } else {
+                append(.info, "✅ 链路已收到语音，但服务器推的是 TG \(frame.dst)（TS\(frame.slot)），"
+                    + "不是 \(pending) —— 可能 SelfCare 里挂的是静态组，已跟随播放")
+            }
         }
         // 有语音下来就说明订阅还活着，续订计时器从这一刻重新算。
         talkgroupAliveAt = Date()
@@ -1279,6 +1333,8 @@ final class HomebrewClient: ObservableObject {
         isCalling = false
         pendingConfirmTalkgroup = nil
         subRetries = 0
+        rxAtCall = 0
+        serverTalkgroup = nil
         talkgroupAliveAt = nil
         trafficStat.removeAll()
         trafficTotal = 0
