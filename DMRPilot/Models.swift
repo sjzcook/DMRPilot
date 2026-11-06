@@ -101,12 +101,18 @@ struct Settings: Codable, Equatable {
     /// 使用新版心跳 `DMRP`（MMDVMHost 2024+ / 55 字节帧）。
     /// 传统 BrandMeister 走 `RPTPING` / 53 字节帧，默认关闭。
     var modernPing: Bool = false
-    /// 登录后是否上报 RPTC 配置包（呼号 / 频率 / 位置那一大坨 302 字节）。
+    /// 是否**跳过** RPTC 配置包（默认不跳过，也就是正常上报）。
     ///
-    /// 默认**关闭**：现在 MMDVMHost 主线已经不发这个包了，BrandMeister 也不需要它，
-    /// 语音照样收发；反而有些 master 收到会回 MSTNAK，把整个登录判失败。
-    /// 只有自建 HBLink / 要求上报资料的老 master 才需要打开。
-    var reportConfig: Bool = false
+    /// 参考实现 DroidStar（`DMR::process_udp`）的握手是三段式的：
+    ///
+    ///     RPTL → RPTACK(盐) → RPTK → RPTACK → RPTC → RPTACK → CONNECTED_RW
+    ///
+    /// 只有收到第三个 RPTACK（RPTC 的应答）才会 `setup_connection()`，之后才接受 DMRD。
+    /// BrandMeister 侧同理：没有这个 302 字节配置包，后台不会把设备标成已上线，TG 也不推。
+    /// 所以这里做成「跳过」开关而非常规开关——老版本存的 `reportConfig = false`
+    /// 不会再把这份配置关掉（旧 key 直接忽略），升级后默认就回到正确流程。
+    /// 只有自建 HBLink 等明确不收配置包的服务端才需要打开跳过。
+    var skipConfig: Bool = false
     var autoReconnect: Bool = true
 
     /// 要收听的通话组（TG），0 表示全部。
@@ -176,16 +182,17 @@ struct Settings: Codable, Equatable {
 
     /// 实际登录用的热点 ID。
     ///
-    /// BrandMeister 的 SSID 是**直接接在 DMR ID 后面两位**：
-    /// 1234567 + SSID 01 → `123456701`，SSID 02 → `123456702`（openSPOT / Pi-Star 一致）。
-    /// 换成算术就是 `DMR ID × 100 + 后缀`。
+    /// 与参考实现 DroidStar `DMR::set_dmr_params` 完全一致：
     ///
-    /// 这里曾经写成 `×(100) + (后缀 − 1)`，填 01 算出来是 `…700`——比 SelfCare 里
-    /// 注册的 ID 小 1，master 收到的就是一个不存在的设备 ID：登录可能照样被接受，
-    /// 但 BM 后台「My Hotspots」里永远看不到设备，语音也不会推给这台热点。
+    ///     m_essid = dmrID * 100 + (essid - 1)
+    ///
+    /// 即界面上的「ESSID 后缀 1」对应 `…00`，后缀 2 对应 `…01`。
+    /// 这个后缀只是**序号**，跟 SelfCare 里那台设备到底叫 `…00` 还是 `…01` 无关，
+    /// 所以设置页会把换算结果「登录热点 ID」直接显示出来——以后台显示的 9 位数字为准，
+    /// 对不上就调后缀，直到两边逐位一致。
     var hotspotId: Int {
         guard let suffix = essidSuffix, dmrId > 0, dmrId <= 42_949_672 else { return dmrId }
-        return dmrId * 100 + suffix
+        return dmrId * 100 + (suffix - 1)
     }
 
     /// 带 SSID 的 9 位热点 ID，用于界面与日志（没有后缀时就是 DMR ID）。
@@ -213,7 +220,7 @@ extension Settings {
         transport = try container.decodeIfPresent(HbTransport.self, forKey: .transport) ?? defaults.transport
         wsPath = try container.decodeIfPresent(String.self, forKey: .wsPath) ?? defaults.wsPath
         modernPing = try container.decodeIfPresent(Bool.self, forKey: .modernPing) ?? defaults.modernPing
-        reportConfig = try container.decodeIfPresent(Bool.self, forKey: .reportConfig) ?? defaults.reportConfig
+        skipConfig = try container.decodeIfPresent(Bool.self, forKey: .skipConfig) ?? defaults.skipConfig
         autoReconnect = try container.decodeIfPresent(Bool.self, forKey: .autoReconnect) ?? defaults.autoReconnect
         talkgroup = try container.decodeIfPresent(Int.self, forKey: .talkgroup) ?? defaults.talkgroup
         callSlot = try container.decodeIfPresent(Int.self, forKey: .callSlot) ?? defaults.callSlot

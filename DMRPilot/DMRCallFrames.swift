@@ -180,8 +180,15 @@ enum DMRCallCodec {
 
     // MARK: - 语音头 / 结束符
 
-    /// 数据同步字（基站侧，对应 MMDVM 的 duplex = true）与其保留位掩码。
-    private static let dataSync: [UInt8] = [0x0D, 0xFF, 0x57, 0xD7, 0x5D, 0xF5, 0xD0]
+    /// 同步字与保留位掩码。
+    ///
+    /// **必须用 MS（移动台）那一组。** 热点在 MMDVM 里是 simplex（`duplex = false`），
+    /// 参考实现 DroidStar 的 `addDMRDataSync(..., 0)` / `addDMRAudioSync(..., 0)` 走的也是 MS 分支。
+    /// 之前这里用了基站（BS）的数据同步字 `0D FF 57 D7 5D F5 D0`，等于告诉对端
+    /// 「这是一台中继台发的」—— 对端按 BS 解调，拿到的 LC 是坏的，这次呼叫在别人耳朵里
+    /// 根本不存在，动态订阅自然也不会建立。
+    private static let dataSync: [UInt8] = [0x0D, 0x5D, 0x7F, 0x77, 0xFD, 0x75, 0x70]
+    private static let audioSync: [UInt8] = [0x07, 0xF7, 0xD5, 0xDD, 0x57, 0xDF, 0xD0]
     private static let syncMask: [UInt8] = [0x0F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xF0]
 
     /// 语音头（`isTerminator == false`）或带 LC 的结束符的 33 字节负载。
@@ -231,9 +238,20 @@ enum DMRCallCodec {
         return out
     }
 
-    /// 一个完整的静音语音突发（33 字节），取自 MMDVMHost 的 DMR_SILENCE_DATA。
-    /// 发它就是让「这次呼叫」有个声音帧，不发音突发的话某些 master 不认。
-    static let silenceBurst: [UInt8] = [
+    /// 一个完整的静音语音突发（33 字节）。
+    ///
+    /// 底料是 MMDVMHost 的 `DMR_SILENCE_DATA`，但它**不含同步字**（第 13…19 字节是
+    /// `60 00 00 00 00 00 01` 这类残值），必须按掩码补上 MS 音频同步字，
+    /// 否则对端认不出这是一个语音突发。
+    static func silenceBurst(index: Int = 0) -> [UInt8] {
+        var out = rawSilence
+        for i in 0..<7 {
+            out[13 + i] = (out[13 + i] & ~syncMask[i]) | audioSync[i]
+        }
+        return out
+    }
+
+    private static let rawSilence: [UInt8] = [
         0xB9, 0xE8, 0x81, 0x52, 0x61, 0x73, 0x00, 0x2A, 0x6B, 0xB9, 0xE8,
         0x81, 0x52, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x73, 0x00,
         0x2A, 0x6B, 0xB9, 0xE8, 0x81, 0x52, 0x61, 0x73, 0x00, 0x2A, 0x6B

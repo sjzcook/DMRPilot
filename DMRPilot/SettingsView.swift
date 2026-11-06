@@ -109,11 +109,11 @@ struct SettingsView: View {
             }
 
             Toggle("新版心跳 DMRP", isOn: $app.settings.modernPing)
-            Toggle("上报配置包 RPTC", isOn: $app.settings.reportConfig)
+            Toggle("跳过配置包 RPTC（不推荐）", isOn: $app.settings.skipConfig)
         } header: {
             Text("服务器")
         } footer: {
-            Text("服务器表来自 ds.vu3lvo.com/DMRHosts.txt（Pi-Star 格式），选中后自动填好域名和端口，也可以切到「自定义服务器」手填。\nESSID 后缀就是 BrandMeister 的 SSID，直接接在 DMR ID 后面两位：DMR ID 4601234 + 后缀 01 → 登录 ID 460123401。这个 9 位 ID 必须和 SelfCare → My Hotspots 里显示的完全一致，差一位后台就看不到这台设备，语音也不会推下来；留 0 表示直接用 7 位 DMR ID 登录（多数 BrandMeister master 不接受，建议至少填 01）。\nBrandMeister 热点标准走 UDP 62031 + 传统心跳 RPTPING。\n「上报配置包 RPTC」默认关闭：现代 MMDVMHost 已经不发这个 302 字节的配置包，BrandMeister 也不需要它，语音照样收发；个别 master 收到还会回 MSTNAK 把登录判失败。只有自建 HBLink 或要求登记资料的老 master 才需要打开。\n新版心跳 DMRP 对应 MMDVMHost 2024 之后的 55 字节帧，只有服务器明确要求时才打开。\nWebSocket 走 wss，仅部分自建 HBLink 或网关支持。")
+            Text("服务器表来自 ds.vu3lvo.com/DMRHosts.txt（Pi-Star 格式），选中后自动填好域名和端口，也可以切到「自定义服务器」手填。\nESSID 后缀按参考实现 DroidStar 的规则换算：登录 ID = DMR ID × 100 + (后缀 − 1)，所以后缀 1 → …00、后缀 2 → …01。上面那行「登录热点 ID」就是要发给服务器的 9 位号码，请和 SelfCare → My Hotspots 里显示的数字逐位对照，不一致就调后缀。留 0 表示直接用 7 位 DMR ID 登录（BrandMeister 不认，会收不到任何语音）。\nBrandMeister 热点标准走 UDP 62031 + 传统心跳 RPTPING。\n「跳过配置包 RPTC」默认关闭，也就是会正常上报：DroidStar 的握手是 RPTL → RPTK → RPTC → 三个 RPTACK 才进入可收状态，BrandMeister 也只有在收到这个 302 字节配置包后，才会在后台把设备显示出来并向它推语音。收不到任何 DMRD 时，先确认这里没有被打开。\n新版心跳 DMRP 对应 MMDVMHost 2024 之后的 55 字节帧，只有服务器明确要求时才打开。\nWebSocket 走 wss，仅部分自建 HBLink 或网关支持。")
         }
     }
 

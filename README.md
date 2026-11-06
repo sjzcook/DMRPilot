@@ -185,9 +185,17 @@ python tools/gen_icon.py
   LC(9 字节) ──RS(12,9)──▶ 12 字节 ──BPTC(196,96)──▶ 33 字节 payload
   ```
 
-  外加 slot type 的 `Golay(20,8)`、6 字节数据同步字、以及头/结束符各自异或的 CRC 常数
+  外加 slot type 的 `Golay(20,8)`、6 字节**数据同步字（MS 那一组：`0D 5D 7F 77 FD 75 70`）**、
+  以及头/结束符各自异或的 CRC 常数
   （`0x96` / `0x99`）。实现逐行移植自 MMDVMHost 的 `RS129.cpp` / `BPTC19696.cpp` /
   `Hamming.cpp` / `Golay2087.cpp` / `Sync.cpp`，代码在 `DMRPilot/DMRCallFrames.swift`。
+- **同步字必须用 MS（移动台）那一组**：热点是 simplex，MMDVM 里 `duplex = false`，
+  DroidStar 的 `addDMRDataSync(..., 0)` 走的也是 MS 分支。用成基站那组（`0D FF 57 D7 …`）
+  等于告诉对端「这是中继台发的」，对端按 BS 解调会拿到坏 LC，这次呼叫在别人耳朵里根本不存在。
+  静音语音突发同理，`DMR_SILENCE_DATA` 里不带同步字，必须按 `SYNC_MASK` 补
+  `MS_SOURCED_AUDIO_SYNC`（`07 F7 D5 DD 57 DF D0`），否则对端认不出这是语音帧。
+- 语音突发的 `flags` 低 4 位带突发序号 `0…5`（对应 DroidStar 的 `(m_dmrcnt - 1) % 6`），
+  不是一律填 0。
 - 有人正在通话时**不会**插播：插一个语音头进去会把这一句打断，所以这时跳过并写一行日志。
 - 同一个组 3 秒内重复点「确定」会被节流拦住；换别的组立刻能发。
 - 呼叫帧的源地址是 **7 位 DMR ID**（`settings.dmrId`），不是 9 位热点 ID：
@@ -229,8 +237,8 @@ App                          Master
  |◀────────────  RPTACK (+盐) ──|  10 字节，后 4 字节是挑战盐
  |── RPTK  (+id + SHA256(盐‖密码)) ─▶|  40 字节
  |◀────────────  RPTACK ────────|
- |┈┈ RPTC  (302B 配置块) ┈┈┈┈▶|   ← 可选，默认不发（见下）
- |◀────────────  MSTACK ────────|     只有发了 RPTC 才会有
+ |── RPTC  (302B 配置块) ──────▶|   默认就发（参考 DroidStar）
+ |◀────────────  RPTACK/MSTACK ─|   收到它才算 CONNECTED_RW，之后才收 DMRD
  |── RPTPING (+id) ────────────▶|   每 5 秒
  |◀────────────  MSTPONG ───────|
  |◀────────────  DMRD ...  ─────|   语音/信令数据帧
@@ -239,10 +247,12 @@ App                          Master
 - **RPTK 必须做挑战应答**：密码不能直接发，要 `SHA256(RPTACK 里那 4 字节盐 ‖ 密码 UTF-8)`，共 40 字节。
   发明文 20 字节（旧版 28 字节帧）BrandMeister 一律回 `MSTNAK`——这是最容易踩的坑。
   老 HBlink / 部分自建网关只认明文，所以标准鉴权被拒后客户端会自动用明文再试一次，日志里会写明「兼容模式」。
-- **RPTC 是可选的，默认不发**。当前 MMDVMHost 主线（`DMRNetwork.cpp`）已经彻底删掉了这个包，
-  BrandMeister 照样正常工作——语音走的是 `DMRD`，配置包只喂给网页上的设备资料。部分 master
-  收到它反而回 `MSTNAK`，把整轮登录判成失败。需要给老 HBLink 登记资料时，在
-  **设置 → 服务器 → 上报配置包 RPTC** 打开。
+- **RPTC 默认要发**（设置里是「跳过配置包 RPTC（不推荐）」的反向开关，默认不跳过）。
+  参考实现 DroidStar 的 `DMR::process_udp` 是三段状态机：只有收到**第三个** `RPTACK`
+  （也就是 RPTC 的应答）才调 `setup_connection()` 进入 `CONNECTED_RW`，之前一律不处理 `DMRD`。
+  BrandMeister 侧同理：没有这个包，后台不把设备标成已上线，TG 也不会推给这台 peer——
+  表现就是「App 显示已登录、后台看不到设备、一帧语音都不来」。
+  老版本存的 `reportConfig = false` 不会再把这份配置关掉（旧 key 直接忽略）。
   真发的时候它是定长 302 字节：`RPTC(4) + id(4, 二进制) + 294`，字段表见
   [BrandMeister Homebrew 规范](https://wiki.brandmeister.network/index.php/Homebrew_repeater_protocol/Spec)，
   数字字段要零补齐（`%02u` → `"01"`），尾部必须用空格 `0x20` 而不是 NUL 补齐。
@@ -306,8 +316,9 @@ App                          Master
      （把设置页显示的「登录热点 ID」和 SelfCare 里的号逐位对一遍）。
    - 「密码不对」——`RPTK` 被拒。密码是 SelfCare → Hotspot Security 里那个，不是网站登录密码；
      粘贴时带进空格、或带 iOS 智能引号都会失败（客户端会去掉首尾空白、把弯引号换成 ASCII，但密码本身就错就没辙）。
-   - 「上报配置被拒 / 配置包被拒」——`RPTC` 被拒。能走到这一步说明 ID 与密码都通过了。
-     这个包本身是可选的：**设置 → 服务器 → 上报配置包 RPTC** 关掉就能连（默认就是关的）。
+   - 「上报配置被拒 / 配置包被拒」——`RPTC` 被拒。能走到这一步说明 ID 与密码都通过了，
+     多半是热点 ID 或呼号与 SelfCare 登记不一致。先按提示核对，实在连不上再在
+     **设置 → 服务器 → 跳过配置包 RPTC** 里勾上（能连但收不到语音，后台也看不到设备）。
      打开的人多半是在连自建 HBLink 或要求登记资料的老 master，那种情况下再核对呼号是否填了、
      是否与 SelfCare 里登记的一致。
 2. DMR ID 是不是被别的设备占用了？同一个 ID 同时只允许一条连接，先把手机端 MMDVM / 电脑上的 MMDVMHost 断掉。

@@ -89,6 +89,15 @@ enum HB {
         return Data([UInt8](tag.utf8) + bigEndian(id, count: 4))
     }
 
+    /// RPTCL：主动登出（9 字节：5 + id(4)）。
+    ///
+    /// 参考实现 DroidStar 的 `send_disconnect()` 就是这么做的。不发这一帧，
+    /// master 要等会话超时（几十秒到几分钟）才释放这个热点 ID —— 这段时间里
+    /// 立刻重连会被判「ID 已被占用」回 MSTNAK，表现就是「断开后马上连就连不上」。
+    static func disconnect(id: Int) -> Data {
+        Data([UInt8]("RPTCL".utf8) + bigEndian(id, count: 4))
+    }
+
     /// 配置上报（302 字节）。
     ///
     /// 字段宽度与 MMDVMHost `DMRNetwork::writeConfig` 的格式串逐项对应：

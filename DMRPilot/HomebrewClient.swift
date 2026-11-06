@@ -267,13 +267,15 @@ final class HomebrewClient: ObservableObject {
 
             // 2. 8 个静音突发，每 60ms 一帧（约半秒的真实 PTT）。
             //    只发一帧有些 master 会当噪音丢掉，宁可像一次真的按键。
+            //    flags 低 4 位带突发序号 0…5，与 DroidStar 的 `(m_dmrcnt - 1) % 6` 一致。
             for index in 1...8 {
                 try? await Task.sleep(nanoseconds: 60_000_000)
                 if Task.isCancelled { return }
+                let burst = UInt8((index - 1) % 6)
                 self.sendDmrFrame(src: src, dst: talkgroup, peer: peer,
-                                  flags: slotFlag,
+                                  flags: slotFlag | burst,
                                   streamId: stream,
-                                  payload: DMRCallCodec.silenceBurst,
+                                  payload: DMRCallCodec.silenceBurst(index: index - 1),
                                   label: "DMRD 语音突发 \(index)/8",
                                   quiet: index > 1)
             }
@@ -386,12 +388,11 @@ final class HomebrewClient: ObservableObject {
             return
         }
 
-        // 只有真的要上报配置包时，呼号才是必需的（它是 302 字节配置块的前 8 字节）。
-        // 默认不发 RPTC，所以留空也照样能连。
-        guard !settings.reportConfig || !settings.normalizedCallsign.isEmpty else {
-            state = .failed("请先填写呼号（Callsign），或关闭「上报配置包 RPTC」")
-            append(.error, "呼号为空：RPTC 配置块会缺字段，BrandMeister 直接回 MSTNAK")
-            return
+        // 呼号是 302 字节配置块的前 8 字节。缺了它多数 master 会回 MSTNAK，
+        // 但不要因此把人挡在门外——先连上，被拒再降级上线，日志里会说清楚。
+        if !settings.skipConfig && settings.normalizedCallsign.isEmpty {
+            append(.warning, "呼号为空：RPTC 的呼号字段会是空格，部分 master 会回 MSTNAK。"
+                + "建议在设置里填上与 SelfCare 一致的呼号")
         }
 
         if settings.usesEssid && settings.dmrId > 42_949_672 {
@@ -422,9 +423,22 @@ final class HomebrewClient: ObservableObject {
 
     func disconnect() {
         let wasActive = (state != .offline)
-        teardown()
+
+        // 先发 RPTCL（参考实现 DroidStar 的 send_disconnect）。不发的话 master 要等
+        // 会话超时才释放这个热点 ID，这段时间内立刻重连会被判「ID 被占用」。
+        if wasActive {
+            send(HB.disconnect(id: activeSettings.hotspotId), label: "RPTCL 主动登出")
+        }
+
         state = .offline
         if wasActive { append(.info, "已断开连接") }
+
+        // 给 UDP 一点时间把 RPTCL 真正发出去，再拆 socket；teardown 会立刻取消连接。
+        // 若这 0.25 秒里用户又点了连接（state 已不是 offline），就别把新连接拆掉。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            guard let self, self.state == .offline else { return }
+            self.teardown()
+        }
     }
 
     func clearLog() {
@@ -598,7 +612,6 @@ final class HomebrewClient: ObservableObject {
             append(.error, "本次上报：热点 ID \(activeSettings.hotspotId) · 呼号「\(activeSettings.normalizedCallsign)」· 302 字节")
             send(HB.ping(id: activeSettings.hotspotId, modern: false), label: "RPTPING 探测")
             armLoginTimeout()
-
         case .configuring where configRetries < 2:
             // 探针也被 NAK：会话确实没了，按规范整轮重登（重发同一个 RPTC 是没用的）。
             // 等 5 秒再登，给服务器把旧会话超时清掉的时间。
@@ -867,10 +880,11 @@ final class HomebrewClient: ObservableObject {
                 sendRPTK()
                 armLoginTimeout()
             case .authenticating:
-                // 配置包（RPTC）是可选的：现代 master 不需要，部分还会因此回 MSTNAK。
-                // 默认跳过，直接进入在线状态；只有自建 HBLink 等老 master 才在设置里打开。
-                guard activeSettings.reportConfig else {
-                    append(.info, "← RPTACK 鉴权通过，直接上线（未上报 RPTC，现代 master 不需要）")
+                // 参考实现 DroidStar 在这里一定发 RPTC，并等第三个 RPTACK 才 CONNECTED_RW。
+                // 少这一步 BrandMeister 不会把设备当成已完成配置的热点，语音也就不会推下来。
+                guard !activeSettings.skipConfig else {
+                    append(.warning, "← RPTACK 鉴权通过，但设置里选择了跳过 RPTC：握手只走两段，"
+                        + "BrandMeister 后台不会显示这台设备，也不会推 TG 语音")
                     goOnline()
                     return
                 }
@@ -903,9 +917,11 @@ final class HomebrewClient: ObservableObject {
 
         case "MSTP", "DMRP":
             if configProbed, state == .configuring {
-                // 探针回了 MSTPONG：会话是活的，只是不收 RPTC。语音走 DMRD，配置包可有可无。
+                // 探针回了 MSTPONG：会话是活的，只是不收 RPTC。先上线，别把用户挡在登录页，
+                // 但要把后果说清楚——配置没报上去，后台就没有这台设备，多半也收不到语音。
                 configProbed = false
-                append(.info, "← MSTPONG 链路正常：服务器只是不接受配置包，不影响语音收发，直接上线")
+                append(.warning, "← MSTPONG 链路正常，但配置包被拒：先上线，后台可能仍看不到设备")
+                append(.info, "如果一直收不到语音，核对：① SelfCare 里这个 9 位 ID 是否存在 ② 呼号是否与登记一致 ③ 是否被别的设备占用")
                 goOnline()
             } else {
                 append(.rx, "← 心跳应答")
