@@ -133,6 +133,7 @@ final class HomebrewClient: ObservableObject {
         currentSpeaker = nil
         pendingConfirmTalkgroup = nil
         talkgroupAliveAt = nil
+        subRetries = 0
         callWatchdog?.cancel()
         callWatchdog = nil
         trafficStat.removeAll()
@@ -168,15 +169,18 @@ final class HomebrewClient: ObservableObject {
     private var lastCallAt: Date?
     private var lastCallTalkgroup: Int?
     private var callTask: Task<Void, Never>?
-    /// 一轮呼叫（头 + 8 个突发 + 尾，约 0.6 秒）还没发完。中途打断会留下一个没有结束符的语音头，
+    /// 一轮呼叫（头 + 12 个突发 + 尾，约 0.8 秒）还没发完。中途打断会留下一个没有结束符的语音头，
     /// 服务器会把那个时隙占十几秒，所以宁可让这次请求落空。
     private var isCalling = false
     private var dmrSeq: UInt8 = 0
-    /// 等回音的看门狗：25 秒没收到目标 TG 的帧就说清原因，别让界面一直沉默。
+    /// 等回音的看门狗：8 秒没收到目标 TG 的帧就补发一次呼叫，最多 3 次。
     private var callWatchdog: Task<Void, Never>?
     /// 刚呼叫过、还在等第一帧回音的 TG。收到它的语音就说明动态订阅真的生效了，
     /// 打一行确认日志——否则用户只能靠「有没有声音」猜。
     private var pendingConfirmTalkgroup: Int?
+    /// 当前 TG 已经补发过几次呼叫。BrandMeister 偶尔会把刚上线时的那一帧丢掉
+    /// （peer 还没完全登记完），只发一次就等的做法会白白错过一个可用的订阅。
+    private var subRetries = 0
 
     /// 收到的帧按「dst@slot」汇总，每 15 秒报一次。
     ///
@@ -226,10 +230,12 @@ final class HomebrewClient: ObservableObject {
         let now = Date()
         if let lastCallAt, lastCallTalkgroup == talkgroup,
            now.timeIntervalSince(lastCallAt) < 3 { return }
+        // 换了组就从头计数：补发次数只针对「这一个组」。
+        if lastCallTalkgroup != talkgroup { subRetries = 0 }
         lastCallAt = now
         lastCallTalkgroup = talkgroup
 
-        // 上一轮还没发完（约 0.6 秒），别插队——中途打断会留下半截呼叫。
+        // 上一轮还没发完（约 0.8 秒），别插队——中途打断会留下半截呼叫。
         guard !isCalling else { return }
         isCalling = true
         talkgroupAliveAt = now
@@ -273,11 +279,13 @@ final class HomebrewClient: ObservableObject {
                               payload: head,
                               label: "DMRD 语音头 → TG \(talkgroup)")
 
-            // 2. 8 个静音突发，每 60ms 一帧（约半秒的真实 PTT）。
-            //    只发一帧有些 master 会当噪音丢掉，宁可像一次真的按键。
+            // 2. 12 个静音突发，每 60ms 一帧（约 0.8 秒的真实 PTT）。
+            //    只发一帧有些 master 会当噪音丢掉；太短的发射在统计上也容易被判成
+            //    「无效呼叫」，动态订阅就建不起来。宁可像一次真的按键。
             //    flags 低 4 位与载荷要和 DroidStar 的 `encode_data()` 对齐：
             //    每 6 个突发是一个超帧，第 0 个带音频同步字（0x10），其余是 1…5。
-            for index in 0..<8 {
+            let bursts = 12
+            for index in 0..<bursts {
                 try? await Task.sleep(nanoseconds: 60_000_000)
                 if Task.isCancelled { return }
                 let n = index % 6
@@ -285,10 +293,10 @@ final class HomebrewClient: ObservableObject {
                                   flags: slotFlag | (n == 0 ? 0x10 : UInt8(n)),
                                   streamId: stream,
                                   payload: DMRCallCodec.silenceBurst(index: index, colorCode: cc),
-                                  label: "DMRD 语音突发 \(index + 1)/8",
+                                  label: "DMRD 语音突发 \(index + 1)/\(bursts)",
                                   quiet: index > 0)
             }
-            self.append(.tx, "→ 静音突发 8 帧（每 60ms 一帧）已发完")
+            self.append(.tx, "→ 静音突发 \(bursts) 帧（每 60ms 一帧）已发完")
 
             // 3. 结束符：不收尾的话服务器会把这个时隙占十几秒
             try? await Task.sleep(nanoseconds: 60_000_000)
@@ -306,11 +314,24 @@ final class HomebrewClient: ObservableObject {
     private func startCallWatchdog(_ talkgroup: Int) {
         callWatchdog?.cancel()
         callWatchdog = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 25_000_000_000)
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
             guard let self, !Task.isCancelled else { return }
             guard self.pendingConfirmTalkgroup == talkgroup else { return }
+
+            // 第一帧没来，先别急着下结论。刚上线时 peer 可能还没在 master 上
+            // 完全登记好，那一帧会被丢掉；DroidStar 是人工按键，天然避开了这个窗口，
+            // 我们是自动呼叫，所以要自己补。
+            if self.subRetries < 2 {
+                self.subRetries += 1
+                self.pendingConfirmTalkgroup = nil
+                self.append(.warning, "8 秒内没收到 TG \(talkgroup) 的语音，补发第 \(self.subRetries + 1) 次呼叫（共 3 次）")
+                self.lastCallAt = nil          // 绕开 3 秒节流
+                self.call(talkgroup: talkgroup)
+                return
+            }
+
             self.pendingConfirmTalkgroup = nil
-            self.append(.warning, "25 秒内没收到 TG \(talkgroup) 的语音：订阅可能没建立，或这个组此刻没人说话")
+            self.append(.warning, "已连续呼叫 3 次仍未收到 TG \(talkgroup) 的语音：订阅没建立，或这个组此刻没人说话")
             self.append(.info, "先看下一行「近期流量」：里面有这个组 = 订阅成功、只是没声音；"
                 + "只有别的组 = 订阅没生效（换 TS 或换一个正在有人讲的组，如 91 测一下）")
         }
@@ -1074,6 +1095,7 @@ final class HomebrewClient: ObservableObject {
         // 呼叫之后的第一个回音：说明动态订阅确实建立了。
         if let pending = pendingConfirmTalkgroup {
             pendingConfirmTalkgroup = nil
+            subRetries = 0
             append(.info, "✅ TG \(pending) 的语音已下发，动态订阅生效")
         }
         // 有语音下来就说明订阅还活着，续订计时器从这一刻重新算。
@@ -1256,6 +1278,7 @@ final class HomebrewClient: ObservableObject {
         lastCallTalkgroup = nil
         isCalling = false
         pendingConfirmTalkgroup = nil
+        subRetries = 0
         talkgroupAliveAt = nil
         trafficStat.removeAll()
         trafficTotal = 0

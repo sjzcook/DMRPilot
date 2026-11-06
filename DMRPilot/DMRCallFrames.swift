@@ -16,7 +16,11 @@
 //
 //  外加 slot type 的 Golay(20,8) 和数据同步字。全部逐行移植自 MMDVMHost：
 //  RS129.cpp / BPTC19696.cpp / Hamming.cpp / Golay2087.cpp / Sync.cpp。
-//  算法已用 Python 复现并做过 encode→decode 往返验证（12 字节完全一致）。
+//
+//  注意：**不要只做 encode→decode 往返验证**。编解码两端一起写错时往返照样“通过”，
+//  这里就踩过——RS 反馈抽头错了一级，往返一致，但发到空口上整段 LC 都是坏的。
+//  正确的验证方式是把 33 字节输出和参考实现逐字节比对（Python 复刻 DroidStar 的
+//  full_lc_encode 后确认一致）。
 //
 
 import Foundation
@@ -52,13 +56,23 @@ enum DMRCallCodec {
     // MARK: - RS(12,9)
 
     /// 9 字节 LC → 4 字节校验。第 4 个字节是移位留下的，不用。
+    ///
+    /// 逐行对应 MMDVMHost / DroidStar 的 `CRS129::encode`：反馈抽头是
+    /// **`parity[NPAR-1]`，也就是 `parity[2]`**，循环只到 `j = 2`，
+    /// `parity[3]` 恒为 0。
+    ///
+    /// 这里曾经写成「反馈取 `parity[3]`、循环从 `j = 3` 开始」，等于多算了一级、
+    /// 还把上一轮的余数又异或进 `dbyte`。结果是三个校验字节全错：
+    /// 语音头里 12 字节的 RS 码字对不上，接收端 RS 解码失败，这段呼叫在别人耳朵里
+    /// 根本不存在（对端只看到一堆无法纠错的 LC）。已用 Python 逐字节比对
+    /// DroidStar 的实现确认修正后完全一致。
     private static func rsParity(_ message: [UInt8]) -> [UInt8] {
         let poly: [UInt8] = [64, 56, 14, 1]
         var parity = [UInt8](repeating: 0, count: 4)
 
         for raw in message {
-            let dbyte = raw ^ parity[3]
-            var j = 3
+            let dbyte = raw ^ parity[2]
+            var j = 2
             while j > 0 {
                 parity[j] = parity[j - 1] ^ gfMultiply(poly[j], dbyte)
                 j -= 1
