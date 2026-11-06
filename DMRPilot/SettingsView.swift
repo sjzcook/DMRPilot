@@ -70,6 +70,27 @@ struct SettingsView: View {
                     .multilineTextAlignment(.trailing)
             }
 
+            HStack {
+                Text("ESSID 后缀")
+                Spacer()
+                TextField("0", text: essidBinding)
+                    .keyboardType(.numberPad)
+                    .multilineTextAlignment(.trailing)
+                    .frame(maxWidth: 56)
+                Stepper("ESSID", value: $app.settings.essid, in: 0...99)
+                    .labelsHidden()
+            }
+
+            if app.settings.usesEssid {
+                HStack {
+                    Text("上报热点 ID")
+                    Spacer()
+                    Text(String(app.settings.hotspotId))
+                        .font(.callout.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Picker("传输方式", selection: $app.settings.transport) {
                 ForEach(HbTransport.allCases) { transport in
                     Text(transport.title).tag(transport)
@@ -91,7 +112,7 @@ struct SettingsView: View {
         } header: {
             Text("服务器")
         } footer: {
-            Text("服务器表来自 ds.vu3lvo.com/DMRHosts.txt（Pi-Star 格式），选中后自动填好域名和端口，也可以切到「自定义服务器」手填。\nBrandMeister 热点标准走 UDP 62031 + 传统心跳 RPTPING。\n新版心跳 DMRP 对应 MMDVMHost 2024 之后的 55 字节帧，只有服务器明确要求时才打开。\nWebSocket 走 wss，仅部分自建 HBLink 或网关支持。")
+            Text("服务器表来自 ds.vu3lvo.com/DMRHosts.txt（Pi-Star 格式），选中后自动填好域名和端口，也可以切到「自定义服务器」手填。\nESSID 后缀用于同一个 DMR ID 下挂多个热点：上报 ID = DMR ID × 100 + (后缀 − 1)，留 0 表示直接用 DMR ID 登录。\nBrandMeister 热点标准走 UDP 62031 + 传统心跳 RPTPING。\n新版心跳 DMRP 对应 MMDVMHost 2024 之后的 55 字节帧，只有服务器明确要求时才打开。\nWebSocket 走 wss，仅部分自建 HBLink 或网关支持。")
         }
     }
 
@@ -173,6 +194,14 @@ struct SettingsView: View {
         Binding(
             get: { String(app.settings.port) },
             set: { app.settings.port = Int($0.filter(\.isNumber)) ?? 62031 }
+        )
+    }
+
+    /// 只收数字并限制在 0…99，越界不会把上报 ID 算成垃圾值。
+    private var essidBinding: Binding<String> {
+        Binding(
+            get: { String(app.settings.essid) },
+            set: { app.settings.essid = min(99, max(0, Int($0.filter(\.isNumber)) ?? 0)) }
         )
     }
 }

@@ -84,6 +84,9 @@ struct Settings: Codable, Equatable {
     var dmrId: Int = 0
     /// 呼号，仅用于 RPTC 配置上报，可留空
     var callsign: String = ""
+    /// ESSID 后缀 0…99。0 = 不上报后缀，直接用 DMR ID 当热点 ID；
+    /// 1…99 时按 BrandMeister 的规则换算成 9 位热点 ID，见 `hotspotId`。
+    var essid: Int = 0
     /// BrandMeister 自助页 → Hotspot Security 里设置的密码
     var password: String = ""
     /// 从 DMRHosts.txt 选中的服务器名字（如 BM_4602_China）；空字符串表示自定义域名。
@@ -107,6 +110,30 @@ struct Settings: Codable, Equatable {
     var audioVolume: Double = 0.9
 
     var isIdentityReady: Bool { dmrId > 0 && !password.isEmpty }
+
+    // MARK: ESSID
+
+    /// 有效后缀 1…99；0 或越界视为不启用。
+    var essidSuffix: Int? {
+        (1...99).contains(essid) ? essid : nil
+    }
+
+    /// 实际登录用的热点 ID。
+    ///
+    /// BrandMeister / MMDVM 的换算（DMR::set_dmr_params）：
+    ///     m_essid = dmrID * 100 + (后缀 - 1)
+    /// 即 7 位 ID 1234567 + 后缀 01 → 123456700，后缀 02 → 123456701。
+    /// 没有后缀时 master 直接把 DMR ID 当热点 ID。
+    ///
+    /// 填了 9 位热点 ID 再乘 100 会溢出 uint32、master 只会回 NAK，
+    /// 所以和参考实现一样先挡住（Int 在 64 位上不会溢出，但值是垃圾）。
+    var hotspotId: Int {
+        guard let suffix = essidSuffix, dmrId > 0, dmrId <= 42_949_672 else { return dmrId }
+        return dmrId * 100 + (suffix - 1)
+    }
+
+    /// 是否真的带着 ESSID 后缀登录（用于日志与界面提示）。
+    var usesEssid: Bool { essidSuffix != nil }
 }
 
 extension Settings {
@@ -119,6 +146,7 @@ extension Settings {
 
         dmrId = try container.decodeIfPresent(Int.self, forKey: .dmrId) ?? defaults.dmrId
         callsign = try container.decodeIfPresent(String.self, forKey: .callsign) ?? defaults.callsign
+        essid = try container.decodeIfPresent(Int.self, forKey: .essid) ?? defaults.essid
         password = try container.decodeIfPresent(String.self, forKey: .password) ?? defaults.password
         hostName = try container.decodeIfPresent(String.self, forKey: .hostName) ?? defaults.hostName
         host = try container.decodeIfPresent(String.self, forKey: .host) ?? defaults.host

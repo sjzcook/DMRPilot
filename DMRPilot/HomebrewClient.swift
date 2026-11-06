@@ -135,8 +135,18 @@ final class HomebrewClient: ObservableObject {
             return
         }
 
+        if settings.usesEssid && settings.dmrId > 42_949_672 {
+            // 再乘 100 就溢出 32 位，master 只会回 MSTNAK。参考实现同样在这一步挡住。
+            state = .failed("DMR ID 过大：ESSID 需要 7 位 ID，不是 9 位热点 ID")
+            append(.error, "ESSID 换算会溢出：DMR ID 应填 7 位编号")
+            return
+        }
+
         state = .connecting
         append(.info, "开始连接 \(settings.host):\(settings.port)（\(settings.transport.short)）")
+        if settings.usesEssid {
+            append(.info, "热点 ID \(settings.hotspotId)（DMR ID \(settings.dmrId) + ESSID 后缀 \(settings.essidSuffix ?? 0)）")
+        }
 
         switch settings.transport {
         case .udp:
@@ -275,7 +285,7 @@ final class HomebrewClient: ObservableObject {
 
         state = .loggingIn
         append(.info, "→ RPTL 登录请求（第 \(loginAttempt) 次）")
-        send(HB.login(id: activeSettings.dmrId), label: "RPTL")
+        send(HB.login(id: activeSettings.hotspotId), label: "RPTL")
         armLoginTimeout()
     }
 
@@ -345,7 +355,7 @@ final class HomebrewClient: ObservableObject {
             return
         }
 
-        send(HB.ping(id: activeSettings.dmrId, modern: activeSettings.modernPing),
+        send(HB.ping(id: activeSettings.hotspotId, modern: activeSettings.modernPing),
              label: activeSettings.modernPing ? "DMRP" : "RPTPING")
     }
 
@@ -368,12 +378,12 @@ final class HomebrewClient: ObservableObject {
             case .loggingIn:
                 state = .authenticating
                 append(.info, "← RPTACK 登录通过，→ RPTK 鉴权")
-                send(HB.auth(id: activeSettings.dmrId, password: activeSettings.password), label: "RPTK")
+                send(HB.auth(id: activeSettings.hotspotId, password: activeSettings.password), label: "RPTK")
                 armLoginTimeout()
             case .authenticating:
                 state = .configuring
                 append(.info, "← RPTACK 鉴权通过，→ RPTC 上报配置")
-                send(HB.config(id: activeSettings.dmrId, callsign: activeSettings.callsign), label: "RPTC")
+                send(HB.config(id: activeSettings.hotspotId, callsign: activeSettings.callsign), label: "RPTC")
                 armLoginTimeout()
             case .configuring:
                 goOnline()

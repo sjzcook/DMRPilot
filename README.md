@@ -26,7 +26,7 @@ DMRApp/
 │   ├── DirectoryView.swift      # 设备查询 + 通话组搜索
 │   ├── SettingsView.swift       # 身份 / 服务器 / 行为
 │   ├── HostDirectory.swift      # DMRHosts.txt 下载 / 解析 / 缓存
-│   ├── HostPickerField.swift    # 服务器下拉列表 + Hostname 搜索
+│   ├── HostPickerField.swift    # 服务器弹出选择器 + Hostname 搜索
 │   ├── LogConsoleView.swift     # 十六进制协议日志
 │   ├── Vocoder/                 # AMBE+2 半速率解码器（纯 Swift）
 │   │   ├── HalfrateDecoder.swift    # 帧解码 + 丢帧隐藏 + 输出级
@@ -96,12 +96,29 @@ python tools/gen_icon.py
 
 - 数据源 `https://ds.vu3lvo.com/DMRHosts.txt`（镜像 `https://ds.vu3lvo.com/backup/DMRHosts.txt`），
   首次进入设置页自动下载并缓存到 `Caches/DMRHosts.txt`，之后启动直接读缓存，点「更新」才会重拉。
-- 下拉列表上方是 **Hostname 搜索框**，按域名（顺带匹配表里的名字）过滤，输入即展开；
-  默认只列 BrandMeister 条目（42 台），切到「全部」能看到 XLX、DMR+、FreeDMR 等 1200 多条。
+- 点服务器那一行会**弹出选择器**（半屏 / 全屏 sheet）：搜索框固定在列表上方，按域名（顺带匹配表里的名字）过滤；
+  默认只列 BrandMeister 条目（42 台），切到「全部」能看到 XLX、DMR+、FreeDMR 等 1200 多条；
+  右上角刷新按钮强制重下，选中即关闭并回填。
 - 选中一台后自动写入 `host` / `port`，`hostName` 只用来回显选中态；选「自定义服务器」则露出域名输入框，
   自建 HBLink / 私服走这条路。
 - 解析规则与参考实现一致：跳过 `DMRGateway` / `DMR2YSF` / `DMR2NXDN` 三条本机网关记录，
   第 3 列域名、第 4 列表内密码（`none` 视为空）、第 5 列端口；下载到 HTML 错误页时直接丢弃，不会污染缓存。
+
+### ESSID 后缀
+
+同一个 DMR ID 下要挂多个热点（或多台设备共用一个 ID），靠 ESSID 后缀区分。
+位置：**设置 → 服务器 → ESSID 后缀**。
+
+- `0`（默认）：不上报后缀，直接用 DMR ID 登录，行为和以前完全一样。
+- `1…99`：上报 ID = `DMR ID × 100 + (后缀 − 1)`。例如 DMR ID `4601234` + 后缀 `01` → 热点 ID `460123400`，
+  后缀 `02` → `460123401`（对应 MMDVM 里「ESSID 01/02」的说法）。
+- 选中后缀后，设置页会多出一行「上报热点 ID」实时显示换算结果；「热点」页顶部的指标也会从 `DMR ID`
+  改成 `热点 ID`，日志里会打一行 `热点 ID 460123400（DMR ID 4601234 + ESSID 后缀 1）`。
+- `RPTL` / `RPTK` / `RPTC` / `RPTPING` 四个帧里的 4 字节 ID 用的都是这个热点 ID，
+  这也是 master 认设备、判断「同一 ID 重复登录」的依据。
+- DMR ID 必须填 7 位。填成 9 位热点 ID 再乘 100 会溢出 32 位，master 只会回 `MSTNAK`，
+  所以客户端在发出 `RPTL` 之前就直接拦下来报错，不会白等超时。
+- 反过来，如果某个热点在 SelfCare 里就是按 9 位 ID 注册的（少见），把 ESSID 留 0、DMR ID 直接填 9 位即可。
 
 
 在 SelfCare 里把热点设成 **Static Talkgroup** 或打开 Dynamic，否则你只会收到「没人说话」的心跳——这是最常见的新手坑。
