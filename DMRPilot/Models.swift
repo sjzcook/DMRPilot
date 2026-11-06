@@ -101,18 +101,21 @@ struct Settings: Codable, Equatable {
     /// 使用新版心跳 `DMRP`（MMDVMHost 2024+ / 55 字节帧）。
     /// 传统 BrandMeister 走 `RPTPING` / 53 字节帧，默认关闭。
     var modernPing: Bool = false
-    /// 是否**跳过** RPTC 配置包（默认不跳过，也就是正常上报）。
+    /// 登录成功后是否上报 `RPTC` 配置包（302 字节：呼号 / 频率 / 位置 / 软件名）。
     ///
-    /// 参考实现 DroidStar（`DMR::process_udp`）的握手是三段式的：
+    /// 默认**关闭**。参考实现 DroidStar 的 `DMR::process_udp` 里根本没有 RPTC：
+    /// 它的握手只有两段
     ///
-    ///     RPTL → RPTACK(盐) → RPTK → RPTACK → RPTC → RPTACK → CONNECTED_RW
+    ///     RPTL → RPTACK(盐) → RPTK → RPTACK → CONNECTED_RW
     ///
-    /// 只有收到第三个 RPTACK（RPTC 的应答）才会 `setup_connection()`，之后才接受 DMRD。
-    /// BrandMeister 侧同理：没有这个 302 字节配置包，后台不会把设备标成已上线，TG 也不推。
-    /// 所以这里做成「跳过」开关而非常规开关——老版本存的 `reportConfig = false`
-    /// 不会再把这份配置关掉（旧 key 直接忽略），升级后默认就回到正确流程。
-    /// 只有自建 HBLink 等明确不收配置包的服务端才需要打开跳过。
-    var skipConfig: Bool = false
+    /// 拿到第二个 RPTACK 就直接进入收发状态，`RPTC` 只在 MMDVMHost 这类「硬件热点」
+    /// 上出现，用来把设备资料喂给 SelfCare 页面。BrandMeister 对格式不合规的配置包
+    /// 会直接 `MSTCL` 关掉整条会话——表现就是「连上的一瞬间被踢下线」。
+    ///
+    /// 这里换了一个新 key（原来叫 `skipConfig` / 更早叫 `reportConfig`），
+    /// 老存档里的值一律忽略，升级后默认回到「不发配置包」的可靠流程。
+    /// 只有自建 HBLink / 需要在后台登记资料时才手动打开。
+    var sendConfig: Bool = false
     var autoReconnect: Bool = true
 
     /// 要收听的通话组（TG），0 表示全部。
@@ -220,7 +223,7 @@ extension Settings {
         transport = try container.decodeIfPresent(HbTransport.self, forKey: .transport) ?? defaults.transport
         wsPath = try container.decodeIfPresent(String.self, forKey: .wsPath) ?? defaults.wsPath
         modernPing = try container.decodeIfPresent(Bool.self, forKey: .modernPing) ?? defaults.modernPing
-        skipConfig = try container.decodeIfPresent(Bool.self, forKey: .skipConfig) ?? defaults.skipConfig
+        sendConfig = try container.decodeIfPresent(Bool.self, forKey: .sendConfig) ?? defaults.sendConfig
         autoReconnect = try container.decodeIfPresent(Bool.self, forKey: .autoReconnect) ?? defaults.autoReconnect
         talkgroup = try container.decodeIfPresent(Int.self, forKey: .talkgroup) ?? defaults.talkgroup
         callSlot = try container.decodeIfPresent(Int.self, forKey: .callSlot) ?? defaults.callSlot

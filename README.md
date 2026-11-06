@@ -2,7 +2,7 @@
 
 Swift + SwiftUI 写的 BrandMeister 客户端，三条腿：
 
-1. **真协议连接**：以 MMDVM / Homebrew 热点身份登录 BrandMeister Master，完成 `RPTL → RPTK → RPTC` 握手，用 `RPTPING/MSTPONG`（或新版 `DMRP`）保持心跳，然后持续接收 `DMRD` 语音数据帧，本地聚合成实时通话列表。
+1. **真协议连接**：以 MMDVM / Homebrew 热点身份登录 BrandMeister Master，完成 `RPTL → RPTK` 握手，用 `RPTPING/MSTPONG`（或新版 `DMRP`）保持心跳，然后持续接收 `DMRD` 语音数据帧，本地聚合成实时通话列表。
 2. **真的能出声**：`DMRD` 里的 33 字节载荷送进**纯 Swift 实现的 AMBE+2 半速率解码器**，还原成 8 kHz PCM 用 `AVAudioEngine` 播出来。整个声码器（FEC、反量化、谐波合成、增强、限幅）没有一个 C/C++ 文件，也不依赖第三方二进制。
 3. **REST 查询**：`api.brandmeister.network/v2` 的设备详情与全球通话组名称表。
 
@@ -237,8 +237,8 @@ App                          Master
  |◀────────────  RPTACK (+盐) ──|  10 字节，后 4 字节是挑战盐
  |── RPTK  (+id + SHA256(盐‖密码)) ─▶|  40 字节
  |◀────────────  RPTACK ────────|
- |── RPTC  (302B 配置块) ──────▶|   默认就发（参考 DroidStar）
- |◀────────────  RPTACK/MSTACK ─|   收到它才算 CONNECTED_RW，之后才收 DMRD
+ |── RPTC  (302B 配置块) ──────▶|   默认**不发**，仅「上报配置包 RPTC」打开时
+ |◀────────────  RPTACK/MSTACK ─|   收到才继续；不发就直接进入在线状态
  |── RPTPING (+id) ────────────▶|   每 5 秒
  |◀────────────  MSTPONG ───────|
  |◀────────────  DMRD ...  ─────|   语音/信令数据帧
@@ -247,13 +247,14 @@ App                          Master
 - **RPTK 必须做挑战应答**：密码不能直接发，要 `SHA256(RPTACK 里那 4 字节盐 ‖ 密码 UTF-8)`，共 40 字节。
   发明文 20 字节（旧版 28 字节帧）BrandMeister 一律回 `MSTNAK`——这是最容易踩的坑。
   老 HBlink / 部分自建网关只认明文，所以标准鉴权被拒后客户端会自动用明文再试一次，日志里会写明「兼容模式」。
-- **RPTC 默认要发**（设置里是「跳过配置包 RPTC（不推荐）」的反向开关，默认不跳过）。
-  参考实现 DroidStar 的 `DMR::process_udp` 是三段状态机：只有收到**第三个** `RPTACK`
-  （也就是 RPTC 的应答）才调 `setup_connection()` 进入 `CONNECTED_RW`，之前一律不处理 `DMRD`。
-  BrandMeister 侧同理：没有这个包，后台不把设备标成已上线，TG 也不会推给这台 peer——
-  表现就是「App 显示已登录、后台看不到设备、一帧语音都不来」。
-  老版本存的 `reportConfig = false` 不会再把这份配置关掉（旧 key 直接忽略）。
-  真发的时候它是定长 302 字节：`RPTC(4) + id(4, 二进制) + 294`，字段表见
+- **RPTC 默认不发**（设置里「上报配置包 RPTC（实验性）」默认关闭）。
+  参考实现 DroidStar 的 `dmr.cpp` 里**根本没有 RPTC**：握手只有两段
+  （`RPTL → RPTACK(盐) → RPTK → RPTACK → CONNECTED_RW`），拿到第二个 RPTACK 就直接收发。
+  `RPTC` 是 MMDVMHost 这类硬件热点用来往 SelfCare 页面喂设备资料的，
+  BrandMeister 对格式对不上的配置包会直接回 **`MSTCL` 把整条会话关掉**——
+  现象就是「刚显示已登录，紧接着被踢下线」。所以默认不发，别为了「让后台显示设备」去打开它：
+  设备能不能出现在 My Hotspots，取决于这串 9 位 ID 是否在 SelfCare 存在，不取决于这个包。
+  真要发时它是定长 302 字节：`RPTC(4) + id(4, 二进制) + 294`，字段表见
   [BrandMeister Homebrew 规范](https://wiki.brandmeister.network/index.php/Homebrew_repeater_protocol/Spec)，
   数字字段要零补齐（`%02u` → `"01"`），尾部必须用空格 `0x20` 而不是 NUL 补齐。
 - `MSTNAK` 在这套协议里有两种含义，客户端靠「探针」区分：发一个 `RPTPING`，
@@ -263,6 +264,10 @@ App                          Master
   RPTK 阶段被拒才是「密码不对」，RPTC 阶段被拒是配置包不被接受。
 - 在线后被 `MSTNAK` 清会话：自动重登，连续 3 次就停下并提示「该 ID 正被另一条连接占用」，
   避免两台设备抢同一个 ID 时无限重连。
+- **`MSTCL`（master 主动关会话）按阶段处理**，不再是「判失败 + 6 秒重连」的死循环：
+  配置阶段被关 → 判定 RPTC 不被接受，本次自动改为不发配置包、2 秒后重连；
+  在线被关 → 3 秒后重登，连续 2 次就停下并提示「这个 ID 正被另一台设备使用」；
+  登录阶段被关 → 8 秒后重试（给服务器时间释放上一个会话），2 次后停下并提示核对 9 位 ID。
 - 超时：15 秒收不到任何服务器数据包视为掉线，按设置里的开关决定是否 6 秒后自动重连。
 
 ### DMRD 帧布局
@@ -316,11 +321,11 @@ App                          Master
      （把设置页显示的「登录热点 ID」和 SelfCare 里的号逐位对一遍）。
    - 「密码不对」——`RPTK` 被拒。密码是 SelfCare → Hotspot Security 里那个，不是网站登录密码；
      粘贴时带进空格、或带 iOS 智能引号都会失败（客户端会去掉首尾空白、把弯引号换成 ASCII，但密码本身就错就没辙）。
-   - 「上报配置被拒 / 配置包被拒」——`RPTC` 被拒。能走到这一步说明 ID 与密码都通过了，
-     多半是热点 ID 或呼号与 SelfCare 登记不一致。先按提示核对，实在连不上再在
-     **设置 → 服务器 → 跳过配置包 RPTC** 里勾上（能连但收不到语音，后台也看不到设备）。
-     打开的人多半是在连自建 HBLink 或要求登记资料的老 master，那种情况下再核对呼号是否填了、
-     是否与 SelfCare 里登记的一致。
+   - 「服务器主动断开连接（MSTCL）」——master 关掉了会话。看日志里括号中的**阶段**：
+     配置阶段就是 `RPTC` 不被接受（客户端会自动改成不发并重连，不用手动管）；
+     登录阶段多半是这个 9 位 ID 还被上一次会话占着，或它在 BM 上不存在 / 被停用——
+     等半分钟再连，并到 SelfCare → My Hotspots 核对号码；
+     在线期间则通常是同一个 ID 被另一台设备抢登。
 2. DMR ID 是不是被别的设备占用了？同一个 ID 同时只允许一条连接，先把手机端 MMDVM / 电脑上的 MMDVMHost 断掉。
 3. 网络封了 UDP：换 Wi-Fi / 蜂窝试；企业网、部分公共热点会拦非标准 UDP。
 4. 「服务器」别带 `https://`，只填域名。

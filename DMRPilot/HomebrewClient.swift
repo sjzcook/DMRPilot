@@ -94,6 +94,10 @@ final class HomebrewClient: ObservableObject {
     private var configProbed = false
     /// 在线后被 master 清会话的次数，用来防止两台设备抢同一个 ID 时无限重连。
     private var sessionNaks = 0
+    /// 服务器以 `MSTCL` 关会话的次数：区分「偶发被踢」和「同一 ID 被别的设备抢走」。
+    private var masterCloses = 0
+    /// 本次会话里上报 RPTC 后被 MSTCL 关过：之后自动改成不上报，不再犯第二次。
+    private var configForcedOff = false
     /// RPTL 之后 master 下发的 4 字节挑战盐，RPTK 靠它算 SHA256。
     private var challenge: [UInt8] = []
     /// 标准 SHA256 鉴权被拒后，是否已经用传统明文 RPTK 重试过。
@@ -358,6 +362,21 @@ final class HomebrewClient: ObservableObject {
     // MARK: - 连接 / 断开
 
     func connect(with settings: Settings) {
+        // 上一个会话可能还活着（在线、或卡在某个握手阶段）。不发 RPTCL 就直接重登，
+        // master 那边会同时看到同一个 ID 的两条连接，通常直接把新的那条关掉——MSTCL。
+        // 所以先主动登出、等 0.3 秒让 UDP 包真正出去，再走正常的连接流程。
+        if state != .offline, state != .connecting, (connection != nil || webSocket != nil) {
+            append(.info, "先结束上一个会话（RPTCL），再重新登录")
+            send(HB.disconnect(id: activeSettings.hotspotId), label: "RPTCL 结束上一个会话")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                self?.beginConnect(with: settings)
+            }
+            return
+        }
+        beginConnect(with: settings)
+    }
+
+    private func beginConnect(with settings: Settings) {
         teardown()
         activeSettings = settings
         loginAttempt = 0
@@ -390,7 +409,7 @@ final class HomebrewClient: ObservableObject {
 
         // 呼号是 302 字节配置块的前 8 字节。缺了它多数 master 会回 MSTNAK，
         // 但不要因此把人挡在门外——先连上，被拒再降级上线，日志里会说清楚。
-        if !settings.skipConfig && settings.normalizedCallsign.isEmpty {
+        if settings.sendConfig && settings.normalizedCallsign.isEmpty {
             append(.warning, "呼号为空：RPTC 的呼号字段会是空格，部分 master 会回 MSTNAK。"
                 + "建议在设置里填上与 SelfCare 一致的呼号")
         }
@@ -431,6 +450,9 @@ final class HomebrewClient: ObservableObject {
         }
 
         state = .offline
+        // 手动断开视为一次全新开始：把「不再上报 RPTC」和踢线计数都清掉。
+        configForcedOff = false
+        masterCloses = 0
         if wasActive { append(.info, "已断开连接") }
 
         // 给 UDP 一点时间把 RPTCL 真正发出去，再拆 socket；teardown 会立刻取消连接。
@@ -658,6 +680,64 @@ final class HomebrewClient: ObservableObject {
         }
     }
 
+    /// `MSTCL`：master 主动关闭这条会话。
+    ///
+    /// HBlink / BrandMeister 发这一帧大体只有三种原因：
+    ///   ① 同一个热点 ID 在别处又登录了一次，旧会话被顶掉；
+    ///   ② 刚上报的 `RPTC` 配置包不合它的口味（格式 / 呼号 / 频率对不上）；
+    ///   ③ master 自己在重启。
+    ///
+    /// 以前这里直接 `fail()`，而 `fail()` 会顺手安排自动重连——于是「连上 → 被踢 →
+    /// 6 秒后再连上」变成死循环，用户只看到刷屏的 MSTCL。现在按阶段分流：
+    /// 配置阶段被关就退回两段握手，在线被关就快速重登，登录阶段被关先等旧会话超时，
+    /// 连续两次还不行就停下来把原因说清楚。
+    private func handleMasterClose() {
+        append(.warning, "← MSTCL：master 关闭了这条会话（阶段：\(state.label)）")
+
+        switch state {
+        case .configuring:
+            // 刚发完 RPTC 就被关：几乎可以确定是配置包被拒。参考实现 DroidStar
+            // 根本不发这个包，直接退回两段握手即可，不必让用户自己去关开关。
+            configForcedOff = true
+            retryLater(after: 2, message: "RPTC 之后立刻被关闭 → 本次改为不上报配置包，2 秒后重连")
+
+        case .online:
+            masterCloses += 1
+            guard masterCloses <= 2 else {
+                fail("会话被服务器反复关闭（MSTCL）：这个热点 ID 正被另一台设备使用"
+                    + "（手机 MMDVM、盒子或另一台手机），先把那边断开再连", allowRetry: false)
+                return
+            }
+            retryLater(after: 3, message: "在线会话被关闭，3 秒后重新登录（第 \(masterCloses) 次）")
+
+        default:
+            masterCloses += 1
+            guard masterCloses <= 2 else {
+                fail("登录过程中被服务器关闭（MSTCL）：这个热点 ID 可能仍被上一次会话占着，"
+                    + "或它在 BrandMeister 上根本不存在 / 已被停用。等半分钟再连，"
+                    + "并到 SelfCare → My Hotspots 核对这串 9 位号码", allowRetry: false)
+                return
+            }
+            retryLater(after: 8, message: "登录阶段被关闭，8 秒后再试（第 \(masterCloses) 次）—— 给服务器时间释放上一个会话")
+        }
+    }
+
+    /// 不判失败、保持「连接中」的延迟重连，UI 不会闪一下红色的失败态。
+    private func retryLater(after seconds: Double, message: String) {
+        append(.info, message)
+        teardown()
+        state = .connecting
+        retryWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            Task { @MainActor in
+                guard let self, self.state != .online else { return }
+                self.connect(with: self.activeSettings)
+            }
+        }
+        retryWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
+    }
+
     private func armLoginTimeout() {
         loginToken += 1
         let token = loginToken
@@ -708,6 +788,7 @@ final class HomebrewClient: ObservableObject {
         configRetries = 0
         configProbed = false
         sessionNaks = 0
+        masterCloses = 0
         append(.info, "✅ 已登录，进入在线状态，每 \(Int(pingInterval)) 秒心跳")
         startKeepAlive()
         verifyHotspotRegistration()
@@ -880,11 +961,15 @@ final class HomebrewClient: ObservableObject {
                 sendRPTK()
                 armLoginTimeout()
             case .authenticating:
-                // 参考实现 DroidStar 在这里一定发 RPTC，并等第三个 RPTACK 才 CONNECTED_RW。
-                // 少这一步 BrandMeister 不会把设备当成已完成配置的热点，语音也就不会推下来。
-                guard !activeSettings.skipConfig else {
-                    append(.warning, "← RPTACK 鉴权通过，但设置里选择了跳过 RPTC：握手只走两段，"
-                        + "BrandMeister 后台不会显示这台设备，也不会推 TG 语音")
+                // 默认不发 RPTC：参考实现 DroidStar 的握手只有两段，第二个 RPTACK
+                // 就是「可以收发了」。BrandMeister 对配置包很挑剔，格式稍合不上
+                // 就直接 MSTCL 关会话（现象就是连上的一瞬间被踢下线）。
+                guard activeSettings.sendConfig, !configForcedOff else {
+                    if configForcedOff {
+                        append(.info, "← RPTACK 鉴权通过，按要求不再上报 RPTC（上次上报后被 MSTCL 关闭），直接上线")
+                    } else {
+                        append(.info, "← RPTACK 鉴权通过，握手完成（未上报 RPTC，与 DroidStar / MMDVM 语音流程一致）")
+                    }
                     goOnline()
                     return
                 }
@@ -905,7 +990,7 @@ final class HomebrewClient: ObservableObject {
             handleNak()
 
         case "MSTC": // MSTCL
-            fail("服务器主动断开连接（MSTCL）")
+            handleMasterClose()
 
         case "MSTA": // MSTACK —— 老规范里 master 收到 RPTC 回的就是这一帧
             if state == .configuring {
@@ -1090,12 +1175,20 @@ final class HomebrewClient: ObservableObject {
         case .udp:
             connection?.send(content: data, completion: .contentProcessed { [weak self] error in
                 guard let error else { return }
-                Task { @MainActor in self?.fail("发送失败：\(error.localizedDescription)") }
+                // 主动拆 socket（RPTCL 之后）也会收到「已取消」，那不是故障。
+                // 只有在线状态下才把它当成真正的发送失败。
+                Task { @MainActor in
+                    guard let self, self.state == .online else { return }
+                    self.fail("发送失败：\(error.localizedDescription)")
+                }
             })
         case .websocket:
             webSocket?.send(.data(data)) { [weak self] error in
                 guard let error else { return }
-                Task { @MainActor in self?.fail("发送失败：\(error.localizedDescription)") }
+                Task { @MainActor in
+                    guard let self, self.state == .online else { return }
+                    self.fail("发送失败：\(error.localizedDescription)")
+                }
             }
         }
     }
