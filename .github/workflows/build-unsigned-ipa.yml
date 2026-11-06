@@ -1,0 +1,89 @@
+name: Build unsigned iOS IPA (Xcode 27)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "DMRPilot.xcodeproj/**"
+      - "DMRPilot/**"
+      - ".github/workflows/build-unsigned-ipa.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dmrpilot-unsigned-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build DMRPilot unsigned IPA
+    runs-on: xcode-27
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Select and verify Xcode 27
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo xcode-select --switch /Applications/Xcode.app
+          xcodebuild -version
+          xcodebuild -version | grep -E '^Xcode 27([.]|$)'
+
+      - name: Show project schemes
+        run: xcodebuild -list -project DMRPilot.xcodeproj
+
+      - name: Archive without code signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project DMRPilot.xcodeproj \
+            -scheme DMRPilot \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$PWD/build/DMRPilot.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            archive
+
+      - name: Package unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_PATH="$PWD/build/DMRPilot.xcarchive/Products/Applications/DMRPilot.app"
+          IPA_DIR="$PWD/build/ipa"
+
+          if [[ ! -d "$APP_PATH" ]]; then
+            echo "::error::Archived app not found at $APP_PATH"
+            exit 1
+          fi
+
+          mkdir -p "$IPA_DIR/Payload"
+          ditto "$APP_PATH" "$IPA_DIR/Payload/DMRPilot.app"
+          (
+            cd "$IPA_DIR"
+            /usr/bin/zip -qry "$GITHUB_WORKSPACE/DMRPilot-unsigned.ipa" Payload
+          )
+
+          test -s "$GITHUB_WORKSPACE/DMRPilot-unsigned.ipa"
+          unzip -l "$GITHUB_WORKSPACE/DMRPilot-unsigned.ipa"
+          shasum -a 256 "$GITHUB_WORKSPACE/DMRPilot-unsigned.ipa" \
+            | tee "$GITHUB_WORKSPACE/DMRPilot-unsigned.ipa.sha256"
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: DMRPilot-unsigned-IPA
+          path: |
+            DMRPilot-unsigned.ipa
+            DMRPilot-unsigned.ipa.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
