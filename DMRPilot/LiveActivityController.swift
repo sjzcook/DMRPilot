@@ -59,7 +59,7 @@ final class LiveActivityController {
         Task {
             if #available(iOS 16.2, *) {
                 await activity.update(ActivityContent(state: state,
-                                                      stalenessDate: Date().addingTimeInterval(120)))
+                                                      staleDate: Date().addingTimeInterval(120)))
             } else {
                 await activity.update(using: state)
             }
@@ -69,14 +69,14 @@ final class LiveActivityController {
     /// 断开连接时调用：卡片直接收走，不留在锁屏上装「还在听」。
     func end() {
         guard let activity = activity else { return }
-        let final = lastState
+        let lastContent = lastState
         self.activity = nil
         lastState = nil
         lastPushedAt = .distantPast
 
         Task {
-            if #available(iOS 16.2, *), let final {
-                await activity.end(ActivityContent(state: final, stalenessDate: Date()),
+            if #available(iOS 16.2, *), let lastContent = lastContent {
+                await activity.end(ActivityContent(state: lastContent, staleDate: Date()),
                                    dismissalPolicy: .immediate)
             } else {
                 await activity.end(nil, dismissalPolicy: .immediate)
@@ -104,7 +104,7 @@ final class LiveActivityController {
                 activity = try Activity.request(
                     attributes: attributes,
                     content: ActivityContent(state: state,
-                                             stalenessDate: Date().addingTimeInterval(120)),
+                                             staleDate: Date().addingTimeInterval(120)),
                     pushType: nil
                 )
             } else {
