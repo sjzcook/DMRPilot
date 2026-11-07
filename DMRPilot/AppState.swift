@@ -143,6 +143,26 @@ final class AppState: ObservableObject {
         }
     }
 
+    // MARK: - 组呼 / 单呼
+
+    /// 切换首页 PTT 的呼叫类型（组呼 ↔ 单呼）。
+    ///
+    /// 只改「发到哪」，不碰接收：接收侧仍然是服务器推什么就播什么。
+    ///
+    /// 切回组呼时主动向当前通话组再订阅一次 —— 单呼期间服务器的动态订阅可能已经
+    /// 静默超时被释放（BM 大约 10 分钟），不重发一次的话切回来会「什么都没有」，
+    /// 看上去像切坏了。走的是和选择器完全相同的 `call(talkgroup:)` 入口，
+    /// 没在线时它只记一条日志，交给连上后的 `autoCallOnConnect` 补。
+    func setCallMode(_ mode: CallMode) {
+        guard settings.callMode != mode else { return }
+        settings.callMode = mode
+
+        guard mode == .group else { return }
+        let talkgroup = settings.talkgroup
+        guard talkgroup > 0 else { return }
+        hotspot.call(talkgroup: talkgroup)
+    }
+
     // MARK: - 通话组
 
     /// 切换收听的 TG（0 = 全部）。写进设置（会持久化），同时通知连接层立刻生效，

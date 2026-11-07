@@ -16,8 +16,6 @@ struct HotspotView: View {
     @EnvironmentObject private var hostStore: DMRHostStore
     @State private var pttPressed = false
     @State private var pttDenied = false
-    /// 右上角模式选择卡片是否展开。
-    @State private var isPickingMode = false
     /// 电平表的平滑值：快起慢落，免得读数在「59」和「53」之间抖。
     @State private var smoothedLevel: Double = 0
 
@@ -75,30 +73,43 @@ struct HotspotView: View {
 
     // MARK: - 模式选择
 
-    /// 标题右侧的模式按钮：点开是 DMR / YSF 两个选项，选中哪个按钮就显示哪个。
-    /// 选择写进 `app.settings.homeMode`，持久化；切换时会回显该类型上次选的服务器
-    /// （`AppState.setHomeMode`）。YSF 的协议还没接，协议逻辑暂不受它影响。
+    /// 标题右侧的模式选择：DMR / YSF。
     ///
-    /// 这里没用系统 `Menu`：菜单项的标题颜色由 UIKit 决定（`UIAction` 只收 String），
-    /// 想「不打勾、只用蓝色字区别选中」只能自绘，所以换成一个小的弹出卡片。
+    /// 和 PTT 里的「组呼 / 单呼」用**同一个**触发器样式（`selectorLabel`）：
+    /// 蓝色文字 + 小箭头，点开是下拉菜单，选中项不打勾——当前值是直接写在下拉按钮上的，
+    /// 所以不需要对勾，也不会像系统 Picker 那样把标题和值挤在一起。
+    ///
+    /// 这里不直接写 `settings.homeMode`，而是走 `AppState.setHomeMode`：
+    /// 它还要负责记/换服务器、在线时断线，直接改设置会漏掉这些副作用。
     private var modeMenu: some View {
-        Button {
-            isPickingMode = true
-        } label: {
-            HStack(spacing: 4) {
-                Text(app.settings.homeMode.rawValue)
-                    .font(.subheadline.weight(.semibold))
-                Image(systemName: "chevron.down")
-                    .font(.caption2.weight(.bold))
-                    .imageScale(.small)
+        Menu {
+            ForEach(HomeMode.allCases) { mode in
+                Button {
+                    app.setHomeMode(mode)
+                } label: {
+                    Text(mode.rawValue)
+                }
             }
+        } label: {
+            selectorLabel(app.settings.homeMode.rawValue)
         }
         .accessibilityLabel("模式选择，当前\(app.settings.homeMode.rawValue)")
-        .sheet(isPresented: $isPickingMode) {
-            ModePickerCard(selected: app.settings.homeMode) { mode in
-                app.setHomeMode(mode)
-            }
+    }
+
+    /// 两个下拉选择器（导航栏的模式、PTT 角落的呼叫类型）共用的触发器样式。
+    /// 抽出来是为了让两处看起来是同一套控件，改一处两边一起变。
+    private func selectorLabel(_ text: String,
+                               font: Font = .subheadline.weight(.semibold)) -> some View {
+        HStack(spacing: 4) {
+            Text(text)
+                .font(font)
+                .lineLimit(1)
+            Image(systemName: "chevron.down")
+                .font(.caption2.weight(.bold))
+                .imageScale(.small)
         }
+        .foregroundStyle(Color.accentColor)
+        .contentShape(Rectangle())
     }
 
     // MARK: - 状态卡片
@@ -235,9 +246,9 @@ struct HotspotView: View {
     /// 交互用 `DragGesture(minimumDistance: 0)` 而不是 `Button`：Button 只有抬起时才有
     /// 回调，拿不到「按住期间」的状态，也就没法做「按住发射 / 松手停止」。
     ///
-    /// 右上角是这次发射的目的地类型（组呼 / 单呼），和设置页「应用主题」同一套
-    /// `Picker(.menu)` 写法：点开才展开两项，改完立刻落到 `settings.callMode`。
-    /// YSF 没有数字 ID，那个模式下面这行不显示。
+    /// 右上角（模块内部，不是 Section 标题）挂着「组呼 / 单呼」选择器：
+    /// 和导航栏的 DMR / YSF 是同一个 `Menu` + `selectorLabel` 组合。
+    /// 它只在 DMR 下出现——YSF 没有数字 ID，也就没有单呼这回事。
     private var pttSection: some View {
         Section {
             VStack(spacing: 10) {
@@ -251,32 +262,32 @@ struct HotspotView: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.top, 4)
-        } header: {
-            HStack(spacing: 8) {
-                Text("PTT")
-                    .textCase(nil)
-
-                Spacer(minLength: 8)
-
-                if app.settings.homeMode != .ysf {
+            // 贴在整块内容的右上角：PTT 圆是居中的，所以这里不会碰到它。
+            .overlay(alignment: .topTrailing) {
+                if app.settings.homeMode == .dmr {
                     callModePicker
                 }
             }
         }
     }
 
-    /// 组呼 / 单呼切换。单项就能改完，所以用菜单式 Picker（和设置页主题一致）。
+    /// 组呼 / 单呼切换。外形和导航栏的 DMR / YSF 完全一致（同一个 `selectorLabel`），
+    /// 只是字号跟着这一块缩小一号。
     ///
-    /// 切到单呼时下面那格会从「选择通话组」变成「输入 DMR ID」，
-    /// 两边的值各自独立保存，来回切不会互相覆盖。
+    /// 绑定走 `AppState.setCallMode` 而不是直接写设置：切回组呼时它要顺手向当前
+    /// 通话组补一次订阅（单呼期间动态 TG 可能已经被服务器释放了）。
     private var callModePicker: some View {
-        Picker("呼叫类型", selection: $app.settings.callMode) {
+        Menu {
             ForEach(CallMode.allCases) { mode in
-                Text(mode.title).tag(mode)
+                Button {
+                    app.setCallMode(mode)
+                } label: {
+                    Text(mode.title)
+                }
             }
+        } label: {
+            selectorLabel(app.settings.callMode.title, font: .footnote.weight(.semibold))
         }
-        .pickerStyle(.menu)
-        .font(.caption)
         .accessibilityLabel("呼叫类型，当前\(app.settings.callMode.title)")
     }
 
@@ -791,63 +802,6 @@ struct LevelMeter: View {
         if index >= segments - 1 { return .red }
         if index >= segments - 3 { return .orange }
         return .green
-    }
-}
-
-// MARK: - 模式选择卡片
-
-/// 首页右上角的模式选择弹层（DMR / YSF）。
-///
-/// 只有两项，用底部小卡片而不是整页 sheet：三个档位的高度够放下标题和两行，
-/// 拖拽指示器和小圆角让它可以一划就关。
-/// 选中项不用对勾，只用主题色 + 稍重的字重区分（这也是不用系统 `Menu` 的原因：
-/// 系统菜单项没法单独改标题颜色）。
-private struct ModePickerCard: View {
-    let selected: HomeMode
-    var onSelect: (HomeMode) -> Void
-
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text("选择模式")
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 20)
-                .padding(.top, 20)
-                .padding(.bottom, 6)
-
-            ForEach(HomeMode.allCases) { mode in
-                row(mode)
-            }
-
-            Spacer(minLength: 0)
-        }
-        .padding(.bottom, 8)
-        .presentationDetents([.height(184)])
-        .presentationDragIndicator(.visible)
-    }
-
-    private func row(_ mode: HomeMode) -> some View {
-        let isCurrent = mode == selected
-        return Button {
-            if !isCurrent { onSelect(mode) }
-            dismiss()
-        } label: {
-            HStack(spacing: 8) {
-                Text(mode.rawValue)
-                    .font(.body.weight(isCurrent ? .semibold : .regular))
-                    // 选中 = 主题色（蓝），未选中用正常文字色。
-                    .foregroundStyle(isCurrent ? Color.accentColor : Color.primary)
-                Spacer(minLength: 0)
-            }
-            .contentShape(Rectangle())
-            .padding(.horizontal, 20)
-            .padding(.vertical, 14)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(mode.rawValue)
-        .accessibilityAddTraits(isCurrent ? .isSelected : AccessibilityTraits())
     }
 }
 
