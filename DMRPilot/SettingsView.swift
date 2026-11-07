@@ -117,7 +117,7 @@ struct SettingsView: View {
                 }
             }
 
-            Text("上报配置包 RPTC（实验性）", isOn: $app.settings.sendConfig)
+            Toggle("上报配置包 RPTC（实验性）", isOn: $app.settings.sendConfig)
         } header: {
             Text("服务器")
         } footer: {
