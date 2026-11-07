@@ -40,21 +40,20 @@ struct HostPickerField: View {
 
     // MARK: - 下拉触发器
 
+    /// 和通话组选择器（TalkgroupPickerField）同一套版式：
+    /// 左边两行文字（名称 / host:port），右边下拉箭头，灰底圆角块。
+    /// 没有左侧图标，也不显示右侧的 BM 标签。
     private var triggerRow: some View {
         Button {
             isPicking = true
         } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "server.rack")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 16)
-
-                VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                VStack(alignment: .leading, spacing: 1) {
                     Text(selectedHost?.name ?? "选择服务器")
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
+                        .minimumScaleFactor(0.7)
 
                     Text("\(settings.host):\(String(settings.port))")
                         .font(.caption2)
@@ -62,19 +61,21 @@ struct HostPickerField: View {
                         .lineLimit(1)
                 }
 
-                Spacer(minLength: 6)
-
-                if let tag = selectedHost?.tag {
-                    Text(tag)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(Color.accentColor)
-                }
+                Spacer(minLength: 2)
 
                 Image(systemName: "chevron.up.chevron.down")
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(.secondary)
             }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .background(Color(uiColor: .secondarySystemFill),
+                        in: RoundedRectangle(cornerRadius: 9, style: .continuous))
             .contentShape(Rectangle())
+            .accessibilityLabel("服务器")
+            .accessibilityValue(selectedHost?.name ?? "未选择")
+            .accessibilityHint("点击选择要连接的服务器")
         }
         .buttonStyle(.plain)
     }
@@ -96,7 +97,7 @@ struct HostPickerField: View {
                 // 手填的域名没法每敲一个字符就重连，按下回车才算定下来。
                 .onSubmit { onServerChange() }
         }
-        .padding(.leading, 24)
+        .padding(.leading, 10)
     }
 }
 
