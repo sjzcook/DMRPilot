@@ -7,7 +7,9 @@
 //  数据来自本地 SQLite（`CallLogStore`），不是内存里的 `HomebrewClient.calls`——
 //  内存那份按 200 条裁剪，只够首页用；日志要的是「一句都不少」，
 //  所以退出 App、重启手机之后这里还在。同一个人说多次只占一行，
-//  那一行显示的是最近一次（时间 / 通话组 / 帧数都换成最新的）。
+//  那一行显示的是最近一次（时间 / 通话组都换成最新的）。
+//
+//  每一行是一张卡片，三行文字：呼号+姓名 / 通话组（与时隙）/ 地区。
 //
 //  支持按呼号 / 数字 ID / 姓名 / 城市 / 通话组名搜索，过滤在 SQL 里做，
 //  翻页时不会漏掉后面的记录。单条记录可以左滑删除。
@@ -37,6 +39,10 @@ struct CallLogView: View {
                             ForEach(group.items) { item in
                                 row(for: item.record)
                                     .onAppear { loadMoreIfNeeded(item) }
+                                    // 卡片样式：去掉默认行底色和分隔线，卡片自己画圆角底。
+                                    .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+                                    .listRowBackground(Color.clear)
+                                    .listRowSeparator(.hidden)
                                     // 左滑删单条：只删这一行，不影响其他人，也不影响首页内存里那份。
                                     .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                                         Button(role: .destructive) {
@@ -146,13 +152,16 @@ struct CallLogView: View {
 
     // MARK: - 行
 
+    /// 一条记录的卡片：左边三行文字（呼号+姓名 / 通话组 / 地区），右边时间与时长。
     private func row(for record: CallRecord) -> some View {
         let user = callsigns.user(for: record.src)
         let callsign = record.callsign ?? user?.callsign
         let name = record.name ?? user?.fullName
+        let place = record.city ?? user?.placeText
 
-        return HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
+        return HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                // 第一行：呼号 + 姓名
                 HStack(spacing: 6) {
                     Text(callsign ?? "\(record.src)")
                         .font(.subheadline.weight(.semibold))
@@ -166,15 +175,24 @@ struct CallLogView: View {
                     }
                 }
 
-                Text(subtitle(for: record, user: user))
+                // 第二行：通话组（Homebrew 下再带时隙）
+                Text(channelText(for: record))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+
+                // 第三行：地区
+                if let place, !place.isEmpty {
+                    Label(place, systemImage: "mappin.and.ellipse")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
 
             Spacer(minLength: 6)
 
-            VStack(alignment: .trailing, spacing: 3) {
+            VStack(alignment: .trailing, spacing: 4) {
                 Text(Self.clock.string(from: record.startedAt))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
@@ -184,11 +202,16 @@ struct CallLogView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(.vertical, 2)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(uiColor: .secondarySystemGroupedBackground))
+        )
     }
 
-    /// `通话组 · TS2 · 12 帧`；单呼再补一句，省得跟组呼混在一起。
-    private func subtitle(for record: CallRecord, user: DMRUser?) -> String {
+    /// `通话组 · TG 46001`；单呼另说，Homebrew 下再补 TSx。
+    private func channelText(for record: CallRecord) -> String {
         var parts: [String] = []
 
         if record.isPrivate {
@@ -202,12 +225,6 @@ struct CallLogView: View {
         // ODTP 没有时隙概念，标 TS2 只会误导
         if app.settings.linkProtocol == .homebrew {
             parts.append("TS\(record.slot)")
-        }
-
-        parts.append("\(record.frames) 帧")
-
-        if let city = record.city ?? user?.placeText, !city.isEmpty {
-            parts.append(city)
         }
 
         return parts.joined(separator: " · ")
