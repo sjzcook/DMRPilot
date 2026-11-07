@@ -78,6 +78,12 @@ final class HomebrewClient: ObservableObject {
     @Published private(set) var serverTalkgroup: Int?
     /// 因为「只收听选定组」而被丢掉的帧数。
     @Published private(set) var filteredFrames = 0
+    /// 显式切组之后锁定的收听目标：只有这个组的语音会被播放，其它组的下行帧直接丢掉。
+    /// 0 = 不锁，按「跟随服务器下发」的设置来。
+    ///
+    /// 为什么需要它：BrandMeister 的 Homebrew 通道**没有退订指令**，换组之后 master
+    /// 还会继续把旧组推下来（直到动态订阅静默超时），协议层停不掉，只能本地丢掉。
+    @Published private(set) var listenLock = 0
     /// 当前（或最近一次）说话的人。呼号由 `CallsignDirectory` 另查。
     @Published private(set) var currentSpeaker: ActiveSpeaker?
 
@@ -158,6 +164,8 @@ final class HomebrewClient: ObservableObject {
     private var txStartedAt: Date?
     private var lastSubscribeAt: Date?
     private var lastSubscribeTalkgroup: Int?
+    /// 忙着发射时被推迟的订阅目标：结束符发完后补一次（换组时旧组已退，不能漏订）。
+    private var pendingSubscribeTalkgroup: Int?
     /// 最近一次订阅的时间，用来做续订判断
     private var talkgroupAliveAt: Date?
 
@@ -208,10 +216,16 @@ final class HomebrewClient: ObservableObject {
 
     /// 切换收听的通话组。
     ///
+    /// 前后不同时是一次完整的「换台」：停掉正在播的旧组、退掉旧组订阅、向新组订阅一次，
+    /// 并把本地过滤器收紧到新组（`listenLock`），此后旧组的语音一律不再播放。
+    ///
     /// Homebrew 没有订阅指令，改这里只是**换目的地址 + 换本地过滤器**；
     /// 真正让 master 认这个组的，是随后那一次发射（`call(talkgroup:)`）。
     func setTalkgroup(_ talkgroup: Int) {
         let value = max(0, talkgroup)
+        let previous = activeTalkgroup
+        let changed = previous != value
+
         activeTalkgroup = value
         activeSettings.talkgroup = value
         dmr_core_set_talkgroup(core, UInt32(value))
@@ -225,6 +239,9 @@ final class HomebrewClient: ObservableObject {
 
         // 旧组还挂着的通话要手动收尾：它之后的结束符会被过滤器挡掉。
         endStream(reason: nil)
+        // 解码队列里可能还排着旧组几十毫秒的 PCM，清掉队列，切完立刻静音。
+        // （解码器和统计保留：设置页那个「已解码 N 包」不该因为换台归零。）
+        voice.flush()
         let now = Date()
         for index in calls.indices where calls[index].isActive {
             closeCall(index, at: now)
@@ -232,10 +249,40 @@ final class HomebrewClient: ObservableObject {
         currentSpeaker?.endedAt = now
         syncVoiceUI()
 
+        // 换台：先退掉旧组的订阅，再把收听范围锁到新组。
+        if changed {
+            cancelSubscription(for: previous)
+        }
+        listenLock = value
+
         if value > 0 {
-            append(.info, "→ 目标 TG \(value)：会向它订阅一次；服务器推别的组时按设置决定播不播")
+            append(.info, "→ 目标 TG \(value)：已切换，其它组的语音不再播放")
         } else {
             append(.info, "→ 收听全部通话组")
+        }
+    }
+
+    /// 换组时把旧组的订阅退掉。
+    ///
+    /// ODTP 有真正的 `CANCELLING`（退订全部），发出去之后 master 就不再推旧组；
+    /// Homebrew 协议里没有退订，动态订阅只能等服务器静默释放（约 10 分钟），
+    /// 这段时间旧组照样会推下来——`listenLock` 会在本地把它丢掉，一声都不放。
+    private func cancelSubscription(for previous: Int) {
+        guard previous > 0 else { return }
+        guard state == .online else {
+            append(.info, "旧组 TG \(previous)：还没连上，服务器那边没有要退的订阅")
+            return
+        }
+
+        if isOdtp {
+            var buffer = [UInt8](repeating: 0, count: 32)
+            let n = rw_core_cancel(rw, &buffer, Int32(buffer.count))
+            guard n > 0 else { return }
+            send(Data(buffer[0..<Int(n)]), label: "CANCELLING（退订全部）")
+            append(.info, "→ 已退订旧组 TG \(previous)（ODTP CANCELLING）")
+        } else {
+            append(.info, "旧组 TG \(previous)：Homebrew 没有退订指令，"
+                + "服务器要等动态订阅静默超时才释放，本地从现在起不再播放它")
         }
     }
 
@@ -252,7 +299,11 @@ final class HomebrewClient: ObservableObject {
             return
         }
         guard !isTransmitting, txTimer == nil else {
-            append(.info, "正在发射，等这次发完再订阅")
+            // 正在发射（订阅那 0.75 秒的静音 PTT，或者用户正在说话）：记下来，
+            // 等结束符发完再补订。换组时这一步很关键 —— 旧组已经退了，
+            // 新组订不上就等于两头都听不到。
+            pendingSubscribeTalkgroup = talkgroup
+            append(.info, "正在发射，等这次发完再向 TG \(talkgroup) 订阅")
             return
         }
 
@@ -478,6 +529,7 @@ final class HomebrewClient: ObservableObject {
             }
             append(.tx, label)
             txBurstsLeft = 0
+            flushPendingSubscribe()
             return
         }
 
@@ -493,6 +545,15 @@ final class HomebrewClient: ObservableObject {
         append(.tx, label)
         txKind = .subscribe
         txBurstsLeft = 0
+        flushPendingSubscribe()
+    }
+
+    /// 发射结束后补一次被推迟的订阅（`call` 在忙着的时候只会记下来）。
+    private func flushPendingSubscribe() {
+        guard let pending = pendingSubscribeTalkgroup else { return }
+        pendingSubscribeTalkgroup = nil
+        // 走到这里 txTimer 已经是 nil，call 会直接发新的订阅。
+        call(talkgroup: pending)
     }
 
     // MARK: - 语音偏好（界面实时改）
@@ -512,6 +573,11 @@ final class HomebrewClient: ObservableObject {
     func applyBehaviour(_ settings: Settings) {
         let slotChanged = activeSettings.callSlot != settings.callSlot
         let ccChanged = activeSettings.colorCode != settings.colorCode
+
+        // 用户重新打开「跟随服务器下发」= 又想听到服务器推的所有组，解除切组时的锁定。
+        if !activeSettings.followServerTalkgroups, settings.followServerTalkgroups {
+            listenLock = 0
+        }
 
         activeSettings.autoRenewTalkgroup = settings.autoRenewTalkgroup
         activeSettings.talkgroupRenewMinutes = settings.talkgroupRenewMinutes
@@ -586,8 +652,8 @@ final class HomebrewClient: ObservableObject {
 
         guard settings.dmrId > 0, !settings.sanitizedPassword.isEmpty else {
             state = .failed("请先在设置里填写 DMR ID 与密码")
-            append(.error, "身份信息不完整：DMR ID 与密码不能为空（"
-                + (settings.linkProtocol == .odtp ? "ODTP 用 7 位 DMR ID + 终端密码" : "Homebrew 用 9 位热点 ID + Hotspot Security 密码")
+            append(.error, "身份信息不完整：DMR ID 与 BM密码 不能为空（"
+                + (settings.linkProtocol == .odtp ? "ODTP 用 7 位 DMR ID + SelfCare 里给这台终端设的 BM密码" : "Homebrew 用 9 位热点 ID + Hotspot Security 密码")
                 + "）")
             return
         }
@@ -931,7 +997,7 @@ final class HomebrewClient: ObservableObject {
             // 服务器连发三次挑战盐 = 它不认我们算出来的摘要。
             loginTimer?.cancel()
             fail("密码不对：服务器连续三次要求重新鉴权（ODTP 的 SHA256 摘要没通过）。\n"
-                + "请核对「设置 → 身份」里的密码，它是 SelfCare → Hotspot Security 里给这个 DMR ID 设的，"
+                + "请核对「设置 → 身份」里的 BM密码，它是 SelfCare → Hotspot Security 里给这个 DMR ID 设的，"
                 + "不是 BrandMeister 网站登录密码", allowRetry: false)
 
         case RW_EVT_AUTHENTICATED:
@@ -1218,18 +1284,25 @@ final class HomebrewClient: ObservableObject {
         let isPrivate = result.is_private != 0
         let key = "\(src)-\(dst)-\(slot)"
 
-        // 服务器实际在推哪个组 —— 这个值经常不等于界面上选的那个。
-        if !isPrivate, serverTalkgroup != dst { serverTalkgroup = dst }
         trafficStat["\(dst)@\(slot)", default: 0] += 1
         trafficTotal += 1
         warnedNoTraffic = false
 
-        // 默认跟随服务器：推什么就播什么（DroidStar 的接收侧就是这么做的）。
-        // 只有显式关掉「跟随」时才按选中的 TG 过滤。
-        if !activeSettings.followServerTalkgroups, activeTalkgroup > 0, !isPrivate, dst != activeTalkgroup {
+        // 播放范围：显式切过组就只听那一个（listenLock），否则按「跟随服务器下发」的设置来。
+        // 默认跟随是 DroidStar 的接收侧做法——BM 推的是这台热点被订阅的全部组，
+        // 其中还包括 SelfCare 里配的静态组。但用户既然点了某一组，就该只听到这一组，
+        // 旧组的语音必须立刻停掉（Homebrew 退不掉订阅，只能在这里丢帧）。
+        let target = listenLock > 0
+            ? listenLock
+            : (activeSettings.followServerTalkgroups ? 0 : activeTalkgroup)
+        if !isPrivate, target > 0, dst != target {
             filteredFrames += 1
             return
         }
+
+        // 服务器实际在推哪个组 —— 这个值经常不等于界面上选的那个。
+        // 放在过滤之后：被丢掉的旧组不该再刷新「服务器下发 TG x」那一行。
+        if !isPrivate, serverTalkgroup != dst { serverTalkgroup = dst }
 
         talkgroupAliveAt = Date()
         streamLastFrameAt = Date()
@@ -1393,7 +1466,7 @@ final class HomebrewClient: ObservableObject {
             return "\(dst)(TS\(slot))×\(entry.value)\(mark)"
         }.joined(separator: "、")
 
-        let filtered = filteredFrames > 0 ? "，其中累计 \(filteredFrames) 帧按设置丢弃" : ""
+        let filtered = filteredFrames > 0 ? "，其中累计 \(filteredFrames) 帧不是当前组被丢弃" : ""
         append(.rx, "近期流量 \(Int(elapsed))s：\(items)，共 \(trafficTotal) 帧\(filtered)")
 
         trafficStat.removeAll()
@@ -1538,6 +1611,7 @@ final class HomebrewClient: ObservableObject {
         }
         serverTalkgroup = nil
         talkgroupAliveAt = nil
+        pendingSubscribeTalkgroup = nil
         trafficStat.removeAll()
         trafficTotal = 0
 

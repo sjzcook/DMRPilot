@@ -379,6 +379,13 @@ int32_t rw_core_receive(rewind_core* c, const uint8_t* in, int32_t len, rw_resul
             break;
         }
 
+        case RW_TYPE_CANCELLING: {
+            // 退订确认：服务器回一个空包。状态故意不动 —— 换组时紧接着还会
+            // 发一次 SUBSCRIPTION，那时再由 RW_TYPE_SUBSCRIPTION 把状态置回 CONNECTED。
+            // 不在这里处理的话，这个包会落进 default，在日志里被当成「未知类型」。
+            break;
+        }
+
         case (RW_TYPE_DMR_DATA_BASE + 1): {
             // 12 字节 Full LC：flco(1) fid(1) 服务选项(1) 目的(3) 源(3) CRC(3)
             if (dlen < 9) {

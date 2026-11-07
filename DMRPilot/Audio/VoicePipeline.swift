@@ -92,6 +92,16 @@ final class VoicePipeline {
         player.flush()
     }
 
+    /// 立刻静音：丢掉播放队列里还没播的 PCM，但**保留解码器与统计**。
+    ///
+    /// 切组时用：旧组已经不在播放范围里了，队列里剩下那几十毫秒不该再放出来。
+    /// （和 `reset()` 的区别是不清解码器、不清已解码包数，设置页那个计数不会跳回 0。）
+    func flush() {
+        player.flush()
+        level = 0
+        isPlaying = false
+    }
+
     /// 断线 / 重连：整体复位
     func reset() {
         decoders.removeAll()

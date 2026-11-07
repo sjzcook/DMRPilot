@@ -99,7 +99,8 @@ final class AppState: ObservableObject {
     /// 要让服务器真的把语音推下来，得让 master 认为这个组被订阅了。
     ///
     /// 这个是**唯一**的切组入口：选择器里点一行、手填号码点「确定」都走这里，
-    /// 所以两条路径的效果一定一致——旧组上挂着的通话先收尾，再切到新组订阅。
+    /// 所以两条路径的效果一定一致——旧组上挂着的通话先收尾、旧订阅先退掉（`cancelSubscription`），
+    /// 再切到新组订阅，并把播放范围锁到新组（`listenLock`），旧组的语音立刻停掉。
     func setTalkgroup(_ talkgroup: Int) {
         let value = max(0, talkgroup)
 

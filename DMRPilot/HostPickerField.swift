@@ -47,7 +47,7 @@ struct HostPickerField: View {
                     .frame(width: 16)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(selectedHost?.name ?? "自定义服务器")
+                    Text(selectedHost?.name ?? "选择服务器")
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
@@ -195,12 +195,6 @@ private struct HostPickerSheet: View {
     private var list: some View {
         List {
             Section {
-                customRow
-            } footer: {
-                Text("下表里没有的服务器（自建 HBLink、私服）用这一项手填域名。")
-            }
-
-            Section {
                 if visible.isEmpty {
                     emptyRow
                 } else {
@@ -222,30 +216,6 @@ private struct HostPickerSheet: View {
             }
         }
         .listStyle(.plain)
-    }
-
-    private var customRow: some View {
-        Button {
-            settings.hostName = ""
-            if settings.host.isEmpty { settings.host = "api.brandmeister.network" }
-            dismiss()
-        } label: {
-            HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("自定义服务器")
-                        .font(.subheadline)
-                    Text("手动填写域名")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 8)
-                if settings.hostName.isEmpty {
-                    checkmark
-                }
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
     }
 
     private func hostRow(_ host: DMRHost) -> some View {
@@ -295,7 +265,7 @@ private struct HostPickerSheet: View {
                 Text("列表还没下载下来，点右上角刷新重试")
             } else if !query.isEmpty && scope == .brandMeister {
                 Text("BrandMeister 里没有匹配「\(query)」的服务器")
-                Text("切到「全部」再看看，或者用自定义服务器")
+                Text("切到「全部」再看看")
                     .foregroundStyle(.secondary)
             } else {
                 Text("没有匹配「\(query)」的服务器")

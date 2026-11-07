@@ -118,16 +118,18 @@ struct HotspotView: View {
                 Metric(title: "收帧", value: "\(hotspot.rxFrames)")
             }
 
+            // 只有电平表这一行加高，图标字号不动——整行的高度由电平表决定。
             HStack(spacing: 8) {
                 Image(systemName: audioIcon)
                     .font(.caption)
                     .foregroundStyle(hotspot.isVoicePlaying ? Color.accentColor : Color.secondary)
 
                 LevelMeter(level: Double(hotspot.voiceLevel))
-                    .frame(width: 80, height: 10)
+                    .frame(width: 80, height: 16)
 
                 Spacer(minLength: 0)
             }
+            .padding(.vertical, 4)
 
             HStack(spacing: 6) {
                 Image(systemName: "server.rack")
@@ -159,18 +161,6 @@ struct HotspotView: View {
                     .frame(maxWidth: .infinity)
             }
             .frame(minHeight: 46)
-
-            HStack(spacing: 6) {
-                Image(systemName: "dot.radiowaves.left.and.right")
-                    .font(.caption2)
-                Text(groupStatusText)
-                    .font(.caption)
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                Spacer(minLength: 0)
-            }
-            .foregroundStyle(.secondary)
         }
         .padding(.vertical, 6)
     }
@@ -292,28 +282,6 @@ struct HotspotView: View {
         pttPressed = false
         UIImpactFeedbackGenerator(style: .soft).impactOccurred()
         hotspot.endPtt()
-    }
-
-    // MARK: - 通话组
-
-    /// 原来「通话组」里那些行都去掉了，只把最要紧的一条留成一行说明：
-    /// 现在在听哪个组、服务器实际下发的又是哪个组（两者经常不一样）。
-    private var groupStatusText: String {
-        // 在线时看服务器认下的那个组（可能被 SelfCare 覆盖），离线时看设置里选的。
-        let group = hotspot.activeTalkgroup > 0 ? hotspot.activeTalkgroup : app.settings.talkgroup
-        let name = groupName(group)
-        let base = hotspot.state == .online ? "正在收听 \(name)" : "通话组 \(name)"
-
-        if let pushed = hotspot.serverTalkgroup, pushed != hotspot.activeTalkgroup {
-            return base + " · 服务器下发 TG \(pushed)"
-        }
-        return base
-    }
-
-    private func groupName(_ talkgroup: Int) -> String {
-        guard talkgroup > 0 else { return "全部通话组" }
-        if let name = app.name(for: talkgroup) { return "\(name) · \(talkgroup)" }
-        return "TG \(talkgroup)"
     }
 
     // MARK: - 当前讲话人

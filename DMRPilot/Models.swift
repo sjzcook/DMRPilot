@@ -300,16 +300,12 @@ extension Settings {
         password = try container.decodeIfPresent(String.self, forKey: .password) ?? defaults.password
         hostName = try container.decodeIfPresent(String.self, forKey: .hostName) ?? defaults.hostName
         host = try container.decodeIfPresent(String.self, forKey: .host) ?? defaults.host
-        port = try container.decodeIfPresent(Int.self, forKey: .port) ?? defaults.port
+        // 设置页已经把「协议」和「端口」两项去掉了：App 只走 ODTP，端口固定 54006。
+        // 老存档里如果是 Homebrew（62031），这里一并改回来 —— 否则会拿着 Homebrew
+        // 的端口去连一台只说 Rewind 的 master，界面上还找不到地方改。
+        linkProtocol = .odtp
+        port = LinkProtocol.odtp.defaultPort
         transport = try container.decodeIfPresent(HbTransport.self, forKey: .transport) ?? defaults.transport
-        // 老存档（这个键还不存在的年代）只可能是 Homebrew：那会儿填的是 9 位热点 ID
-        // 和 62031。决不能把它悄悄切到 ODTP —— ODTP 要 7 位 ID，切过去会连不上，
-        // 而用户并不知道发生了什么。新装用户的 Settings() 走默认值，不受这里影响。
-        if let stored = try container.decodeIfPresent(LinkProtocol.self, forKey: .linkProtocol) {
-            linkProtocol = stored
-        } else {
-            linkProtocol = .homebrew
-        }
         wsPath = try container.decodeIfPresent(String.self, forKey: .wsPath) ?? defaults.wsPath
         sendConfig = try container.decodeIfPresent(Bool.self, forKey: .sendConfig) ?? defaults.sendConfig
         autoReconnect = try container.decodeIfPresent(Bool.self, forKey: .autoReconnect) ?? defaults.autoReconnect
