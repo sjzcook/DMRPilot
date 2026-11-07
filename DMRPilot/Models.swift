@@ -253,6 +253,15 @@ struct Settings: Codable, Equatable {
     var sendConfig: Bool = true
     var autoReconnect: Bool = true
 
+    /// 连接期间让屏幕常亮（`UIApplication.isIdleTimerDisabled`）。
+    ///
+    /// 默认**关闭** = 完全保持系统原来的自动锁屏逻辑。打开之后，只在「正在连接 /
+    /// 已在线」这段时间按住 idle timer，离线、连接失败、主动断开都立刻交还给系统
+    /// ——否则会出现「App 早就断了，屏幕还一直亮着」。
+    ///
+    /// 这只是界面行为，不参与握手、不影响音频，改完立刻生效，不需要重连。
+    var keepScreenOn: Bool = false
+
     /// 要收听的通话组（TG），0 表示全部。
     ///
     /// Homebrew 是「服务器推什么就收什么」的协议，这个值首先是**订阅目标**：
@@ -485,6 +494,8 @@ extension Settings {
         wsPath = try container.decodeIfPresent(String.self, forKey: .wsPath) ?? defaults.wsPath
         sendConfig = try container.decodeIfPresent(Bool.self, forKey: .sendConfig) ?? defaults.sendConfig
         autoReconnect = try container.decodeIfPresent(Bool.self, forKey: .autoReconnect) ?? defaults.autoReconnect
+        // 老存档没有这个键：退回「关」，也就是升级前后屏幕行为完全一致。
+        keepScreenOn = try container.decodeIfPresent(Bool.self, forKey: .keepScreenOn) ?? defaults.keepScreenOn
         talkgroup = try container.decodeIfPresent(Int.self, forKey: .talkgroup) ?? defaults.talkgroup
         // 老存档没有这两个键：退回「组呼 + 空目的地址」，行为和以前一模一样。
         callMode = (try? container.decodeIfPresent(CallMode.self, forKey: .callMode)) ?? defaults.callMode

@@ -155,6 +155,10 @@ struct SettingsView: View {
 
             Toggle("断线自动重连", isOn: $app.settings.autoReconnect)
 
+            // 只影响屏幕：连接期间按住系统自动锁屏，断开/失败立刻交还。
+            // 打开/关闭都即时生效，不需要重连（见 `AppState.applyScreenWakePolicy`）。
+            Toggle("连接中屏幕常亮", isOn: $app.settings.keepScreenOn)
+
             Toggle("连接后自动订阅通话组", isOn: $app.settings.autoCallOnConnect)
 
             Toggle("跟随服务器下发的通话组", isOn: $app.settings.followServerTalkgroups)

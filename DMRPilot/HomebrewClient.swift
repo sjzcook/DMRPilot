@@ -168,6 +168,15 @@ final class HomebrewClient: ObservableObject {
     private var streamLastFrameAt: Date?
     /// DroidStar 的收流看门狗是 100 × 20 ms ≈ 2 秒。
     private let streamTimeout: TimeInterval = 2.0
+    /// YSF 当前这一路的「源 / 目的呼号」。
+    ///
+    /// 包头里那两段字段不可靠（有的反射器留空或填网关呼号），DCH 又只在 FN=0/1 才带，
+    /// 所以解出非空值就记下来，后面没带信令的包继续用，流的键也从这里拼。
+    private var ysfSource = ""
+    private var ysfDest = ""
+    /// 每次连接只打一次「第一包 YSF 语音」的体检结论（见 `handleYsfFrame`）。
+    /// 排查「有收帧没声音」时，这一行能直接分辨是解码出了静音，还是根本没走到解码。
+    private var ysfProbeLogged = false
 
     // MARK: - 发射状态
 
@@ -1286,26 +1295,48 @@ final class HomebrewClient: ObservableObject {
         let source = Self.ysfText(result.src)
         let dest = Self.ysfText(result.dst)
         let gateway = Self.ysfText(result.gw)
-        let key = "ysf-\(source)-\(dest)"
+
+        // 呼号有两个来源：包头里的 10 字节字段（每包都有），以及语音头 / VD2 的 DCH
+        // （只有 FN=0 带目的、FN=1 带源）。包头那两段在真实反射器上常常是空的或者干脆
+        // 填成网关呼号——参考实现 DroidStar 读包头时也只取 GW——所以「解出非空值就记住」，
+        // 后面那些没带信令的包沿用它，界面上的呼号才不会一句一句地闪成空白。
+        if !source.isEmpty { ysfSource = source }
+        if !dest.isEmpty { ysfDest = dest }
+
+        // 一句话里这个键必须**保持不变**。
+        //
+        // 之前是每包都用当时的 src/dst 现算，而 src/dst 会随着「这一包的 DCH 有没有解出来」
+        // 在「包头值 / DCH 值 / 空」之间来回跳（FN=0 改目的、FN=1 改源，其余帧只留包头值）。
+        // 键一变，`beginStream` 就把上一路 `voice.end()` 掉再 `voice.begin()`：
+        // 解码器被清、播放队列被 `flush()`，一句话里每秒清好几次 —— 症状正是
+        // 「收帧在涨、当前讲话人也有，但一点声音都听不到」。
+        // 现在只在语音头（或者中途加入的第一个语音包）定一次键，之后整句沿用。
+        let headerKey = "ysf-\(source)-\(dest)"
+        let key = streamKey ?? "ysf-\(ysfSource)-\(ysfDest)"
 
         switch event {
         case YSF_EVT_RX_HEADER:
-            beginStream(key: key, src: 0, dst: 0, slot: 1, isPrivate: false, at: Date(),
+            // 语音头这一包的 DCH 里是完整的「目的 + 源」，以它为准重定名字。
+            ysfSource = source
+            ysfDest = dest
+            beginStream(key: headerKey, src: 0, dst: 0, slot: 1, isPrivate: false, at: Date(),
                         name: source, channel: dest)
             append(.rx, "YSF 通话开始 \(source) → \(dest)（网关 \(gateway)）")
 
         case YSF_EVT_RX_END:
             if let index = calls.firstIndex(where: { $0.id == key && $0.isActive }) {
                 closeCall(index, at: Date())
-                append(.rx, "YSF 通话结束 \(source)（\(Fmt.duration(calls[index].duration))，\(calls[index].frames) 包）")
+                append(.rx, "YSF 通话结束 \(ysfSource)（\(Fmt.duration(calls[index].duration))，\(calls[index].frames) 包）")
             }
             endStream(reason: nil)
+            ysfSource = ""
+            ysfDest = ""
 
         case YSF_EVT_RX_VOICE:
             if streamKey != key {
                 // 连上时对方已经在说，或者语音头丢了：直接用这一包接上。
                 beginStream(key: key, src: 0, dst: 0, slot: 1, isPrivate: false, at: Date(),
-                            name: source, channel: dest)
+                            name: ysfSource, channel: ysfDest)
             }
             let codec = withUnsafeBytes(of: result.codec) { raw in
                 Array(raw.prefix(Int(YSF_CODEC_BYTES)))
@@ -1313,15 +1344,24 @@ final class HomebrewClient: ObservableObject {
             voice.pushYsf(key: key, codec: codec)
             reportAudioErrorOnce()
             syncVoiceUI()
+
+            // 第一包语音打一行体检：FI/DT/FN 说明这一包被当成了什么，解出电平说明
+            // 声码器有没有真的出声（0% = 解出来是静音，几秒后还是 0 就是解码链的问题；
+            // 有电平却没声音，问题就在播放这一段）。
+            if !ysfProbeLogged {
+                ysfProbeLogged = true
+                append(.info, "YSF 语音包：FI=\(result.fi) DT=\(result.dt) FN=\(result.fn)/\(result.ft)，"
+                    + "codec \(codec.count) 字节，解出电平 \(Int(voice.level * 100))%")
+            }
             trackSpeaker(src: 0, dst: 0, slot: 1, isPrivate: false, at: Date(),
-                         name: source, channel: dest)
+                         name: ysfSource, channel: ysfDest)
 
             if let index = calls.firstIndex(where: { $0.id == key && $0.isActive }) {
                 calls[index].frames += 1
                 calls[index].updatedAt = Date()
             } else {
                 calls.insert(makeCall(src: 0, dst: 0, slot: 1, isPrivate: false, key: key,
-                                      name: source, channel: dest), at: 0)
+                                      name: ysfSource, channel: ysfDest), at: 0)
                 trimCalls()
             }
 
@@ -2020,6 +2060,9 @@ final class HomebrewClient: ObservableObject {
 
         streamKey = nil
         streamLastFrameAt = nil
+        ysfSource = ""
+        ysfDest = ""
+        ysfProbeLogged = false
         currentSpeaker = nil
         // 断线时还挂着的通话要收尾，否则它既不在「当前讲话人」也不在「刚刚结束」，
         // 等于从界面上消失了。

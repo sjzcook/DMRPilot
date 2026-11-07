@@ -36,17 +36,29 @@ final class VoicePlayer {
     /// 引擎启动失败次数。push 每个语音包都会试着调 start()，
     /// 如果硬件真的起不来，不拦住就会 25 次/秒反复尝试。
     private var startFailures = 0
+    /// 最近一次启动失败的时刻。连续失败达到上限后不再逐包重试，但也不能就此认死：
+    /// 来电 / 其他 App 抢占音频硬件之后，等它让出来就应当自己恢复（见 `start()`）。
+    private var lastStartFailureAt: Date?
+
+    /// 系统报过配置变更、还没重建过。
+    ///
+    /// `engine.isRunning` 在配置变更之后不一定立刻变 false（有时会滞后一拍），
+    /// 只靠它判断会出现「看着还在跑、其实早就不出声了」，所以再让通知兜一层。
+    private var needsRebuild = false
+    private var configObserver: NSObjectProtocol?
 
     /// 队列里积压超过这个采样数就不再入队，避免延迟越拖越长（8000 = 1 秒）
     private let maxPendingFrames = 8000
     private let maxStartFailures = 3
+    /// 连续失败之后的复试间隔（秒）
+    private static let retryInterval: TimeInterval = 5
 
     var volume: Float = 1.0 {
         didSet { player.volume = volume }
     }
 
     /// 当前是否有声音在排队（用来驱动 UI 的电平指示）
-    var isActive: Bool { isRunning && pendingFrames > 0 }
+    var isActive: Bool { isRunning && engine.isRunning && pendingFrames > 0 }
 
     init() {
         format = AVAudioFormat(
@@ -55,15 +67,111 @@ final class VoicePlayer {
             channels: 1,
             interleaved: true
         )
+
+        #if os(iOS)
+        // 音频硬件配置一变（PTT 切 mode、另一个引擎要输入 IO、来电、插拔耳机），
+        // 系统就会把这个引擎停掉。通知里只记账，真正重建放到下一次 `start()`：
+        // 变更很可能发生在发射期间，那一刻不该去动音频硬件。
+        configObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.handleConfigurationChange()
+            }
+        }
+        #endif
+    }
+
+    private func handleConfigurationChange() {
+        guard isRunning else { return }
+        needsRebuild = true
+        // 队列里那批 PCM 是按旧采样率排的，播出来会变调，直接丢。
+        pendingFrames = 0
     }
 
     // MARK: - 生命周期
 
+    /// 拉起播放引擎（幂等；每个语音包都会调一次，正常路径只是一次 `engine.isRunning` 判断）。
+    ///
+    /// **必须能自愈**。`AVAudioEngine` 在音频硬件配置变化时会被系统停掉，而它**不会**
+    /// 自己起来：按下 PTT 时 `PttMicrophone` 把会话 mode 从 `.default` 换成 `.voiceChat`
+    /// （松手再换回来），同时另一个引擎开始要输入 IO —— 这两件事都会触发配置变更，
+    /// 结果就是播放引擎停住。以前这里第一行是 `guard !isRunning else { return }`，
+    /// 而 `isRunning` 只由我们自己改，于是状态还写着「在跑」、`start()` 直接返回，
+    /// 队列里再也进不去任何 PCM：**接收中按一下 PTT，之后就永远没声音，只能重连**。
     func start() {
-        guard !isRunning else { return }
-        guard startFailures < maxStartFailures else { return }
         guard let format else { return }
+        guard canAttemptStart() else { return }
 
+        // 引擎还活着、也没报过配置变更：只把 player 补起来
+        //（`flush()` 之后会出现「引擎在跑、player 停了」）。
+        if engine.isRunning && !needsRebuild {
+            if !player.isPlaying { player.play() }
+            isRunning = true
+            return
+        }
+
+        // 走到这里说明要重建：要么第一次启动，要么引擎被系统停掉了。
+        activateSession()
+
+        if isAttached {
+            // 之前正常跑过 → 是配置变更或系统停摆。旧队列里的 PCM 是按旧采样率排的，
+            // 放出来会变调；节点上的连接格式也不再保证有效，全部丢掉重来。
+            player.stop()
+            keepAlive.stop()
+            engine.stop()
+            pendingFrames = 0
+        }
+        needsRebuild = false
+
+        if !isAttached {
+            engine.attach(player)
+            isAttached = true
+        }
+        engine.connect(player, to: engine.mainMixerNode, format: format)
+
+        if !keepAliveAttached {
+            engine.attach(keepAlive)
+            keepAliveBuffer = Self.silentBuffer(format: format, seconds: 1)
+            keepAliveAttached = true
+        }
+        engine.connect(keepAlive, to: engine.mainMixerNode, format: format)
+
+        engine.prepare()
+        do {
+            try engine.start()
+        } catch {
+            isRunning = false
+            startFailures += 1
+            lastStartFailureAt = Date()
+            audioSessionError = "音频引擎启动失败：\(error.localizedDescription)"
+            return
+        }
+
+        startFailures = 0
+        lastStartFailureAt = nil
+        isRunning = true
+        player.volume = volume
+        player.play()
+        startKeepAlive()
+    }
+
+    /// 是否允许再试一次启动。
+    ///
+    /// 连续失败 `maxStartFailures` 次之后先停手（避免 25 次/秒地砸硬件），但每隔
+    /// `retryInterval` 仍给一次机会：来电、别的 App 抢占音频硬件这类失败都是暂时的，
+    /// 等对方让出来就该自己恢复，而不是「这一路从此再也没声音」。
+    private func canAttemptStart() -> Bool {
+        guard startFailures >= maxStartFailures else { return true }
+        guard let last = lastStartFailureAt else { return true }
+        return Date().timeIntervalSince(last) >= Self.retryInterval
+    }
+
+    /// 会话激活。分类由 `PttMicrophone` 托管（连接期间一直是 `.playAndRecord`），
+    /// 这里只保证它还活着 —— 被电话之类打断过才需要重新 `setActive`。
+    private func activateSession() {
         #if os(iOS)
         let session = AVAudioSession.sharedInstance()
         if PttMicrophone.talkSessionReady {
@@ -91,40 +199,13 @@ final class VoicePlayer {
             }
         }
         #endif
-
-        if !isAttached {
-            engine.attach(player)
-            engine.connect(player, to: engine.mainMixerNode, format: format)
-            isAttached = true
-        }
-
-        if !keepAliveAttached {
-            engine.attach(keepAlive)
-            engine.connect(keepAlive, to: engine.mainMixerNode, format: format)
-            keepAliveBuffer = Self.silentBuffer(format: format, seconds: 1)
-            keepAliveAttached = true
-        }
-
-        engine.prepare()
-        do {
-            try engine.start()
-        } catch {
-            isRunning = false
-            startFailures += 1
-            audioSessionError = "音频引擎启动失败：\(error.localizedDescription)"
-            return
-        }
-
-        startFailures = 0
-        player.volume = volume
-        player.play()
-        isRunning = true
-        startKeepAlive()
     }
 
     func stop() {
         // 用户主动断开时清掉退避计数，下次连接重新给引擎一次机会
         startFailures = 0
+        lastStartFailureAt = nil
+        needsRebuild = false
 
         keepAlive.stop()
 
@@ -150,7 +231,8 @@ final class VoicePlayer {
     // MARK: - 入队
 
     func enqueue(_ samples: [Int16]) {
-        guard isRunning, !samples.isEmpty else { return }
+        // 引擎被系统停掉时排进去的缓冲不会播、也不会回调，只会一直占着 pendingFrames。
+        guard isRunning, engine.isRunning, !samples.isEmpty else { return }
         guard let format else { return }
         guard pendingFrames < maxPendingFrames else { return }
 
@@ -186,12 +268,11 @@ final class VoicePlayer {
 
     /// 通话结束时调用：不再等待队列清空，直接丢弃积压
     func flush() {
-        guard isRunning else {
-            pendingFrames = 0
-            return
-        }
-        player.stop()
         pendingFrames = 0
+        // 引擎没在跑时 `player.play()` 没有意义（引擎停止状态下还可能抛 ObjC 异常，
+        // Swift 接不住）。重建交给下一次 `start()`。
+        guard isRunning, engine.isRunning else { return }
+        player.stop()
         player.play()
     }
 

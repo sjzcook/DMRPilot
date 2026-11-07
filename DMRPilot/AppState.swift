@@ -5,8 +5,10 @@
 //  全局状态：设置持久化、通话组字典、我的设备信息、热点连接。
 //
 
+import Combine
 import Foundation
 import SwiftUI
+import UIKit
 
 @MainActor
 final class AppState: ObservableObject {
@@ -25,6 +27,8 @@ final class AppState: ObservableObject {
             persistSettings()
             // 续订间隔、时隙这类设置改了不该要求重连
             hotspot.applyBehaviour(settings)
+            // 屏幕常亮是纯界面行为，改完立刻按新的取值重算一次（不用重连）。
+            applyScreenWakePolicy()
         }
     }
 
@@ -52,10 +56,25 @@ final class AppState: ObservableObject {
     let callsigns = CallsignDirectory()
     private let api = BrandMeisterAPI()
     private static let settingsKey = "dmrpilot.settings.v1"
+    /// 屏幕常亮要跟着连接状态走，这里留一个订阅。
+    private var cancellables: Set<AnyCancellable> = []
 
     init() {
         settings = Self.loadSettings()
         hotspot.adoptTalkgroup(settings.talkgroup)
+
+        // 「连接中屏幕常亮」：连接状态一变就重算一次。
+        //
+        // 这里用 publisher 给出的**新值**，不要回头读 `hotspot.state`：`@Published`
+        // 是在 willSet 里发的，那时候属性还是旧值，读回来会慢一拍
+        // （offline → connecting 这一跳会被漏掉，连接过程中屏幕就不亮了）。
+        hotspot.$state
+            .sink { [weak self] state in
+                Task { @MainActor in
+                    self?.applyScreenWakePolicy(state)
+                }
+            }
+            .store(in: &cancellables)
 
         // 通话记录落盘时要顺手把呼号和通话组名快照下来，这里把两份引用挂过去。
         // 用 weak：日志库是单例，不该反过来抓着 AppState 不放。
@@ -111,6 +130,29 @@ final class AppState: ObservableObject {
     func restartForServerChange() {
         guard hotspot.state != .offline else { return }
         hotspot.connect(with: settings)
+    }
+
+    // MARK: - 屏幕常亮
+
+    /// 「连接中屏幕常亮」的生效点：按当前设置 + 当前状态重新算一次。
+    ///
+    /// 放在 AppState 里而不是某个视图里，有两个原因：连接可能由快捷指令发起，
+    /// 那时界面不一定在前台；而且断开 / 失败之后必须**立刻**把 `isIdleTimerDisabled`
+    /// 交还给系统，否则会出现「App 都断了，屏幕还一直亮着」。
+    private func applyScreenWakePolicy() {
+        applyScreenWakePolicy(hotspot.state)
+    }
+
+    /// - Parameter state: 用状态变化时拿到的**新值**，别在这里读 `hotspot.state`
+    ///   （`@Published` 是 willSet 发的，读回来还是旧值）。
+    private func applyScreenWakePolicy(_ state: HomebrewClient.ConnectionState) {
+        #if os(iOS)
+        // `.failed` 算「没连上」：它只是等自动重连的中间态，不该为它一直亮着。
+        let linked = state.isBusy || state == .online
+        let wanted = settings.keepScreenOn && linked
+        guard UIApplication.shared.isIdleTimerDisabled != wanted else { return }
+        UIApplication.shared.isIdleTimerDisabled = wanted
+        #endif
     }
 
     // MARK: - 首页模式

@@ -49,6 +49,11 @@ final class VoicePipeline {
                 player.flush()
                 level = 0
                 isPlaying = false
+            } else {
+                // 解除静音时先把引擎拉回来：发射那几秒里会话 mode 被换过、播放引擎
+                // 被系统停掉过，只等下一包 PCM 去重开的话，对方刚好在这时候说完
+                // 就再也没有「下一包」了——听感就是「按一下 PTT，这一路就哑了」。
+                player.start()
             }
         }
     }
