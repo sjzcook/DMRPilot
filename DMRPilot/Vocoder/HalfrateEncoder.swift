@@ -498,18 +498,27 @@ final class HREncoder {
         guard !levelBiasDone else { return }
         levelBiasDone = true
 
-        let decoder = HRDecoder()
+        // 用 C++ 解码器（与播放完全同一份实现、同一组参数）做标定：
+        // 这样标定出来的电平偏移，和实际听到的音量是同一把尺子。
+        let decoder = hrd_create()
+        defer { hrd_destroy(decoder) }
+
         let pitchIndex = 30
         var fields = [Int32](repeating: 0, count: HRField.count)
         fields[HRField.pitch] = Int32(pitchIndex)
         fields[HRField.voicing] = 0
         fields[HRField.gain] = 18
         let bits = HRFrame.rotatedFromStandard(HRFrame.bitsFromFields(fields))
+        let air = HRFec.encodeAirFrame(bits)
 
         var pcm = [Int16](repeating: 0, count: HRCore.frameSamples)
         var rms: Float = 0
         for pass in 0..<6 {
-            _ = decoder.decode(bits: bits, pcm: &pcm)
+            _ = air.withUnsafeBufferPointer { input in
+                pcm.withUnsafeMutableBufferPointer { output in
+                    hrd_decode_frame(decoder, input.baseAddress, output.baseAddress, nil)
+                }
+            }
             if pass >= 4 {
                 var sum: Float = 0
                 for v in pcm { sum += Float(v) * Float(v) }

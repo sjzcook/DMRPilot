@@ -9,8 +9,9 @@ Swift + SwiftUI 写的 BrandMeister 客户端，两条链路 + 一条查询腿�
 2. **Homebrew（TGIF / FreeDMR / 自建网关）**：UDP **62031**，以 MMDVM 热点身份完成 `RPTL → RPTK → RPTC`
    三段握手，用 `RPTPING/MSTPONG` 保活，收 `DMRD` 55 字节帧。这个协议**没有订阅指令**，
    要靠连上后发一次静音发射让服务器记事。握手机器在 `DMRPilot/Core/DMRCore.cpp`（去 Qt 之后的 DroidStar `dmr.cpp` 直译）。
-3. **真的能出声**：两条链路最终都交出 3 个 9 字节 AMBE 帧，交给**纯 Swift 实现的 AMBE+2 半速率解码器**
-   还原成 8 kHz PCM，用 `AVAudioEngine` 播出来。声码器（FEC、反量化、谐波合成、增强、限幅）全部是 Swift。
+3. **真的能出声**：两条链路最终都交出 3 个 9 字节 AMBE 帧，交给 **DroidStar 的 `mbe/halfrate` 解码器**
+   （C++ 原文件，`Core/Vocoder/`）还原成 8 kHz PCM，用 `AVAudioEngine` 播出来。
+   不是重写：同一份源码、同一组听感参数，DroidStar 的 iOS 版跑的就是它。
 4. **REST 查询**：`api.brandmeister.network/v2` 的设备详情与全球通话组名称表。
 
 ---
@@ -26,18 +27,35 @@ DMRApp/
 │   ├── AppState.swift           # 设置持久化 / 通话组缓存 / 我的设备
 │   ├── Models.swift             # BmDevice / Settings / LiveCall / LogEntry
 │   ├── BrandMeisterAPI.swift    # v2 REST 客户端
-│   ├── Core/                    # ★ 协议核心（C++，移植自 DroidStar / DigestPlay，GPL-3.0）
+│   ├── Core/                    # ★ 协议核心 + 声码器（C++，DroidStar / DigestPlay 原文件，GPL-3.0）
 │   │   ├── DMRCore.h                # 纯 C 接口：Homebrew
 │   │   ├── DMRCore.cpp              # 握手状态机 + 组帧 / 拆帧 / 编码链
 │   │   ├── RewindCore.h             # 纯 C 接口：ODTP / Rewind
 │   │   ├── RewindCore.cpp           # KEEP_ALIVE 登录 + 显式订阅 + 27 字节语音帧
+│   │   ├── HRCore.h                 # 纯 C 接口：AMBE+2 半速率解码
+│   │   ├── HRCore.cpp               # 建解码器 + DroidStar 的 12 个听感参数
 │   │   ├── DMRDefines.h             # 同步字、静音 AMBE、突发类型
 │   │   ├── crs129.cpp               # RS(12,9) 12,9,3 里德-所罗门
 │   │   ├── cbptc19696.cpp           # BPTC(196,96) 交织 + 汉明
 │   │   ├── cgolay2087.cpp           # Golay(20,8) slot type
 │   │   ├── chamming.cpp             # Hamming(16,11) 嵌入 LC
 │   │   ├── CRCenc.cpp               # 嵌入 LC 的 CRC-5
-│   │   └── SHA256.cpp               # RPTK / AUTHENTICATION 的挑战应答
+│   │   ├── SHA256.cpp               # RPTK / AUTHENTICATION 的挑战应答
+│   │   └── Vocoder/                 # ★ DroidStar mbe/halfrate 的解码闭包（原文件，未重写）
+│   │       ├── halfrate.h               # C 接口（本仓库补了 reset / 带纠错数的变体）
+│   │       ├── decoder_api.cc           # hr_decoder_new / hr_decode_air
+│   │       ├── decoder.cc               # 帧解码：语音 / 静音 / 音调 / 擦除
+│   │       ├── decoder_synth.cc         # 谐波合成、噪声、脉冲
+│   │       ├── decoder_options.cc       # 全部调音参数与默认值
+│   │       ├── decoder_tables.cc        # 谐波类 / 相位抽头 / 键盘音表
+│   │       ├── dequant.cc               # 码本预测反量化
+│   │       ├── enhance.cc               # 共振峰增强
+│   │       ├── fec.cc                   # Golay(23,12) / 交织 / 解扰
+│   │       ├── frame.cc / frame_layout.cc  # 49 bit ↔ 9 个参数字段
+│   │       ├── fastmath.cc / fft.cc     # 定点 log2/exp2 / 128·512 点 FFT
+│   │       ├── golay.cc                 # Golay 表
+│   │       ├── codebook.cc / codebook_set.cc / cosine.cc / api.cc
+│   │       └── （编码器那半边没编进来：encoder.cc / enc_pitch_net.cc 等）
 │   ├── DMRPilot-Bridging-Header.h   # SWIFT_OBJC_BRIDGING_HEADER
 │   ├── HomebrewClient.swift     # 传输 + 定时器 + 两条链路的分发 + 界面状态
 │   ├── RootView.swift           # TabView
@@ -48,16 +66,13 @@ DMRApp/
 │   ├── HostPickerField.swift    # 服务器弹出选择器 + Hostname 搜索
 │   ├── CallsignDirectory.swift  # DMR ID → 呼号（RadioID.net 查询 + 本地缓存）
 │   ├── LogConsoleView.swift     # 十六进制协议日志
-│   ├── Vocoder/                 # AMBE+2 半速率编解码器（纯 Swift）
-│   │   ├── HalfrateEncoder.swift    # 发送方向：分析 + 码本量化（PTT 用）
-│   │   ├── HalfrateDecoder.swift    # 帧解码 + 丢帧隐藏 + 输出级
+│   ├── Vocoder/                 # 只剩发送方向的 Swift 编码器（解码已改走 Core/Vocoder）
+│   │   ├── HalfrateEncoder.swift    # 分析 + 码本量化（PTT 用）
 │   │   ├── HalfrateCore.swift       # 常量、定点饱和、快速 log2/exp2/sqrt、FFT
-│   │   ├── HalfrateFec.swift        # Golay(23,12) / 交织 / 解扰
-│   │   ├── HalfrateDequant.swift    # 码本预测反量化
-│   │   ├── HalfrateSynth.swift      # 谐波合成 / 噪声 / 脉冲
-│   │   ├── HalfrateOptions.swift    # 全部调音参数的默认值
+│   │   ├── HalfrateFec.swift        # Golay(23,12) / 交织 / 解扰（发送方向编码）
+│   │   ├── HalfrateDequant.swift    # 反量化（编码器的闭环校验要用）
 │   │   ├── HalfrateTables.swift     # 从 C++ 生成的大表（13 万字节，勿手改）
-│   │   └── DMRVoicePath.swift       # 27 字节 AMBE → 3 个空中帧 → PCM
+│   │   └── DMRVoicePath.swift       # 27 字节 AMBE → hrd_decode_packet → PCM
 │   ├── Audio/
 │   │   ├── VoicePipeline.swift  # 每路通话一个解码器 + 播放调度
 │   │   ├── PttMicrophone.swift  # 麦克风采集 → 8 kHz / 160 采样
@@ -69,6 +84,7 @@ DMRApp/
 │   ├── core_check.py            # Homebrew 发射路径的逐字节核对（对着 DroidStar 的 Python 复刻）
 │   ├── dmr_ref.py               # DroidStar 的 TX 路径 Python 复刻，core_check 的参照
 │   ├── rewind_check.py          # ODTP 拼包 + 拆包双向核对（对着 BrandMeister 规范）
+│   ├── vocoder_check.py         # 声码器静态自检：文件齐全 / include 自洽 / 符号有定义
 │   ├── enc_check.py             # 编码器「量化 → 反量化」闭环检查
 │   └── gen_icon.py              # 用代码精确绘制 App icon
 └── README.md
@@ -614,33 +630,43 @@ ODTP 的失败表现和 Homebrew 完全不同——**鉴权失败时服务器一
 
 ## 语音是怎么解出来的
 
-DMR 每 20 ms 传 33 bit 的 AMBE+2 参数（2450 bit/s 语音 + 1150 bit/s 前向纠错），
-还原成 PCM 需要半速率声码器。拆帧这一步在 C++ 核心里做（它本来就要解 LC），
-声码器本身是**纯 Swift 移植**：
+DMR 每 20 ms 传 49 bit 的 AMBE+2 参数（2450 bit/s 语音 + 1150 bit/s 前向纠错），
+还原成 PCM 需要半速率声码器。拆帧在 C++ 协议核心里做（它本来就要解 LC），
+解码则是 **DroidStar 的 `mbe/halfrate` 原文件**（`DMRPilot/Core/Vocoder/`），
+经 `Core/HRCore.h` 的 `hrd_*` 接口调用 —— 不是重写，是同一份源码：
 
 ```
 DMRD 55 字节
    └─ 33 字节载荷                    DMRCore.cpp（C++）
         └─ result.codec[27]          重排成 3 × 9 字节空中帧
-             └─ DMRVoicePath.frames   27 字节 → 3 个字段数组
-                  └─ HRFec.decodeAirFrame        解交织 → Golay(23,12) → 解扰
-                       └─ HRDecoder.decode       反量化 → 谐波合成 → 增强 → 限幅
+             └─ hrd_decode_packet    HRCore.cpp（C++，套 DroidStar 的 12 个听感参数）
+                  └─ hr_decode_air   Vocoder/decoder_api.cc
+                       ├─ fec_decode_frame   Golay(23,12) + 解交织 + 解扰
+                       └─ Decoder::decode_bits  反量化 → 谐波合成 → 增强 → 限幅
                             └─ 3 × 160 = 480 个 8 kHz PCM 采样
                                  └─ VoicePlayer  AVAudioEngine 升采样后播放
 ```
 
+ODTP / Rewind 那条链路更短：`0x0920` 的载荷本身就是这 27 字节，直接进 `hrd_decode_packet`。
+
 | 层 | 文件 | 做什么 |
 |---|---|---|
-| 拆帧 | `DMRCore.cpp` | 216 个语音比特散在载荷 `0..13` 与 `20..32`，第 13 字节低半字节是嵌入式信令，要用第 19 字节低半字节替换；拆完的 27 字节随事件一起交给 Swift |
-| 重组 | `DMRVoicePath` | 27 字节按 9 字节切成 3 个空中帧 |
-| 纠错 | `HRFec` | `channelPosition(i) = 4i - 71·(i/18)` 的 DMR 交织、Golay(23,12) 纠 3 位、23 位伪随机解扰 |
-| 反量化 | `HRDequant` | 9 个参数字段（宽度 `{7,5,5,9,7,5,4,4,3}`），码本预测 ρ=0.65 |
-| 合成 | `HRSynth` | 相位跟踪的正弦谐波、128/512 点 FFT 噪声、脉冲串、160 采样重叠相加 |
-| 输出 | `HRDecoder` | 共振峰增强、高通、帧限幅、软限幅，最后饱和成 `Int16` |
+| 拆帧 | `Core/DMRCore.cpp` | 216 个语音比特散在载荷 `0..13` 与 `20..32`，第 13 字节低半字节是嵌入式信令，要用第 19 字节低半字节替换；拆完的 27 字节随事件一起交给 Swift |
+| 桥接 | `Core/HRCore.cpp` | 建解码器、套 12 个听感参数、一次吃完 27 字节、把纠错比特数带出来 |
+| 纠错 | `Vocoder/fec.cc` | `channelPosition(i) = 4i - 71·(i/18)` 的 DMR 交织、Golay(23,12) 纠 3 位、23 位伪随机解扰 |
+| 反量化 | `Vocoder/dequant.cc` | 9 个参数字段（宽度 `{7,5,5,9,7,5,4,4,3}`），码本预测 ρ=0.65 |
+| 合成 | `Vocoder/decoder_synth.cc` | 相位跟踪的正弦谐波、FFT 噪声、脉冲串、160 采样重叠相加 |
+| 输出 | `Vocoder/decoder.cc` | 共振峰增强、高通、帧限幅、软限幅，最后饱和成 `Int16` |
 
-数值必须逐位一致，所以所有浮点常量都按 C++ 里的十六进制浮点原样写过来
-（例如 `0x1.186f18p-2` 必须写成 `0.273861289024353`，不能写成 `0.2734`），
-大表则用 `tools/gen_tables.py` 从源码解析后生成，不手抄。
+**为什么用原文件而不是继续用 Swift 移植**：`HalfrateDecoder/Dequant/Synth/Fec` 那套
+（约 1700 行）虽然也是从同一份源码搬的，但浮点常量、码本索引、相位累加只要错一位，
+听感就从「正常」变成「机器人」或「白噪声」，而这台机器没有 iOS 工具链，无法比对输出。
+原文件编进来就没有这层风险 —— DroidStar 的 iOS 版跑的正是它。
+
+> 参数这层也别漏：`ambe2.cc` 里有一组对着 DVSI 声码棒拟合出来的 12 个选项
+> （输出增益 2.07、高频倾斜 0.5、共振峰增强 0.61…），`hr_decoder_new()` **不会**自动套用，
+> 必须自己逐条 `hr_decoder_set`。这些在 `HRCore.cpp` 的 `kDecoderTuning` 里，
+> 和 DroidStar 的 `kHalfrateDecoderTuning` 一字不差。少这 12 行，声音会明显偏薄。
 
 ### 关于每一路通话
 
@@ -658,15 +684,18 @@ DMRD 55 字节
   因此 `Core/` 同样受 GPL-3.0 约束：**分发二进制时必须提供完整源码**。
 - `Core/RewindCore.cpp` 是照着 [BrandMeister DigestPlay（ODMRTP 分支）](https://github.com/BrandMeister/DigestPlay/tree/ODMRTP)
   （作者 Artem Prilutskiy / R3ABM）的 `Rewind.h` / `RewindClient.c` 重写的，同样是 **GPL-3.0-or-later**。
-- 本目录 `Vocoder/` 下的解码器**移植自 [DroidStar](https://github.com/nostar/DroidStar) 的 `mbe/` 子系统**
-  （原作者 David Rowe / N0MJS 等），该子系统以 **GPL-3.0-or-later** 发布。
-  因此 `Vocoder/` 下的这些 Swift 文件同样受 GPL-3.0 约束。
+- `Core/Vocoder/` 下那 17 个 `.cc` / 14 个 `.h` 是 [DroidStar](https://github.com/nostar/DroidStar)
+  的 `mbe/halfrate` 子系统**原文件**（原作者 David Rowe / N0MJS 等），以 **GPL-3.0-or-later** 发布。
+  本仓库只改了三处，都在文件里注明：删掉 `decoder_synth.cc` 里一行没用的 `#include <QtGlobal>`；
+  给 `halfrate.h` / `decoder_api.cc` 补了 `hr_decoder_reset` 和带纠错数的 `hr_decode_air_errors`。
+  其余一行未动，包括所有十六进制浮点常量。
+- `Vocoder/` 下剩下的 Swift 文件是**发送方向**的编码器（PTT），同样移植自 `mbe/`，同样受 GPL-3.0 约束。
 - 两处叠加的结果：**整个工程事实上是 GPL-3.0**。若要放进 App Store，GPL-3.0 与 Apple 的
   分发条款存在已知冲突，需自行评估法务风险。
 - AMBE+2 本身是 DVSI 的**专利技术**。开源实现（mbelib / halfrate）的专利状态在法律上
   并没有被明确豁免，商业分发有风险。个人实验、自用、开源分发（遵守 GPL）风险相对可控。
 - App 只是「能听」，音质是软件声码器的水平：安静环境下可懂度不错，弱信号时会有金属声和
-  断续——`HRDecoder` 的丢帧隐藏会在丢包时重复上一帧或渐入舒适噪声。这与硬件 AMBE-3000
+  断续——halfrate 的擦除隐藏会在丢包时重复上一帧、静音、再渐入舒适噪声。这与硬件 AMBE-3000
   芯片的效果有差距，属正常现象。
 
 ---

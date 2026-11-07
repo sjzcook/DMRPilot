@@ -255,7 +255,7 @@ struct SettingsView: View {
         } header: {
             Text("关于")
         } footer: {
-            Text("两条链路的握手、组帧与拆帧都在内置的 C++ 核心里：Core/RewindCore.cpp 走 ODTP（移植自 BrandMeister DigestPlay 的 RewindClient，GPL-3.0），Core/DMRCore.cpp 走 Homebrew（移植自 DroidStar 的 dmr.cpp，GPL-3.0）。Swift 只负责网络收发、定时器与界面；语音由纯 Swift 的 AMBE+2 半速率解码器还原（移植自 DroidStar 的 halfrate，GPL-3.0）。语音开关与音量在「热点」页。")
+            Text("两条链路的握手、组帧与拆帧都在内置的 C++ 核心里：Core/RewindCore.cpp 走 ODTP（移植自 BrandMeister DigestPlay 的 RewindClient，GPL-3.0），Core/DMRCore.cpp 走 Homebrew（移植自 DroidStar 的 dmr.cpp，GPL-3.0）。Swift 只负责网络收发、定时器与界面；语音由 DroidStar 的 halfrate 解码器还原（Core/Vocoder/ 原文件，GPL-3.0），听感参数也与它一致。语音开关与音量在「热点」页。")
         }
     }
 

@@ -21,9 +21,6 @@
 		C1C2C3D4E5F6A7B8C9D0020E /* HalfrateCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D0010F /* HalfrateCore.swift */; };
 		C1C2C3D4E5F6A7B8C9D0020F /* HalfrateFec.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00110 /* HalfrateFec.swift */; };
 		C1C2C3D4E5F6A7B8C9D00210 /* HalfrateDequant.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00111 /* HalfrateDequant.swift */; };
-		C1C2C3D4E5F6A7B8C9D00211 /* HalfrateSynth.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00112 /* HalfrateSynth.swift */; };
-		C1C2C3D4E5F6A7B8C9D00212 /* HalfrateOptions.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00113 /* HalfrateOptions.swift */; };
-		C1C2C3D4E5F6A7B8C9D00213 /* HalfrateDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00114 /* HalfrateDecoder.swift */; };
 		C1C2C3D4E5F6A7B8C9D00214 /* DMRVoicePath.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00115 /* DMRVoicePath.swift */; };
 		C1C2C3D4E5F6A7B8C9D00215 /* VoicePlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00116 /* VoicePlayer.swift */; };
 		C1C2C3D4E5F6A7B8C9D00216 /* VoicePipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00117 /* VoicePipeline.swift */; };
@@ -41,6 +38,24 @@
 		FA11C0DE0000000000000106 /* CRCenc.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE0000000000000006 /* CRCenc.cpp */; };
 		FA11C0DE0000000000000107 /* SHA256.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE0000000000000007 /* SHA256.cpp */; };
 		FA11C0DE0000000000000110 /* RewindCore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE0000000000000010 /* RewindCore.cpp */; };
+		FA11C0DE0000000000000121 /* HRCore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE0000000000000021 /* HRCore.cpp */; };
+		FA11C0DE0000000000000301 /* codebook.cc in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE0000000000000201 /* codebook.cc */; };
+		FA11C0DE0000000000000302 /* codebook_set.cc in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE0000000000000202 /* codebook_set.cc */; };
+		FA11C0DE0000000000000303 /* cosine.cc in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE0000000000000203 /* cosine.cc */; };
+		FA11C0DE0000000000000304 /* decoder.cc in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE0000000000000204 /* decoder.cc */; };
+		FA11C0DE0000000000000305 /* decoder_api.cc in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE0000000000000205 /* decoder_api.cc */; };
+		FA11C0DE0000000000000306 /* decoder_options.cc in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE0000000000000206 /* decoder_options.cc */; };
+		FA11C0DE0000000000000307 /* decoder_synth.cc in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE0000000000000207 /* decoder_synth.cc */; };
+		FA11C0DE0000000000000308 /* decoder_tables.cc in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE0000000000000208 /* decoder_tables.cc */; };
+		FA11C0DE0000000000000309 /* dequant.cc in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE0000000000000209 /* dequant.cc */; };
+		FA11C0DE000000000000030A /* enhance.cc in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE000000000000020A /* enhance.cc */; };
+		FA11C0DE000000000000030B /* fastmath.cc in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE000000000000020B /* fastmath.cc */; };
+		FA11C0DE000000000000030C /* fec.cc in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE000000000000020C /* fec.cc */; };
+		FA11C0DE000000000000030D /* fft.cc in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE000000000000020D /* fft.cc */; };
+		FA11C0DE000000000000030E /* frame.cc in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE000000000000020E /* frame.cc */; };
+		FA11C0DE000000000000030F /* frame_layout.cc in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE000000000000020F /* frame_layout.cc */; };
+		FA11C0DE0000000000000310 /* golay.cc in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE0000000000000210 /* golay.cc */; };
+		FA11C0DE0000000000000311 /* api.cc in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE000000000000021F /* api.cc */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -58,9 +73,6 @@
 		B1B2C3D4E5F6A7B8C9D0010F /* HalfrateCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HalfrateCore.swift; sourceTree = "<group>"; };
 		B1B2C3D4E5F6A7B8C9D00110 /* HalfrateFec.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HalfrateFec.swift; sourceTree = "<group>"; };
 		B1B2C3D4E5F6A7B8C9D00111 /* HalfrateDequant.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HalfrateDequant.swift; sourceTree = "<group>"; };
-		B1B2C3D4E5F6A7B8C9D00112 /* HalfrateSynth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HalfrateSynth.swift; sourceTree = "<group>"; };
-		B1B2C3D4E5F6A7B8C9D00113 /* HalfrateOptions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HalfrateOptions.swift; sourceTree = "<group>"; };
-		B1B2C3D4E5F6A7B8C9D00114 /* HalfrateDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HalfrateDecoder.swift; sourceTree = "<group>"; };
 		B1B2C3D4E5F6A7B8C9D00115 /* DMRVoicePath.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DMRVoicePath.swift; sourceTree = "<group>"; };
 		B1B2C3D4E5F6A7B8C9D00116 /* VoicePlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoicePlayer.swift; sourceTree = "<group>"; };
 		B1B2C3D4E5F6A7B8C9D00117 /* VoicePipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoicePipeline.swift; sourceTree = "<group>"; };
@@ -89,6 +101,39 @@
 		FA11C0DE0000000000000010 /* RewindCore.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = RewindCore.cpp; sourceTree = "<group>"; };
 		FA11C0DE0000000000000011 /* RewindCore.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RewindCore.h; sourceTree = "<group>"; };
 		FA11C0DE00000000000000FF /* DMRPilot-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = DMRPilot-Bridging-Header.h; sourceTree = "<group>"; };
+		FA11C0DE0000000000000021 /* HRCore.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = HRCore.cpp; sourceTree = "<group>"; };
+		FA11C0DE0000000000000022 /* HRCore.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = HRCore.h; sourceTree = "<group>"; };
+		FA11C0DE0000000000000201 /* codebook.cc */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = codebook.cc; sourceTree = "<group>"; };
+		FA11C0DE0000000000000202 /* codebook_set.cc */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = codebook_set.cc; sourceTree = "<group>"; };
+		FA11C0DE0000000000000203 /* cosine.cc */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = cosine.cc; sourceTree = "<group>"; };
+		FA11C0DE0000000000000204 /* decoder.cc */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = decoder.cc; sourceTree = "<group>"; };
+		FA11C0DE0000000000000205 /* decoder_api.cc */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = decoder_api.cc; sourceTree = "<group>"; };
+		FA11C0DE0000000000000206 /* decoder_options.cc */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = decoder_options.cc; sourceTree = "<group>"; };
+		FA11C0DE0000000000000207 /* decoder_synth.cc */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = decoder_synth.cc; sourceTree = "<group>"; };
+		FA11C0DE0000000000000208 /* decoder_tables.cc */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = decoder_tables.cc; sourceTree = "<group>"; };
+		FA11C0DE0000000000000209 /* dequant.cc */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = dequant.cc; sourceTree = "<group>"; };
+		FA11C0DE000000000000020A /* enhance.cc */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = enhance.cc; sourceTree = "<group>"; };
+		FA11C0DE000000000000020B /* fastmath.cc */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = fastmath.cc; sourceTree = "<group>"; };
+		FA11C0DE000000000000020C /* fec.cc */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = fec.cc; sourceTree = "<group>"; };
+		FA11C0DE000000000000020D /* fft.cc */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = fft.cc; sourceTree = "<group>"; };
+		FA11C0DE000000000000020E /* frame.cc */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = frame.cc; sourceTree = "<group>"; };
+		FA11C0DE000000000000020F /* frame_layout.cc */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = frame_layout.cc; sourceTree = "<group>"; };
+		FA11C0DE0000000000000210 /* golay.cc */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = golay.cc; sourceTree = "<group>"; };
+		FA11C0DE0000000000000211 /* codebook.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = codebook.h; sourceTree = "<group>"; };
+		FA11C0DE0000000000000212 /* decoder.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = decoder.h; sourceTree = "<group>"; };
+		FA11C0DE0000000000000213 /* decoder_options.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = decoder_options.h; sourceTree = "<group>"; };
+		FA11C0DE0000000000000214 /* decoder_synth.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = decoder_synth.h; sourceTree = "<group>"; };
+		FA11C0DE0000000000000215 /* decoder_tables.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = decoder_tables.h; sourceTree = "<group>"; };
+		FA11C0DE0000000000000216 /* dequant.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = dequant.h; sourceTree = "<group>"; };
+		FA11C0DE0000000000000217 /* enhance.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = enhance.h; sourceTree = "<group>"; };
+		FA11C0DE0000000000000218 /* fastmath.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = fastmath.h; sourceTree = "<group>"; };
+		FA11C0DE0000000000000219 /* fec.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = fec.h; sourceTree = "<group>"; };
+		FA11C0DE000000000000021A /* fft.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = fft.h; sourceTree = "<group>"; };
+		FA11C0DE000000000000021B /* frame.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = frame.h; sourceTree = "<group>"; };
+		FA11C0DE000000000000021C /* halfrate.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = halfrate.h; sourceTree = "<group>"; };
+		FA11C0DE000000000000021D /* numeric.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = numeric.h; sourceTree = "<group>"; };
+		FA11C0DE000000000000021E /* tables.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = tables.h; sourceTree = "<group>"; };
+		FA11C0DE000000000000021F /* api.cc */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = api.cc; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -146,12 +191,9 @@
 		A1B2C3D4E5F6A7B8C9D00010 /* Vocoder */ = {
 			isa = PBXGroup;
 			children = (
-				B1B2C3D4E5F6A7B8C9D00114 /* HalfrateDecoder.swift */,
 				B1B2C3D4E5F6A7B8C9D0010F /* HalfrateCore.swift */,
 				B1B2C3D4E5F6A7B8C9D00110 /* HalfrateFec.swift */,
 				B1B2C3D4E5F6A7B8C9D00111 /* HalfrateDequant.swift */,
-				B1B2C3D4E5F6A7B8C9D00112 /* HalfrateSynth.swift */,
-				B1B2C3D4E5F6A7B8C9D00113 /* HalfrateOptions.swift */,
 				B1B2C3D4E5F6A7B8C9D0010E /* HalfrateTables.swift */,
 				B1B2C3D4E5F6A7B8C9D00115 /* DMRVoicePath.swift */,
 				B1B2C3D4E5F6A7B8C9D00131 /* HalfrateEncoder.swift */,
@@ -173,6 +215,9 @@
 			isa = PBXGroup;
 			children = (
 				FA11C0DE0000000000000001 /* DMRCore.cpp */,
+				FA11C0DE0000000000000021 /* HRCore.cpp */,
+				FA11C0DE0000000000000022 /* HRCore.h */,
+				FA11C0DE0000000000000020 /* Vocoder */,
 				FA11C0DE0000000000000010 /* RewindCore.cpp */,
 				FA11C0DE0000000000000002 /* crs129.cpp */,
 				FA11C0DE0000000000000003 /* cbptc19696.cpp */,
@@ -191,6 +236,44 @@
 				FA11C0DE000000000000000F /* SHA256.h */,
 			);
 			path = Core;
+			sourceTree = "<group>";
+		};
+		FA11C0DE0000000000000020 /* Vocoder */ = {
+			isa = PBXGroup;
+			children = (
+				FA11C0DE0000000000000201 /* codebook.cc */,
+				FA11C0DE0000000000000202 /* codebook_set.cc */,
+				FA11C0DE0000000000000203 /* cosine.cc */,
+				FA11C0DE0000000000000204 /* decoder.cc */,
+				FA11C0DE0000000000000205 /* decoder_api.cc */,
+				FA11C0DE000000000000021F /* api.cc */,
+				FA11C0DE0000000000000206 /* decoder_options.cc */,
+				FA11C0DE0000000000000207 /* decoder_synth.cc */,
+				FA11C0DE0000000000000208 /* decoder_tables.cc */,
+				FA11C0DE0000000000000209 /* dequant.cc */,
+				FA11C0DE000000000000020A /* enhance.cc */,
+				FA11C0DE000000000000020B /* fastmath.cc */,
+				FA11C0DE000000000000020C /* fec.cc */,
+				FA11C0DE000000000000020D /* fft.cc */,
+				FA11C0DE000000000000020E /* frame.cc */,
+				FA11C0DE000000000000020F /* frame_layout.cc */,
+				FA11C0DE0000000000000210 /* golay.cc */,
+				FA11C0DE0000000000000211 /* codebook.h */,
+				FA11C0DE0000000000000212 /* decoder.h */,
+				FA11C0DE0000000000000213 /* decoder_options.h */,
+				FA11C0DE0000000000000214 /* decoder_synth.h */,
+				FA11C0DE0000000000000215 /* decoder_tables.h */,
+				FA11C0DE0000000000000216 /* dequant.h */,
+				FA11C0DE0000000000000217 /* enhance.h */,
+				FA11C0DE0000000000000218 /* fastmath.h */,
+				FA11C0DE0000000000000219 /* fec.h */,
+				FA11C0DE000000000000021A /* fft.h */,
+				FA11C0DE000000000000021B /* frame.h */,
+				FA11C0DE000000000000021C /* halfrate.h */,
+				FA11C0DE000000000000021D /* numeric.h */,
+				FA11C0DE000000000000021E /* tables.h */,
+			);
+			path = Vocoder;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -295,6 +378,24 @@
 				FA11C0DE0000000000000106 /* CRCenc.cpp in Sources */,
 				FA11C0DE0000000000000107 /* SHA256.cpp in Sources */,
 				FA11C0DE0000000000000110 /* RewindCore.cpp in Sources */,
+				FA11C0DE0000000000000121 /* HRCore.cpp in Sources */,
+				FA11C0DE0000000000000301 /* codebook.cc in Sources */,
+				FA11C0DE0000000000000302 /* codebook_set.cc in Sources */,
+				FA11C0DE0000000000000303 /* cosine.cc in Sources */,
+				FA11C0DE0000000000000304 /* decoder.cc in Sources */,
+				FA11C0DE0000000000000305 /* decoder_api.cc in Sources */,
+				FA11C0DE0000000000000306 /* decoder_options.cc in Sources */,
+				FA11C0DE0000000000000307 /* decoder_synth.cc in Sources */,
+				FA11C0DE0000000000000308 /* decoder_tables.cc in Sources */,
+				FA11C0DE0000000000000309 /* dequant.cc in Sources */,
+				FA11C0DE000000000000030A /* enhance.cc in Sources */,
+				FA11C0DE000000000000030B /* fastmath.cc in Sources */,
+				FA11C0DE000000000000030C /* fec.cc in Sources */,
+				FA11C0DE000000000000030D /* fft.cc in Sources */,
+				FA11C0DE000000000000030E /* frame.cc in Sources */,
+				FA11C0DE000000000000030F /* frame_layout.cc in Sources */,
+				FA11C0DE0000000000000310 /* golay.cc in Sources */,
+				FA11C0DE0000000000000311 /* api.cc in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

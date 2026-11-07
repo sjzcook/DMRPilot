@@ -522,7 +522,7 @@ struct HotspotView: View {
         } header: {
             Text("语音")
         } footer: {
-            Text("帧的接收与拆解由 C++ 协议核心完成（Core/DMRCore.cpp，移植自 DroidStar 的 dmr.cpp，GPL-3.0）；AMBE+2 半速率解码器由纯 Swift 实现（同样移植自 DroidStar 的 halfrate，GPL-3.0）。每一路通话单独维护解码器状态，中途接入的通话也能直接出声。\n纠错比特是 Golay(23,12) 每帧纠正的位数，持续大于 12 说明信号质量很差。")
+            Text("帧的接收与拆解由 C++ 协议核心完成（Core/DMRCore.cpp，移植自 DroidStar 的 dmr.cpp，GPL-3.0）；AMBE+2 半速率解码器直接用的是 DroidStar 的 halfrate 原文件（Core/Vocoder/，GPL-3.0），参数也与它一致。每一路通话单独维护解码器状态，中途接入的通话也能直接出声。\n纠错比特是 Golay(23,12) 每帧纠正的位数，持续大于 12 说明信号质量很差。")
         }
     }
 
