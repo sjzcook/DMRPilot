@@ -346,7 +346,7 @@ final class HomebrewClient: ObservableObject {
 
         let slot = UInt8(activeSettings.callSlot == 1 ? 1 : 2)
         let cc = UInt8(min(15, max(0, activeSettings.colorCode)))
-        guard sendHeader(talkgroup: talkgroup, slot: slot, cc: cc) else { return }
+        guard sendHeader(destination: talkgroup, slot: slot, cc: cc) else { return }
 
         append(.info, "→ 订阅 TG \(talkgroup)（TS\(slot) CC\(cc)，\(subscribeBursts) 个语音突发 + 结束符，约 "
             + String(format: "%.1f", Double(subscribeBursts) * 0.06) + " 秒）")
@@ -358,7 +358,11 @@ final class HomebrewClient: ObservableObject {
 
     // MARK: - 按住发射（PTT）
 
-    func beginPtt(talkgroup: Int) {
+    /// 开始一次按住发射。
+    ///
+    /// `destination` 是这一次的目的地址：组呼是通话组号（TG），单呼是对方 7 位 DMR ID。
+    /// 两者在协议上只差 LC 的 FLCO，所以这里不分支，只把 `isPrivate` 一路传到建帧那一层。
+    func beginPtt(destination: Int, isPrivate: Bool = false) {
         guard !isTransmitting else { return }
 
         // YSF 没有通话组、没有时隙色码：走另一条更短的发射路径。
@@ -371,8 +375,10 @@ final class HomebrewClient: ObservableObject {
             append(.warning, "还没连上服务器，现在按 PTT 发不出去")
             return
         }
-        guard talkgroup > 0 else {
-            append(.warning, "先在通话组里填一个号码，PTT 才有地方发")
+        guard destination > 0 else {
+            append(.warning, isPrivate
+                   ? "先填对方的 DMR ID，单呼才有地方发"
+                   : "先在通话组里填一个号码，PTT 才有地方发")
             return
         }
         guard txTimer == nil else {
@@ -409,7 +415,7 @@ final class HomebrewClient: ObservableObject {
 
         let slot = UInt8(activeSettings.callSlot == 1 ? 1 : 2)
         let cc = UInt8(min(15, max(0, activeSettings.colorCode)))
-        guard sendHeader(talkgroup: talkgroup, slot: slot, cc: cc) else {
+        guard sendHeader(destination: destination, slot: slot, cc: cc, isPrivate: isPrivate) else {
             mic.onFrame = nil
             mic.stop()
             return
@@ -420,7 +426,7 @@ final class HomebrewClient: ObservableObject {
         isTransmitting = true
         txSeconds = 0
         txStartedAt = Date()
-        append(.tx, "🔴 按住发射 → TG \(talkgroup)（"
+        append(.tx, "🔴 按住发射 → " + Self.destinationText(destination, isPrivate: isPrivate) + "（"
             + (isOdtp ? "ODTP" : "TS\(slot) CC\(cc)")
             + "，DMR ID \(activeSettings.dmrId)）")
 
@@ -534,32 +540,43 @@ final class HomebrewClient: ObservableObject {
     }
 
     /// 语音头。成功返回 true。
-    private func sendHeader(talkgroup: Int, slot: UInt8, cc: UInt8) -> Bool {
+    private func sendHeader(destination: Int, slot: UInt8, cc: UInt8, isPrivate: Bool = false) -> Bool {
         if isOdtp {
             var buffer = [UInt8](repeating: 0, count: 32)
-            let n = rw_core_tx_header(rw, UInt32(talkgroup), 0, &buffer, Int32(buffer.count))
+            let flag: Int32 = isPrivate ? 1 : 0
+            let n = rw_core_tx_header(rw, UInt32(destination), flag, &buffer, Int32(buffer.count))
             guard n > 0 else { return false }
-            send(Data(buffer[0..<Int(n)]), label: "DMR 语音头 → TG \(talkgroup)", quiet: true)
+            send(Data(buffer[0..<Int(n)]),
+                 label: "DMR 语音头 → " + Self.destinationText(destination, isPrivate: isPrivate),
+                 quiet: true)
 
             // 规范：语音头/结束符可以重复 2～3 次，但**必须用同一个序号**（服务器按序号去重）。
             // 所以第 2、3 次走 tx_header_again，而不是重新生成一个包。
             for _ in 0..<2 {
-                let again = rw_core_tx_header_again(rw, UInt32(talkgroup), 0, &buffer, Int32(buffer.count))
+                let again = rw_core_tx_header_again(rw, UInt32(destination), flag, &buffer, Int32(buffer.count))
                 guard again > 0 else { break }
                 send(Data(buffer[0..<Int(again)]), label: "DMR 语音头（同序号重发）", quiet: true)
             }
-            append(.tx, "→ 语音头 → TG \(talkgroup)（ODTP，连发 3 次、同一序号）")
+            append(.tx, "→ 语音头 → " + Self.destinationText(destination, isPrivate: isPrivate)
+                + "（ODTP，连发 3 次、同一序号）")
             return true
         }
 
         var buffer = [UInt8](repeating: 0, count: 64)
-        let n = dmr_core_tx_begin(core, UInt32(talkgroup), slot, cc, &buffer, Int32(buffer.count))
+        let n = dmr_core_tx_begin(core, UInt32(destination), slot, cc,
+                                  isPrivate ? 1 : 0, &buffer, Int32(buffer.count))
         guard n == 55 else {
             append(.error, "核心没能生成语音头（返回 \(n)）")
             return false
         }
-        send(Data(buffer[0..<55]), label: "DMRD 语音头 → TG \(talkgroup)")
+        send(Data(buffer[0..<55]),
+             label: "DMRD 语音头 → " + Self.destinationText(destination, isPrivate: isPrivate))
         return true
+    }
+
+    /// 日志里怎么称呼这次发射的目的地址：组呼写 `TG 46001`，单呼写 `单呼 4600002`。
+    static func destinationText(_ destination: Int, isPrivate: Bool) -> String {
+        isPrivate ? "单呼 \(destination)" : "TG \(destination)"
     }
 
     private func sendBurst(_ codec: [UInt8], quiet: Bool) {

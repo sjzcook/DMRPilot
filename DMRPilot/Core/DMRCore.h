@@ -140,10 +140,15 @@ int32_t dmr_core_receive(dmr_core_t* core,
 // MARK: - 发射
 
 /// 开始一次发射：固定目的地址 / 时隙 / 色码，生成语音头（55 字节）。
+///
+/// `is_private` 非 0 时按单呼组帧：LC 的 FLCO 填 3（`FLCO_USER_USER`），
+/// 包头 byte15 的 bit6 拉高。组呼填 0，其余字节完全一样——
+/// 语音突发的编码链两者不区分，所以只在语音头这里分一次就够了。
 int32_t dmr_core_tx_begin(dmr_core_t* core,
-                          uint32_t talkgroup,
+                          uint32_t destination,
                           uint8_t slot,
                           uint8_t color_code,
+                          uint8_t is_private,
                           uint8_t* out,
                           int32_t cap);
 

@@ -42,6 +42,8 @@ struct HotspotView: View {
                 }
             }
             .listStyle(.insetGrouped)
+            // 单呼时那一格是数字键盘，没有回车键：允许下滑收键盘，否则输入完没法关。
+            .scrollDismissesKeyboard(.interactively)
             // 电平随每个语音帧刷新（约 16 次/秒），原始值直接显示会在「59」和「53」之间乱跳：
             // 这里做一次快起慢落（上升 0.7、回落 0.12），读数稳住但话音一停也能很快掉下去。
             .onChange(of: hotspot.voiceLevel) { newValue in
@@ -176,10 +178,15 @@ struct HotspotView: View {
             }
             .padding(.vertical, 4)
 
-            // 服务器选择器（从设置页搬来）和通话组选择器并排，各占一半宽度；
+            // 服务器选择器（从设置页搬来）和目的地址并排，各占一半宽度；
             // 连接要用的两样东西都摆在按钮正上方，选完直接按。
             // 右上角模式菜单切到 YSF 时没有通话组概念，只显示服务器那一格，
             // 且服务器列表跟着切到 YSF 反射器那份。
+            //
+            // 这一格的内容由 PTT 上方的「组呼 / 单呼」决定：
+            //   组呼 → 通话组选择器（原来的逻辑）
+            //   单呼 → 直接输入对方 DMR ID 的输入框
+            // 两个值分别存在 `settings.talkgroup` / `settings.privateId`，来回切不会丢。
             HStack(alignment: .top, spacing: 10) {
                 HostPickerField(store: hostStore,
                                 kind: app.settings.homeMode.hostKind,
@@ -190,13 +197,18 @@ struct HotspotView: View {
                 .frame(maxWidth: .infinity)
 
                 if app.settings.homeMode != .ysf {
-                    TalkgroupPickerField(talkgroups: app.talkgroups,
-                                         selected: app.settings.talkgroup,
-                                         isLoading: app.isLoadingTalkgroups,
-                                         error: app.talkgroupsError,
-                                         onSelect: { app.setTalkgroup($0) },
-                                         onRefresh: { await app.reloadTalkgroups() })
-                        .frame(maxWidth: .infinity)
+                    if app.settings.isPrivateCall {
+                        PrivateIdField(id: $app.settings.privateId)
+                            .frame(maxWidth: .infinity)
+                    } else {
+                        TalkgroupPickerField(talkgroups: app.talkgroups,
+                                             selected: app.settings.talkgroup,
+                                             isLoading: app.isLoadingTalkgroups,
+                                             error: app.talkgroupsError,
+                                             onSelect: { app.setTalkgroup($0) },
+                                             onRefresh: { await app.reloadTalkgroups() })
+                            .frame(maxWidth: .infinity)
+                    }
                 }
             }
 
@@ -222,6 +234,10 @@ struct HotspotView: View {
     ///
     /// 交互用 `DragGesture(minimumDistance: 0)` 而不是 `Button`：Button 只有抬起时才有
     /// 回调，拿不到「按住期间」的状态，也就没法做「按住发射 / 松手停止」。
+    ///
+    /// 右上角是这次发射的目的地类型（组呼 / 单呼），和设置页「应用主题」同一套
+    /// `Picker(.menu)` 写法：点开才展开两项，改完立刻落到 `settings.callMode`。
+    /// YSF 没有数字 ID，那个模式下面这行不显示。
     private var pttSection: some View {
         Section {
             VStack(spacing: 10) {
@@ -235,7 +251,33 @@ struct HotspotView: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.top, 4)
+        } header: {
+            HStack(spacing: 8) {
+                Text("PTT")
+                    .textCase(nil)
+
+                Spacer(minLength: 8)
+
+                if app.settings.homeMode != .ysf {
+                    callModePicker
+                }
+            }
         }
+    }
+
+    /// 组呼 / 单呼切换。单项就能改完，所以用菜单式 Picker（和设置页主题一致）。
+    ///
+    /// 切到单呼时下面那格会从「选择通话组」变成「输入 DMR ID」，
+    /// 两边的值各自独立保存，来回切不会互相覆盖。
+    private var callModePicker: some View {
+        Picker("呼叫类型", selection: $app.settings.callMode) {
+            ForEach(CallMode.allCases) { mode in
+                Text(mode.title).tag(mode)
+            }
+        }
+        .pickerStyle(.menu)
+        .font(.caption)
+        .accessibilityLabel("呼叫类型，当前\(app.settings.callMode.title)")
     }
 
     private var pttButton: some View {
@@ -273,13 +315,19 @@ struct HotspotView: View {
         .opacity(canTransmit ? 1 : 0.45)
         .contentShape(Circle())
         .animation(.easeOut(duration: 0.12), value: pttPressed)
-        .gesture(
+        // 用 highPriorityGesture 而不是 gesture：这一行在 List（ScrollView）里，
+        // 普通手势会被列表的滚动识别器抢走，表现成「按下去没反应、要抬手才触发」。
+        // 提到高优先级之后，起手就锁定在这个圆上，按住即开麦、抬手即收尾。
+        //
+        // `minimumDistance: 0` 是关键：默认的 10pt 会让「按住不动」永远等不到
+        // onChanged，那就变成「点一下」而不是「按住」了。
+        .highPriorityGesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { _ in pressPtt() }
                 .onEnded { _ in releasePtt() }
         )
         .accessibilityLabel("按住发射")
-        .accessibilityHint("按住时使用麦克风向当前通话组发射，松手停止")
+        .accessibilityHint("按住时使用麦克风向\(app.settings.destinationText())发射，松手停止")
     }
 
     private var canTransmit: Bool {
@@ -287,7 +335,8 @@ struct HotspotView: View {
         if app.settings.homeMode == .ysf {
             return hotspot.state == .online && !app.settings.ysfCallsign.isEmpty
         }
-        return hotspot.state == .online && app.settings.talkgroup > 0
+        // 组呼要有通话组号，单呼要有对方 DMR ID——总之 `pttDestination` 得大于 0。
+        return hotspot.state == .online && app.settings.pttDestination > 0
     }
 
     private var pttStatusText: String {
@@ -310,13 +359,20 @@ struct HotspotView: View {
 
         if hotspot.isTransmitting {
             return String(format: "正在发射 %.1f 秒", hotspot.txSeconds)
-                + " · TG \(app.settings.talkgroup)"
+                + " · " + app.settings.destinationText()
         }
         if pttDenied {
             return "麦克风没授权：设置 → EasyDMR → 麦克风"
         }
         if hotspot.state != .online {
             return "连上服务器后才能发射"
+        }
+        // 组呼 / 单呼缺的东西不一样，提示也得分开写，否则「去选通话组」会误导单呼用户。
+        if app.settings.isPrivateCall {
+            guard app.settings.privateId > 0 else {
+                return "先在上面填对方的 DMR ID"
+            }
+            return "按住说话 · 单呼 \(app.settings.privateId)"
         }
         if app.settings.talkgroup <= 0 {
             return "先在连接按钮上方选一个通话组"
@@ -340,7 +396,9 @@ struct HotspotView: View {
             pttDenied = false
             // 权限弹框期间用户可能已经松手了，这时候不该再开麦
             guard pttPressed else { return }
-            hotspot.beginPtt(talkgroup: app.settings.talkgroup)
+            // 目的地址在按下的那一刻取一次：这之后用户改设置也不影响正在发的这一句。
+            hotspot.beginPtt(destination: app.settings.pttDestination,
+                             isPrivate: app.settings.isPrivateCall)
             if !hotspot.isTransmitting {
                 // 开麦失败（没权限 / 没有可用输入）时把按钮状态收回来，
                 // 否则会一直显示成按下却不发射。
@@ -790,6 +848,104 @@ private struct ModePickerCard: View {
         .buttonStyle(.plain)
         .accessibilityLabel(mode.rawValue)
         .accessibilityAddTraits(isCurrent ? .isSelected : AccessibilityTraits())
+    }
+}
+
+// MARK: - 单呼目的地址输入框
+
+/// 首页「组呼 / 单呼」切到单呼时，顶替通话组选择器的那一格。
+///
+/// 版式故意做成和 `TalkgroupPickerField` 的触发器一模一样（同高 44、同底色、
+/// 同行内边距）：切换模式时这一格只是内容变了，位置和高度都不动，看着不会跳。
+///
+/// 输入即生效——没有键盘的「确定」键可靠可用（数字键盘没有回车），
+/// 所以每敲一个字符就校验一次，合法就写回 `settings.privateId`，
+/// 不合法（空 / 超 24 位）就保持原值不动，只在下面标红提示。
+private struct PrivateIdField: View {
+    @Binding var id: Int
+
+    @State private var draft: String
+    @FocusState private var focused: Bool
+
+    init(id: Binding<Int>) {
+        _id = id
+        // 初值从设置里取一次：切回单呼时能看到上次填的号码。
+        _draft = State(initialValue: id.wrappedValue > 0 ? String(id.wrappedValue) : "")
+    }
+
+    /// 只留数字：粘贴进来带空格 / `=` 的情况很常见。
+    private var digits: String {
+        draft.filter { $0.isNumber }
+    }
+
+    private var parsed: Int? {
+        guard let value = Int(digits), Settings.privateIdRange.contains(value) else { return nil }
+        return value
+    }
+
+    private var hint: String {
+        if digits.isEmpty { return "对方 DMR ID" }
+        if parsed == nil { return "号码要在 1…16777215 之间" }
+        return "单呼 · 目的地址 \(digits)"
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            VStack(alignment: .leading, spacing: 1) {
+                TextField("对方 DMR ID", text: $draft)
+                    .textFieldStyle(.plain)
+                    .font(.subheadline.weight(.medium))
+                    .keyboardType(.numberPad)
+                    .focused($focused)
+                    .submitLabel(.done)
+                    .lineLimit(1)
+
+                Text(hint)
+                    .font(.caption2)
+                    .foregroundStyle(parsed == nil && !digits.isEmpty ? Color.red : Color.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 2)
+
+            // 有内容时给一个一键清空，省得长按删数字。
+            if !digits.isEmpty {
+                Button {
+                    draft = ""
+                    id = 0
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("清空目的地址")
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, minHeight: 44)
+        .background(Color(uiColor: .secondarySystemFill),
+                    in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .contentShape(Rectangle())
+        .onChange(of: draft) { newValue in
+            // 先把非数字字符滤掉（粘贴带进来的空格 / 分隔符），改完让它再走一遍这里。
+            let clean = newValue.filter { $0.isNumber }
+            if clean != newValue {
+                draft = clean
+                return
+            }
+            // 合法就落盘；清空就归零；中间态（比如刚敲一位就超范围）
+            // 保留上一个合法值，PTT 不会因为正在输入而变成不可用。
+            if let value = parsed {
+                id = value
+            } else if clean.isEmpty {
+                id = 0
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("单呼目的地址")
+        .accessibilityValue(parsed.map { "DMR ID \($0)" } ?? "未填写")
     }
 }
 

@@ -43,7 +43,7 @@ enum PTTIntentError: LocalizedError {
         case .notConnected:
             return "连不上服务器：先在 App 里连一次，确认能看到「已在线」。"
         case .noTalkgroup:
-            return "还没选通话组：先在首页选一个组，PTT 才有地方发。"
+            return "还没选好目的地址：组呼要先选通话组，单呼要先填对方的 DMR ID。"
         case .microphoneDenied:
             return "麦克风没授权：到 设置 → EasyDMR → 麦克风 打开，再试一次。"
         case .transmitFailed:
@@ -63,30 +63,32 @@ enum PTTCommand {
     /// 还没连上时最多等这么久（握手一般 1～3 秒）。
     private static let connectTimeout: TimeInterval = 8
 
-    /// 开始发射，返回这次用的通话组。
+    /// 开始发射，返回这次用的目的地址（组呼是 TG 号，单呼是对方 DMR ID）。
     ///
     /// 里外两层兜底：App 被系统挂起过的话连接多半已经掉了，这时候先替用户连一次
     /// ——按 Action Button 的意思就是「我要说话」，不该回一句「请先打开 App」。
     @discardableResult
     static func start() async throws -> Int {
         let app = AppState.shared
-        let talkgroup = app.settings.talkgroup
+        // 首页选的组呼 / 单呼同样对快捷指令生效，不然 Action Button 会和界面不一致。
+        let destination = app.settings.pttDestination
+        let isPrivate = app.settings.isPrivateCall
 
         guard app.settings.isIdentityReady else { throw PTTIntentError.identityIncomplete }
-        guard talkgroup > 0 else { throw PTTIntentError.noTalkgroup }
+        guard destination > 0 else { throw PTTIntentError.noTalkgroup }
 
         if app.hotspot.state != .online {
             try await ensureConnected(app)
         }
 
-        guard !app.hotspot.isTransmitting else { return talkgroup }
+        guard !app.hotspot.isTransmitting else { return destination }
 
         // 首次使用会在系统层面弹一次授权框；已经拒绝过就直接失败，别让用户干等。
         guard await PttMicrophone.requestPermission() else { throw PTTIntentError.microphoneDenied }
 
-        app.hotspot.beginPtt(talkgroup: talkgroup)
+        app.hotspot.beginPtt(destination: destination, isPrivate: isPrivate)
         guard app.hotspot.isTransmitting else { throw PTTIntentError.transmitFailed }
-        return talkgroup
+        return destination
     }
 
     /// 断着就重连，并在 `connectTimeout` 内等它变成 online。
@@ -124,6 +126,14 @@ enum PTTCommand {
     static var isTransmitting: Bool {
         AppState.shared.hotspot.isTransmitting
     }
+
+    /// 目的地址在提示语里的写法（`TG 46001` / `单呼 4600002`）。
+    ///
+    /// 单独开一个 @MainActor 方法，是因为 intent 的 `perform()` 不在主线程隔离域里，
+    /// 直接读 `AppState.shared.settings` 会撞上并发检查；这里多一次 `await` 就够了。
+    static func destinationText(_ destination: Int) -> String {
+        AppState.shared.settings.destinationText(destination)
+    }
 }
 
 // MARK: - 定时发射（Action Button 的默认写法）
@@ -158,14 +168,15 @@ struct PTTSendIntent: AppIntent {
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
         let duration = max(1, min(120, seconds))
-        let talkgroup = try await PTTCommand.start()
+        let destination = try await PTTCommand.start()
+        let target = await PTTCommand.destinationText(destination)
 
         // 定时到了就收尾；中途被打断（进程挂起等）也不会把会话一直挂着，
         // 下一次 start 里 isTransmitting 的判断会兜住。
         try? await Task.sleep(nanoseconds: UInt64(duration) * 1_000_000_000)
         await PTTCommand.stop()
 
-        return .result(dialog: IntentDialog("已发射 \(duration) 秒 · TG \(talkgroup)"))
+        return .result(dialog: IntentDialog("已发射 \(duration) 秒 · \(target)"))
     }
 }
 
@@ -188,8 +199,9 @@ struct PTTToggleIntent: AppIntent {
             return .result(dialog: IntentDialog("已结束发射"))
         }
 
-        let talkgroup = try await PTTCommand.start()
-        return .result(dialog: IntentDialog("开始发射 · TG \(talkgroup)，再按一次结束"))
+        let destination = try await PTTCommand.start()
+        let target = await PTTCommand.destinationText(destination)
+        return .result(dialog: IntentDialog("开始发射 · \(target)，再按一次结束"))
     }
 }
 
@@ -205,8 +217,9 @@ struct PTTStartIntent: AppIntent {
     static var openAppWhenRun: Bool = false
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        let talkgroup = try await PTTCommand.start()
-        return .result(dialog: IntentDialog("开始发射 · TG \(talkgroup)"))
+        let destination = try await PTTCommand.start()
+        let target = await PTTCommand.destinationText(destination)
+        return .result(dialog: IntentDialog("开始发射 · \(target)"))
     }
 }
 

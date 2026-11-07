@@ -164,6 +164,32 @@ enum AppTheme: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - 呼叫类型（组呼 / 单呼）
+
+/// 首页 PTT 这一次要发给谁。
+///
+/// 协议上两者只差一个 FLCO：组呼发 0（目的地址是通话组号），单呼发 3
+/// （目的地址是对方 7 位 DMR ID）。语音编码、时隙、纠错链完全一样，
+/// 所以这里只是一个「目的地址怎么来」的开关，不涉及任何协议分叉。
+///
+/// 枚举名没用 `case private`（Swift 关键字），取值也不写 `private`，
+/// 免得在 `Settings.callMode == .private` 这种地方被迫加反引号。
+enum CallMode: String, Codable, CaseIterable, Identifiable {
+    /// 发到通话组（默认，等于老版本行为）。
+    case group
+    /// 发到某个人的 DMR ID。
+    case privateCall
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .group: return "组呼"
+        case .privateCall: return "单呼"
+        }
+    }
+}
+
 // MARK: - 服务器选择记忆
 
 /// 某一类服务器（DMR / YSF）上次选中的那一台。
@@ -233,6 +259,39 @@ struct Settings: Codable, Equatable {
     /// 连上后（或切换组时）向它发一次 PTT，让 BrandMeister 把它记成动态订阅。
     /// 至于本地要不要按它过滤，见 `followServerTalkgroups`。
     var talkgroup: Int = 0
+
+    /// 首页 PTT 用组呼还是单呼。默认组呼，和以前完全一样。
+    ///
+    /// 只影响**发射**：接收侧仍然是「服务器推什么就播什么」，
+    /// 单呼不像通话组那样需要订阅。
+    var callMode: CallMode = .group
+
+    /// 单呼对方的 DMR ID（也就是 DMRD 里的目的地址）。0 = 还没填。
+    ///
+    /// 目的地址是 24 位，所以合法范围是 `privateIdRange`。
+    var privateId: Int = 0
+
+    /// 单呼目的地址的合法范围（DMR 目的地址是 24 位无符号）。
+    static let privateIdRange: ClosedRange<Int> = 1...16_777_215
+
+    /// 这次 PTT 要发的目的地址：组呼取通话组号，单呼取对方 ID。
+    var pttDestination: Int {
+        callMode == .privateCall ? privateId : talkgroup
+    }
+
+    /// 这次 PTT 是不是单呼（决定 FLCO 填 0 还是 3）。
+    var isPrivateCall: Bool {
+        callMode == .privateCall
+    }
+
+    /// 目的地址在提示语里的写法：组呼 `TG 46001`，单呼 `单呼 4600002`。
+    ///
+    /// `destination` 可以不传（默认用当前设置的那个）；传的话用来显示
+    /// 「已经开始发射的那一次」——发射过程中用户可能又换了模式。
+    func destinationText(_ destination: Int? = nil) -> String {
+        let value = destination ?? pttDestination
+        return isPrivateCall ? "单呼 \(value)" : "TG \(value)"
+    }
 
     /// 服务器推什么就播什么（对齐参考实现 DroidStar 的接收侧）。
     ///
@@ -427,6 +486,12 @@ extension Settings {
         sendConfig = try container.decodeIfPresent(Bool.self, forKey: .sendConfig) ?? defaults.sendConfig
         autoReconnect = try container.decodeIfPresent(Bool.self, forKey: .autoReconnect) ?? defaults.autoReconnect
         talkgroup = try container.decodeIfPresent(Int.self, forKey: .talkgroup) ?? defaults.talkgroup
+        // 老存档没有这两个键：退回「组呼 + 空目的地址」，行为和以前一模一样。
+        callMode = (try? container.decodeIfPresent(CallMode.self, forKey: .callMode)) ?? defaults.callMode
+        let privateIdValue = try container.decodeIfPresent(Int.self, forKey: .privateId) ?? defaults.privateId
+        // 越界（手改过 plist、或者 ID 被写成 9 位热点号）就当没填，
+        // 否则会发出一个 24 位溢出的目的地址，服务器按别人的 ID 转发了。
+        privateId = Settings.privateIdRange.contains(privateIdValue) ? privateIdValue : 0
         followServerTalkgroups = try container.decodeIfPresent(Bool.self, forKey: .followServerTalkgroups) ?? defaults.followServerTalkgroups
         callSlot = try container.decodeIfPresent(Int.self, forKey: .callSlot) ?? defaults.callSlot
         colorCode = min(15, max(0, try container.decodeIfPresent(Int.self, forKey: .colorCode) ?? defaults.colorCode))

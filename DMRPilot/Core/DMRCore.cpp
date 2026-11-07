@@ -817,17 +817,20 @@ int32_t dmr_core_receive(dmr_core_t* c, const uint8_t* in, int32_t len, dmr_resu
 
 // MARK: - 发射
 
-int32_t dmr_core_tx_begin(dmr_core_t* c, uint32_t talkgroup, uint8_t slot,
-                          uint8_t color_code, uint8_t* out, int32_t cap) {
+int32_t dmr_core_tx_begin(dmr_core_t* c, uint32_t destination, uint8_t slot,
+                          uint8_t color_code, uint8_t is_private,
+                          uint8_t* out, int32_t cap) {
     if (c == NULL || out == NULL || cap < DMR_FRAME_BYTES) {
         return 0;
     }
 
     c->tx_src = c->dmr_id & 0xFFFFFFU;
-    c->tx_dst = talkgroup & 0xFFFFFFU;
+    c->tx_dst = destination & 0xFFFFFFU;
     c->tx_slot = (slot == 1U) ? 1U : 2U;
     c->tx_cc = color_code > 15U ? 15U : color_code;
-    c->flco = FLCO_GROUP;
+    // 单呼 / 组呼在协议上只差这一个字节：FLCO 0 = 组呼，3 = 单呼（User-User）。
+    // build_frame 会据此把包头 byte15 的 bit6 拉高，接收端才认得出是单呼。
+    c->flco = (is_private != 0U) ? uint8_t(FLCO_USER_USER) : uint8_t(FLCO_GROUP);
     c->dmr_cnt = 0;
     c->tx_active = true;
 
