@@ -16,6 +16,8 @@ struct HotspotView: View {
     @EnvironmentObject private var hostStore: DMRHostStore
     @State private var pttPressed = false
     @State private var pttDenied = false
+    /// 右上角模式选择卡片是否展开。
+    @State private var isPickingMode = false
     /// 电平表的平滑值：快起慢落，免得读数在「59」和「53」之间抖。
     @State private var smoothedLevel: Double = 0
 
@@ -72,21 +74,14 @@ struct HotspotView: View {
     // MARK: - 模式选择
 
     /// 标题右侧的模式按钮：点开是 DMR / YSF 两个选项，选中哪个按钮就显示哪个。
-    /// 选择写进 `app.settings.homeMode`，持久化；当前不影响协议逻辑。
+    /// 选择写进 `app.settings.homeMode`，持久化；切换时会回显该类型上次选的服务器
+    /// （`AppState.setHomeMode`）。YSF 的协议还没接，协议逻辑暂不受它影响。
+    ///
+    /// 这里没用系统 `Menu`：菜单项的标题颜色由 UIKit 决定（`UIAction` 只收 String），
+    /// 想「不打勾、只用蓝色字区别选中」只能自绘，所以换成一个小的弹出卡片。
     private var modeMenu: some View {
-        Menu {
-            ForEach(HomeMode.allCases) { candidate in
-                Button {
-                    app.settings.homeMode = candidate
-                } label: {
-                    if candidate == app.settings.homeMode {
-                        // 系统菜单里带勾的写法：当前项前面打勾。
-                        Label(candidate.rawValue, systemImage: "checkmark")
-                    } else {
-                        Text(candidate.rawValue)
-                    }
-                }
-            }
+        Button {
+            isPickingMode = true
         } label: {
             HStack(spacing: 4) {
                 Text(app.settings.homeMode.rawValue)
@@ -97,6 +92,11 @@ struct HotspotView: View {
             }
         }
         .accessibilityLabel("模式选择，当前\(app.settings.homeMode.rawValue)")
+        .sheet(isPresented: $isPickingMode) {
+            ModePickerCard(selected: app.settings.homeMode) { mode in
+                app.setHomeMode(mode)
+            }
+        }
     }
 
     // MARK: - 状态卡片
@@ -705,6 +705,63 @@ struct LevelMeter: View {
         if index >= segments - 1 { return .red }
         if index >= segments - 3 { return .orange }
         return .green
+    }
+}
+
+// MARK: - 模式选择卡片
+
+/// 首页右上角的模式选择弹层（DMR / YSF）。
+///
+/// 只有两项，用底部小卡片而不是整页 sheet：三个档位的高度够放下标题和两行，
+/// 拖拽指示器和小圆角让它可以一划就关。
+/// 选中项不用对勾，只用主题色 + 稍重的字重区分（这也是不用系统 `Menu` 的原因：
+/// 系统菜单项没法单独改标题颜色）。
+private struct ModePickerCard: View {
+    let selected: HomeMode
+    var onSelect: (HomeMode) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("选择模式")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 20)
+                .padding(.top, 20)
+                .padding(.bottom, 6)
+
+            ForEach(HomeMode.allCases) { mode in
+                row(mode)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.bottom, 8)
+        .presentationDetents([.height(184)])
+        .presentationDragIndicator(.visible)
+    }
+
+    private func row(_ mode: HomeMode) -> some View {
+        let isCurrent = mode == selected
+        return Button {
+            if !isCurrent { onSelect(mode) }
+            dismiss()
+        } label: {
+            HStack(spacing: 8) {
+                Text(mode.rawValue)
+                    .font(.body.weight(isCurrent ? .semibold : .regular))
+                    // 选中 = 主题色（蓝），未选中用正常文字色。
+                    .foregroundStyle(isCurrent ? Color.accentColor : Color.primary)
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+            .padding(.horizontal, 20)
+            .padding(.vertical, 14)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(mode.rawValue)
+        .accessibilityAddTraits(isCurrent ? .isSelected : AccessibilityTraits())
     }
 }
 

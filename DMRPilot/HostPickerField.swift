@@ -102,7 +102,11 @@ struct HostPickerField: View {
                 .keyboardType(.URL)
                 .multilineTextAlignment(.trailing)
                 // 手填的域名没法每敲一个字符就重连，按下回车才算定下来。
-                .onSubmit { onServerChange() }
+                .onSubmit {
+                    // 手填也算这一类的一次选择，记进槽里，切模式回来能回显。
+                    settings.rememberCurrentHost(as: kind)
+                    onServerChange()
+                }
         }
         .padding(.leading, 10)
     }
@@ -261,6 +265,8 @@ private struct HostPickerSheet: View {
                     ? settings.linkProtocol.defaultPort
                     : Int(host.port)
             }
+            // 记住这一类的选择：切到另一类再切回来时由 AppState.setHomeMode 回显。
+            settings.rememberCurrentHost(as: kind)
             dismiss()
             // 选完立刻生效：首页那边会断开重连（没在线就只是保存）。
             if changed { onServerChange() }

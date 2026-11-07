@@ -113,6 +113,39 @@ final class AppState: ObservableObject {
         hotspot.connect(with: settings)
     }
 
+    // MARK: - 首页模式
+
+    /// 切换首页模式（DMR / YSF），顺带回显这一类上次选的服务器。
+    ///
+    /// 每种类型各自记一台：先把当前这台存进旧类型的槽，再把新类型的槽回填到
+    /// `host / hostName / port`，界面上的选择器就自动回显了。
+    /// 新类型还没选过（槽是空的）就保持现状，等用户在列表里挑一台。
+    ///
+    /// 类型换了等于换了服务器：真的换了 host / port 且当前在线就断开，
+    /// 不自动拿新服务器重连——YSF 的协议还没接，替用户重连只会连错。
+    func setHomeMode(_ mode: HomeMode) {
+        guard mode != settings.homeMode else { return }
+
+        let previous = HostSelection(name: settings.hostName,
+                                     host: settings.host,
+                                     port: settings.port)
+
+        // 存旧类型的选择
+        settings.rememberCurrentHost(as: settings.homeMode)
+        settings.homeMode = mode
+
+        // 回显新类型的选择
+        let remembered = settings.rememberedHost(for: mode)
+        if !remembered.isEmpty {
+            settings.applyHost(remembered)
+        }
+
+        let hostChanged = settings.host != previous.host || settings.port != previous.port
+        if hostChanged, hotspot.state != .offline {
+            disconnect()
+        }
+    }
+
     // MARK: - 通话组
 
     /// 切换收听的 TG（0 = 全部）。写进设置（会持久化），同时通知连接层立刻生效，

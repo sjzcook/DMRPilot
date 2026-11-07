@@ -156,6 +156,21 @@ enum AppTheme: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - 服务器选择记忆
+
+/// 某一类服务器（DMR / YSF）上次选中的那一台。
+///
+/// 首页右上角切换模式时，记住的选择会跟「当前生效」的 host / hostName / port 互换，
+/// 所以切回某一类时还能看到上次在那一类里挑的服务器。
+struct HostSelection: Codable, Equatable {
+    var name: String = ""
+    var host: String = ""
+    var port: Int = 0
+
+    /// 还没为这一类选过服务器。
+    var isEmpty: Bool { host.isEmpty }
+}
+
 struct Settings: Codable, Equatable {
     /// 热点自身的 DMR ID（不是你的个人呼号 ID）
     var dmrId: Int = 0
@@ -179,6 +194,10 @@ struct Settings: Codable, Equatable {
     var host: String = "4601.master.brandmeister.network"
     /// 默认跟着默认协议走（ODTP = 54006）。
     var port: Int = 54006
+    /// 按类型记住上次选的服务器，切换首页模式时用来回显。
+    /// `host / hostName / port` 始终是「当前生效」的那台，连接读的是它们。
+    var dmrHost: HostSelection = HostSelection()
+    var ysfHost: HostSelection = HostSelection()
     var transport: HbTransport = .udp
     /// 服务器说哪种协议。默认 ODTP —— 目标是 BrandMeister，而且它的订阅是显式命令，
     /// 不像 Homebrew 那样需要「发一次静音发射」去碰运气。
@@ -255,8 +274,9 @@ struct Settings: Codable, Equatable {
 
     // MARK: 外观
 
-    /// 首页「首页」右侧按钮的当前模式。持久化，默认 DMR。
-    /// 目前只切换按钮文案，协议逻辑不受它影响。
+    /// 首页右上角模式按钮的当前选择。持久化，默认 DMR。
+    /// 决定服务器选择器加载哪份列表（DMR / YSF），并回显该类型上次选的服务器；
+    /// YSF 的协议逻辑还没接，连接行为仍走 DMR 那套。
     var homeMode: HomeMode = .dmr
 
     /// 主题：跟随系统 / 强制日间 / 强制夜间。只影响界面，不影响连接。
@@ -333,6 +353,31 @@ struct Settings: Codable, Equatable {
 
     /// 是否真的带着 ESSID 后缀登录（用于日志与界面提示）。
     var usesEssid: Bool { essidSuffix != nil }
+
+    // MARK: 服务器选择记忆
+
+    /// 把当前 host / hostName / port 存进某一类型的槽（用户在列表里选了一台、
+    /// 或者手填域名回车之后调用）。
+    mutating func rememberCurrentHost(as kind: HostKind) {
+        let selection = HostSelection(name: hostName, host: host, port: port)
+        switch kind {
+        case .dmr: dmrHost = selection
+        case .ysf: ysfHost = selection
+        }
+    }
+
+    /// 某一类型上次选的服务器；还没选过时 `isEmpty` 为 true。
+    func rememberedHost(for kind: HostKind) -> HostSelection {
+        kind == .ysf ? ysfHost : dmrHost
+    }
+
+    /// 把某个槽回填成「当前生效」的服务器（切换模式时用）。
+    mutating func applyHost(_ selection: HostSelection) {
+        guard !selection.isEmpty else { return }
+        hostName = selection.name
+        host = selection.host
+        port = selection.port
+    }
 }
 
 extension Settings {
@@ -350,11 +395,16 @@ extension Settings {
         password = try container.decodeIfPresent(String.self, forKey: .password) ?? defaults.password
         hostName = try container.decodeIfPresent(String.self, forKey: .hostName) ?? defaults.hostName
         host = try container.decodeIfPresent(String.self, forKey: .host) ?? defaults.host
-        // 设置页已经把「协议」和「端口」两项去掉了：App 只走 ODTP，端口固定 54006。
-        // 老存档里如果是 Homebrew（62031），这里一并改回来 —— 否则会拿着 Homebrew
+        // 设置页已经把「协议」和「端口」两项去掉了：App 只走 ODTP。
+        // 老存档里如果是 Homebrew 的 62031，这里改回 54006 —— 否则会拿着 Homebrew
         // 的端口去连一台只说 Rewind 的 master，界面上还找不到地方改。
+        // 但 YSF 反射器的端口（42000 / 42200 …）必须原样保留，不能一律改写。
         linkProtocol = .odtp
-        port = LinkProtocol.odtp.defaultPort
+        let savedPort = try container.decodeIfPresent(Int.self, forKey: .port) ?? defaults.port
+        port = savedPort == 62031 ? LinkProtocol.odtp.defaultPort : savedPort
+        // 按类型记住的服务器：老存档没有，退回空槽（第一次切换模式时再写入）。
+        dmrHost = (try? container.decodeIfPresent(HostSelection.self, forKey: .dmrHost)) ?? defaults.dmrHost
+        ysfHost = (try? container.decodeIfPresent(HostSelection.self, forKey: .ysfHost)) ?? defaults.ysfHost
         transport = try container.decodeIfPresent(HbTransport.self, forKey: .transport) ?? defaults.transport
         wsPath = try container.decodeIfPresent(String.self, forKey: .wsPath) ?? defaults.wsPath
         sendConfig = try container.decodeIfPresent(Bool.self, forKey: .sendConfig) ?? defaults.sendConfig
