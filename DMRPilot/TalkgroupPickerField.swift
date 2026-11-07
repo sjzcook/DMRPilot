@@ -55,7 +55,7 @@ struct TalkgroupPickerField: View {
                     .minimumScaleFactor(0.7)
 
                 Text(subtitle)
-                    .font(.caption2.monospaced())
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
@@ -243,7 +243,6 @@ private struct TalkgroupPickerSheet: View {
                         // 号码合法性仍由 manualValue 校验，非法时下面出红字、确定置灰。
                         TextField("输入号码，最大 16777215", text: $manualDraft)
                             .keyboardType(.default)
-                            .monospacedDigit()
                             .focused($manualFocused)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 9)
@@ -316,7 +315,7 @@ private struct TalkgroupPickerSheet: View {
                         .font(.subheadline)
                         .lineLimit(1)
                     Text("TG \(entry.id)")
-                        .font(.caption2.monospaced())
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 8)

@@ -467,7 +467,7 @@ final class CallLogStore: ObservableObject {
     }
 
     /// 补历史记录的呼号：本地库查得到但库里快照是空的那种（比如先记了日志、
-    /// 之后才点「更新数据」）。只处理当前已经读到内存的这几页。
+    /// 之后才在设置里点「更新」）。只处理当前已经读到内存的这几页。
     func fillMissingContacts() {
         var seen: Set<Int> = []
         for entry in entries where entry.callsign == nil || entry.name == nil {

@@ -19,6 +19,7 @@ struct DMRPilotApp: App {
                 .environmentObject(app)
                 .environmentObject(app.hotspot)
                 .environmentObject(app.callsigns)
+                .environmentObject(app.hostStore)
                 .environmentObject(CallLogStore.shared)
                 .tint(.blue)
                 // 主题：`nil` = 跟随系统，`.light` / `.dark` = 强制覆盖。

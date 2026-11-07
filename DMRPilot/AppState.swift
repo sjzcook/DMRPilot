@@ -39,18 +39,14 @@ final class AppState: ObservableObject {
     @Published private(set) var myDeviceError: String?
     @Published private(set) var isLoadingDevice = false
 
-    // MARK: - 本地数据
-
-    /// 「更新数据」正在跑（服务器表 + 本地 DMR ID 库）。
-    @Published private(set) var isRefreshingData = false
-    /// 最近一次完整成功的时间。
-    @Published private(set) var dataRefreshedAt: Date?
-    @Published private(set) var refreshError: String?
-
     // MARK: - 依赖
 
     let hotspot = HomebrewClient()
     /// DMRHosts.txt 服务器表，设置页的下拉列表用它。
+    ///
+    /// 两份本地数据（服务器表 / DMR ID 库）各自更新，设置页里各有一个「更新」按钮，
+    /// 进度和错误也各自挂在 store 上，AppState 不另存一份：
+    /// `hostStore.isLoading` / `lastError`、`callsigns.isUpdatingDatabase` / `databaseStage` / `databaseError`。
     let hostStore = DMRHostStore()
     /// DMR ID → 呼号。首页的「当前讲话人」靠它把数字 ID 变成呼号。
     let callsigns = CallsignDirectory()
@@ -169,30 +165,15 @@ final class AppState: ObservableObject {
 
     // MARK: - 更新本地数据
 
-    /// 设置页「更新数据」：服务器表 + 本地 DMR ID 库一起刷新。
-    ///
-    /// 两件事互不依赖，并行跑：服务器表只有几百 KB，本地库有 17 MB 左右，
-    /// 串行等下来会让用户白等几十秒。
-    func refreshAllData() async {
-        guard !isRefreshingData else { return }
-
-        isRefreshingData = true
-        refreshError = nil
-
-        async let hosts: Void = hostStore.load(force: true)
-
+    /// 设置页「DMR ID 库」那一行的「更新」按钮：下载整包用户表并重建本地索引。
+    /// 失败信息由 `callsigns.databaseError` 发布，行里直接显示。
+    func refreshCallsignDatabase() async {
         await callsigns.updateDatabase()
-        await hosts
+    }
 
-        if let error = callsigns.databaseError {
-            refreshError = error
-        } else if hostStore.hosts.isEmpty, let error = hostStore.lastError {
-            refreshError = error
-        } else {
-            dataRefreshedAt = Date()
-        }
-
-        isRefreshingData = false
+    /// 设置页「服务器表」那一行的「更新」按钮：强制联网重下 DMRHosts.txt 并落盘。
+    func refreshHostTable() async {
+        await hostStore.load(force: true)
     }
 
     // MARK: - 持久化

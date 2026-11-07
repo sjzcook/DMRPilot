@@ -183,7 +183,7 @@ struct CallLogView: View {
 
                 // 第三行：地区
                 if let place, !place.isEmpty {
-                    Label(place, systemImage: "mappin.and.ellipse")
+                    Text(place)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)

@@ -53,7 +53,7 @@ struct HostPickerField: View {
                         .lineLimit(1)
 
                     Text("\(settings.host):\(String(settings.port))")
-                        .font(.caption2.monospaced())
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
@@ -233,7 +233,7 @@ private struct HostPickerSheet: View {
                         .font(.subheadline)
                         .lineLimit(1)
                     Text(host.endpoint)
-                        .font(.caption2.monospaced())
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
@@ -275,9 +275,10 @@ private struct HostPickerSheet: View {
         .foregroundStyle(.secondary)
     }
 
+    /// 列表只搜本机这份快照（进入选择器时从 `hosts.txt` 读出来），不会因为搜索去联网。
     private var headerText: String {
         var text = "共 \(baseList.count) 台"
-        if !store.loadedFrom.isEmpty { text += " · \(store.loadedFrom)" }
+        if !store.loadedFrom.isEmpty { text += " · \(store.snapshotDetail)" }
         return text
     }
 }

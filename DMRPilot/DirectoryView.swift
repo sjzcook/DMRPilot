@@ -17,9 +17,10 @@ struct DirectoryView: View {
     @State private var groupQuery = ""
 
     var body: some View {
-        // 原来这是独立的「目录」tab，现在 tab 让给了日志页，
-        // 这一页改成从 设置 → 数据 → 「设备 / 通话组查询」推进来，
-        // 所以自己不要再套 NavigationStack（会和设置页的那层叠成双层导航栏）。
+        // 原来这是独立的「目录」tab，tab 让给日志页之后一度挂在
+        // 设置 → 数据 →「设备 / 通话组查询」；设置页的入口已经去掉，
+        // 这个文件目前没有任何跳转进来（留着备查，重新挂入口即可复用）。
+        // 它自己不要再套 NavigationStack（会和调用方那层叠成双层导航栏）。
         List {
             querySection
 

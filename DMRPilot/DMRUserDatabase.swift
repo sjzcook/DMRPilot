@@ -22,7 +22,7 @@
 //  body 里直接调。
 //
 //  文件放在 Application Support/DMRPilot 下（不是 Caches —— 系统可以在任意时刻
-//  清掉 Caches，而用户点了「更新数据」之后应该是长期可用的），并标记不进 iCloud
+//  清掉 Caches，而用户点了「更新」之后应该是长期可用的），并标记不进 iCloud
 //  备份：17 MB 的第三方数据没必要占用户的备份空间。
 //
 

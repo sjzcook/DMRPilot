@@ -11,6 +11,8 @@ struct SettingsView: View {
     /// 本地 DMR ID 库的下载进度由它发布，所以这里也要观察，
     /// 只是从 `app.callsigns` 读的话进度条不会动。
     @EnvironmentObject private var callsigns: CallsignDirectory
+    /// 服务器表同理：行内「更新」按钮的转圈和下载后的台数都靠它发布。
+    @EnvironmentObject private var hostStore: DMRHostStore
 
     var body: some View {
         NavigationStack {
@@ -65,7 +67,7 @@ struct SettingsView: View {
 
     private var serverSection: some View {
         Section {
-            HostPickerField(store: app.hostStore, settings: $app.settings)
+            HostPickerField(store: hostStore, settings: $app.settings)
 
             // 这些只在 Homebrew 下有含义：ODTP 没有热点后缀、没有时隙/色码，
             // 也不发 RPTC，而且只走 UDP。协议现在固定 ODTP，所以这段不会显示，
@@ -263,65 +265,71 @@ struct SettingsView: View {
 
     // MARK: - 数据
 
-    /// 服务器表 + 本地 DMR ID 库。两者都存在本机，首页查呼号完全不联网。
+    /// 服务器列表 + 本地 DMR ID 库。两者都存在本机，首页查呼号完全不联网。
+    /// 每行末尾各有一个「更新」按钮，只刷新自己那一份数据；更新时间落在标题左下角。
     private var dataSection: some View {
         Section {
-            Button {
-                Task { await app.refreshAllData() }
-            } label: {
-                HStack(spacing: 10) {
-                    Label("更新数据", systemImage: "arrow.triangle.2.circlepath")
-                    Spacer()
-                    if app.isRefreshingData {
-                        ProgressView()
-                    }
-                }
+            dataRow("DMR ID",
+                    databaseCountText,
+                    detail: databaseSizeText,
+                    updatedAt: callsigns.databaseUpdatedAt,
+                    isBusy: callsigns.isUpdatingDatabase) {
+                Task { await app.refreshCallsignDatabase() }
             }
-            .disabled(app.isRefreshingData)
 
-            if app.isRefreshingData {
+            if callsigns.isUpdatingDatabase {
                 if let progress = callsigns.databaseProgress {
                     ProgressView(value: progress)
                         .progressViewStyle(.linear)
                 }
-                Text(updateStageText)
+                Text(callsigns.databaseStage.isEmpty ? "正在更新 DMR ID 库…" : callsigns.databaseStage)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            }
-
-            row("DMR ID 库", databaseCountText, detail: databaseSizeText)
-            row("服务器表", "\(app.hostStore.hosts.count) 台", detail: app.hostStore.loadedFrom)
-            row("最近更新", updateTimeText)
-
-            // 原来的「目录」tab 让给了日志页，设备查询和通话组表从这里进。
-            NavigationLink {
-                DirectoryView()
-            } label: {
-                Label("设备 / 通话组查询", systemImage: "book.closed")
-            }
-
-            if let error = app.refreshError {
-                Text(error)
-                    .font(.footnote)
-                    .foregroundStyle(.red)
-                    .fixedSize(horizontal: false, vertical: true)
+            } else if let error = callsigns.databaseError {
+                errorText(error)
             } else if !callsigns.hasDatabase {
                 Text("还没下载 DMR ID 库。首页只能逐条联网查呼号，慢而且经常查不到。")
                     .font(.footnote)
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
+
+            dataRow("服务器列表",
+                    hostStore.hasSnapshot ? "\(hostStore.hosts.count) 台" : "未下载",
+                    updatedAt: hostStore.savedAt,
+                    isBusy: hostStore.isLoading) {
+                Task { await app.refreshHostTable() }
+            }
+
+            if hostStore.isLoading {
+                Text("正在更新服务器列表…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if let error = hostStore.lastError {
+                errorText(error)
+            }
         } header: {
             Text("数据")
         } footer: {
-            Text("**服务器信息**：ds.vu3lvo.com 的 DMRHosts.txt（Pi-Star 格式），上面「服务器」里的下拉列表就是它，约 1500 台。\n**DMR ID 库**：RadioID.net 的整包用户表 user.csv（约 17 MB / 31 万条），下载后在本机建索引（2.5 MB），之后首页的呼号、姓名、城市全部从本地查，不再逐条联网，换人说话也不会卡。库里查不到的 ID（中继台、网关、刚申请还没入库的）才会再走一次网络。\n建议一两周点一次；下载中旧库仍然可用，换到新库是一次性的原子替换，中途失败不会把已有的库弄坏。")
+            Text("**服务器列表**：ds.vu3lvo.com 的 DMRHosts.txt（Pi-Star 格式），约 1500 台。点这一行右边的「更新」下载一次后**存在本机**（`Application Support/DMRPilot/hosts.txt`），之后的服务器选择与搜索全部读本地，不联网，断网也能用。\n**DMR ID**：RadioID.net 的整包用户表 user.csv（约 17 MB / 31 万条），点「更新」下载后在本机建索引（2.5 MB），之后首页的呼号、姓名、城市全部从本地查，不再逐条联网，换人说话也不会卡。库里查不到的 ID（中继台、网关、刚申请还没入库的）才会再走一次网络。\n两份数据各自独立更新，建议一两周点一次；左下角是各自的更新时间。下载中旧数据仍然可用，换新的是一次性的原子替换，中途失败不会把已有的数据弄坏。")
         }
     }
 
-    /// 两列信息的统一排版：标题 + 主值（+ 次要说明）。
-    private func row(_ title: String, _ value: String, detail: String = "") -> some View {
+    /// 数据行：标题 + 更新时间（左下角）、主值（+ 次要说明）在右侧，行尾是「更新」按钮。
+    /// 按钮用 `.borderless`，点它只触发更新，不会连带整行。
+    private func dataRow(_ title: String,
+                         _ value: String,
+                         detail: String = "",
+                         updatedAt: Date?,
+                         isBusy: Bool,
+                         action: @escaping () -> Void) -> some View {
         HStack(alignment: .firstTextBaseline) {
-            Text(title)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                Text(updateLabel(updatedAt))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
             Spacer(minLength: 12)
             VStack(alignment: .trailing, spacing: 2) {
                 Text(value)
@@ -335,12 +343,32 @@ struct SettingsView: View {
                         .lineLimit(1)
                 }
             }
+            Button(action: action) {
+                if isBusy {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Text("更新")
+                        .font(.footnote.weight(.semibold))
+                }
+            }
+            .buttonStyle(.borderless)
+            .disabled(isBusy)
+            .accessibilityLabel("更新\(title)")
         }
     }
 
-    private var updateStageText: String {
-        let stage = callsigns.databaseStage
-        return stage.isEmpty ? "正在更新服务器列表…" : stage
+    /// 左下角那行小字：没有时间就是「未更新」。
+    private func updateLabel(_ date: Date?) -> String {
+        guard let date else { return "未更新" }
+        return "更新于 " + Self.stamp.string(from: date)
+    }
+
+    private func errorText(_ message: String) -> some View {
+        Text(message)
+            .font(.footnote)
+            .foregroundStyle(.red)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     private var databaseCountText: String {
@@ -355,12 +383,6 @@ struct SettingsView: View {
         return ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
     }
 
-    private var updateTimeText: String {
-        if let date = callsigns.databaseUpdatedAt { return Self.stamp.string(from: date) }
-        if let date = app.dataRefreshedAt { return Self.stamp.string(from: date) }
-        return "—"
-    }
-
     private static let stamp: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "MM-dd HH:mm"
@@ -369,6 +391,8 @@ struct SettingsView: View {
 
     // MARK: - 关于
 
+    /// 关于：只留版本号。协议（ODTP 54006）、协议核心（C++ 桥接）和数据来源
+    /// 这几行属于开发期信息，界面上已经去掉，需要时看 README。
     private var aboutSection: some View {
         Section {
             HStack {
@@ -376,28 +400,6 @@ struct SettingsView: View {
                 Spacer()
                 Text("1.0 (1)")
                     .foregroundStyle(.secondary)
-            }
-            HStack {
-                Text("协议")
-                Spacer()
-                Text("ODTP (54006)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            HStack {
-                Text("协议核心")
-                Spacer()
-                Text("C++ 桥接")
-                    .foregroundStyle(.secondary)
-            }
-            HStack {
-                Text("数据来源")
-                Spacer()
-                Text("RadioID.net · api.brandmeister.network")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
             }
         } header: {
             Text("关于")

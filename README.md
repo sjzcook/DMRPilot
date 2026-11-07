@@ -62,9 +62,9 @@ DMRApp/
 │   ├── HotspotView.swift        # 首页：状态卡 + PTT + 当前讲话人 + 刚刚结束
 │   ├── CallLogView.swift        # 日志页：按天归档 + 呼号搜索 + 左滑删单条
 │   ├── CallLogStore.swift       # 通话记录落盘：SQLite（按呼号合并 / 分页 / 搜索 / 删单条）
-│   ├── DirectoryView.swift      # 设备查询 + 通话组搜索（设置 → 数据 里进入）
+│   ├── DirectoryView.swift      # 设备查询 + 通话组搜索（入口已从设置页去掉）
 │   ├── SettingsView.swift       # 身份 / 服务器 / 行为 / 数据
-│   ├── HostDirectory.swift      # DMRHosts.txt 下载 / 解析 / 缓存
+│   ├── HostDirectory.swift      # DMRHosts.txt 下载 / 解析 / 本机快照（hosts.txt）
 │   ├── HostPickerField.swift    # 服务器弹出选择器 + Hostname 搜索
 │   ├── TalkgroupPickerField.swift # 通话组弹出选择器（中国/全部 + 名称搜索 + 手填号码）
 │   ├── CallsignDirectory.swift  # DMR ID → 呼号（本地库优先，网络兜底 + Caches 缓存）
@@ -145,8 +145,10 @@ python tools/gen_icon.py
 设置页的服务器不再是手填文本框，而是从 Pi-Star 格式的服务器表里选：
 
 - 数据源 `https://ds.vu3lvo.com/DMRHosts.txt`（镜像 `https://ds.vu3lvo.com/backup/DMRHosts.txt`），
-  首次进入设置页自动下载并缓存到 `Caches/DMRHosts.txt`，之后启动直接读缓存；
-  点「设置 → 数据 → 更新数据」或选择器右上角的刷新按钮才会重拉。
+  下载一次就存到 `Application Support/DMRPilot/hosts.txt`（另有一份 `hosts.meta.json` 记保存时间）。
+  之后**启动、选择、搜索全部只读这份本地文件，不联网**；只有点「设置 → 数据 → 服务器列表」右边的「更新」
+  或选择器右上角的刷新按钮才会重拉。
+  老版本存在 `Caches/DMRHosts.txt`（系统可能清掉），首次启动会自动搬到新位置并把文件时间当作保存时间。
 - 点服务器那一行会**弹出选择器**（半屏 / 全屏 sheet）：搜索框固定在列表上方，按域名（顺带匹配表里的名字）过滤；
   默认只列 BrandMeister 条目（42 台），切到「全部」能看到 XLX、DMR+、FreeDMR 等 1200 多条；
   右上角刷新按钮强制重下，选中即关闭并回填。
@@ -156,14 +158,16 @@ python tools/gen_icon.py
 - 解析规则与参考实现一致：跳过 `DMRGateway` / `DMR2YSF` / `DMR2NXDN` 三条本机网关记录，
   第 3 列域名、第 4 列表内密码（`none` 视为空）、第 5 列端口；下载到 HTML 错误页时直接丢弃，不会污染缓存。
 
-### 本地数据（更新数据）
+### 本地数据（两份各自更新）
 
-位置：**设置 → 数据**。一个按钮同时刷新两样东西，都落在本机，之后完全离线可用：
+位置：**设置 → 数据**。服务器列表和 DMR ID 各占一行，行尾各有一个「更新」按钮，
+点哪个只刷新哪一份，互不牵连；每行标题左下角是这一份数据自己的更新时间。
+两份都落在本机，之后完全离线可用：
 
 | | 来源 | 体积 | 用在哪 |
 |---|---|---|---|
-| 服务器表 | `ds.vu3lvo.com/DMRHosts.txt`（Pi-Star 格式） | ~78 KB / 1490 条 | 「服务器」下拉列表 |
-| DMR ID 库 | `database.radioid.net/static/user.csv`（备用域名 `www.radioid.net`） | ~17 MB / 31.6 万条 | 首页的呼号、姓名、城市 |
+| 服务器列表 | `ds.vu3lvo.com/DMRHosts.txt`（Pi-Star 格式） | ~78 KB / 1490 条 | 「服务器」下拉列表（存 `Application Support/DMRPilot/hosts.txt`） |
+| DMR ID | `database.radioid.net/static/user.csv`（备用域名 `www.radioid.net`） | ~17 MB / 31.6 万条 | 首页的呼号、姓名、城市 |
 
 - **为什么要整包下载**：Homebrew / ODTP 的帧头都只有数字 ID，没有呼号。以前是每换一个人就发一次
   `database.radioid.net/api/dmr/user/?id=…`，串行 250 ms 起，还要防限流（见下面「当前讲话人」）。
@@ -180,7 +184,7 @@ python tools/gen_icon.py
 - **下载进度**：`URLSessionDownloadTask` + 每 256 KB 报一次，界面上是一条进度条；解析阶段进度条换成
   「正在建立本地索引…」（约一两秒）。
 - 主站失败会自动换备用域名重试一次；超过 120 MB 直接中断（镜像挂掉时常回一个巨大 HTML 页面）。
-- 服务器表只有几百 KB、ID 库有 17 MB，两个下载是**并行**的，不会互相等。
+- 服务器列表只有几百 KB、ID 库有 17 MB；两个按钮各自独立，可以单独更新，也可以先后各点一次。
 
 ### ESSID 后缀（Homebrew 专属，界面上已无入口）
 
@@ -442,7 +446,7 @@ $ python tools/enc_check.py
 - 呼号不是协议里带的。Homebrew 的 `DMRD` 帧头只有 3 字节源 ID 和 3 字节目的 ID，
   DMR 的 LC（呼号信息）不下发，所以只能外部补。两级：
   1. **本地 DMR ID 库**（`DMRUserDatabase.swift`）：RadioID.net 整包用户表，
-     在「设置 → 数据 → 更新数据」下载后离线可查，呼号 / 姓名 / 城市都有；首页日常查询全走这条。
+     在「设置 → 数据 → DMR ID 库」右边的「更新」下载后离线可查，呼号 / 姓名 / 城市都有；首页日常查询全走这条。
   2. 本地库没有的 ID，才退到网络逐条查：RadioID.net 单条接口
      `database.radioid.net/api/dmr/user/?id=4601234` → BrandMeister 设备库
      `api.brandmeister.network/v2/device/{id}`（中继台、热点在这有呼号）。
@@ -480,9 +484,10 @@ $ python tools/enc_check.py
   之后更新 DMR ID 库不会改写历史；库里缺的呼号会在进页面时补一次（只补本地库查得到的）。
 - **分页**：一页 100 条，滚到底自动取下一页，几万行也不会一次读进内存。
   工具栏左侧显示当前筛选条件下的总条数。
-- 呼号仍从本地 DMR ID 库查（设置 → 数据 → 更新数据）；进这一页会把还没查过的 ID
+- 呼号仍从本地 DMR ID 库查（设置 → 数据 → DMR ID 库 的「更新」）；进这一页会把还没查过的 ID
   补查一次，本地库能答的不发网络请求。
-- 原来的「设备查询 + 全球通话组表」没有删，挪到了 **设置 → 数据 → 设备 / 通话组查询**。
+- 原来的「设备查询 + 全球通话组表」（`DirectoryView`）代码还在，但设置页里的入口已经去掉，
+  目前没有页面跳转进去；要恢复就把 `NavigationLink { DirectoryView() }` 加回设置页「数据」段。
 
 ---
 
