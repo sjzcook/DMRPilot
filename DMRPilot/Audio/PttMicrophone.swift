@@ -47,7 +47,46 @@ final class PttMicrophone {
     ///
     /// 放在采集这一段而不是编码后：DMR 的 AMBE 编码器吃的是固定 8 kHz 的 PCM，
     /// 增益加在它前面才会真正改变编码出来的谱包络；放在后面就只能改数字，对端听不出差别。
+    ///
+    /// 它作用在**自动增益之后**，是给用户的最后一点微调（想更响一点就推上去）。
     var gain: Float = 1
+
+    /// 是否启用采集侧自动增益（`Settings.micAutoGain`）。
+    var autoGain: Bool = true
+
+    // MARK: - 自动增益参数
+    //
+    // 为什么必须自己做：
+    // iOS 上唯一会开系统 AGC 的是 `.voiceChat` / `.videoChat` 这些 mode，而换 mode
+    // 会让系统重建 IO 单元，把同时在跑的播放引擎一起停掉（就是之前那个
+    // 「按一下 PTT 从此没声音」）。所以 mode 不能动，只能自己补。
+    //
+    // DroidStar 在**播放**侧干了同样的事（`AudioEngine::process_audio`：把每块峰值
+    // 拉到 30000），它的采集侧不做是因为桌面/安卓的麦克风电平本来够；iOS 的
+    // `.playAndRecord + .default` 在免提距离下比 AMBE 期待的低了十几 dB。
+
+    /// 目标峰值（约 -8.7 dBFS）：给手动增益留余量，也避免编码前就削顶。
+    private static let agcTarget: Float = 12000
+    /// 最大提升（+27.6 dB）。再高会把整段底噪一起抬起来，听感变成一片沙。
+    private static let agcMaxGain: Float = 24
+    /// 最小增益（-12 dB）：大嗓门时压一点，防止削波失真。
+    private static let agcMinGain: Float = 0.25
+    /// 噪声门（约 -43 dBFS）：低于它就当作没人在说，增益直接往回收。
+    /// 没有这道门，安静间隙里底噪会被放大二十几倍，编码器那边还会把沙沙声当语音。
+    private static let agcGate: Float = 220
+    /// 每帧最多提升的比例（25%/帧 ≈ 80 ms 到位）。提升太快会让呼吸声一抽一抽的。
+    private static let agcAttack: Float = 0.25
+    /// 回落比例：噪声门触发时用它，约 3 帧（60 ms）回到 1。
+    private static let agcRelease: Float = 0.35
+
+    /// 自动增益当前倍数。逐帧更新，跨帧保留（20 ms 一档，正好是语音包络的时间尺度）。
+    private var autoGainValue: Float = 1
+
+    /// 本次发射里**原始输入**的最大峰值（自动增益之前）。用来诊断「麦克风到底收到多少声」。
+    /// `stop()` 不清它 —— 松手之后还要拿它打一行日志。
+    private(set) var lastPeak: Float = 0
+    /// 本次发射里自动增益达到过的最大值。和 `lastPeak` 一起判断增益是不是已经顶到上限。
+    private(set) var lastAutoGain: Float = 1
 
     private let engine = AVAudioEngine()
     private var converter: AVAudioConverter?
@@ -165,6 +204,10 @@ final class PttMicrophone {
         self.converter = converter
         pending.removeAll(keepingCapacity: true)
         level = 0
+        // 每次按下都从 1 倍开始：上一句收尾时的增益不该带进新的一句。
+        autoGainValue = 1
+        lastPeak = 0
+        lastAutoGain = 1
 
         // `target` / `converter` 都先取成局部常量再进闭包：采集回调在别的线程，
         // 直接读主线程隔离的属性会被并发检查挑出来，也没有必要。
@@ -231,29 +274,78 @@ final class PttMicrophone {
         // 否则一按下就先把几帧旧音频发出去。
         guard running else { return }
 
-        // 先加增益再排队：电平表、编码器、`onFrame` 拿到的都是同一份放大后的采样，
-        // 表上看到的音量就和对端听到的一致。
-        let shaped: [Int16]
-        if gain == 1 {
-            shaped = samples
+        pending.append(contentsOf: samples)
+
+        // 按整帧处理，不按「这一批到达的采样」处理：
+        // 自动增益要在一帧（20 ms）的峰值上做判断，而 tap 每次给的是 1024 帧
+        // （8 kHz 下约 170 采样），跨帧时峰值会算错档。
+        while pending.count >= PttMicrophone.frameSamples {
+            var frame = Array(pending[0..<PttMicrophone.frameSamples])
+            pending.removeFirst(PttMicrophone.frameSamples)
+
+            // 原始峰值先量一次：自动增益要用它判断，诊断日志也用它。
+            var rawPeak: Float = 0
+            for v in frame {
+                let a = abs(Float(v))
+                if a > rawPeak { rawPeak = a }
+            }
+            if rawPeak > lastPeak { lastPeak = rawPeak }
+
+            // 顺序很关键：先自动增益（看原始电平），再乘手动增益。
+            // 反过来的话，用户把滑杆推高之后自动增益会立刻把它的效果抵掉。
+            if autoGain {
+                applyAutoGain(&frame, rawPeak: rawPeak)
+            }
+            if gain != 1 {
+                for i in frame.indices {
+                    let scaled = (Float(frame[i]) * gain).rounded()
+                    frame[i] = Int16(max(-32768, min(32767, scaled)))
+                }
+            }
+
+            // 电平表用处理后的采样：表上看到的音量就是对端听到的音量。
+            var peak: Float = 0
+            for v in frame {
+                let a = abs(Float(v))
+                if a > peak { peak = a }
+            }
+            // 满幅约 -6 dB（20000）就打满
+            level = min(1, peak / 20000)
+
+            onFrame?(frame)
+        }
+    }
+
+    /// 一帧（160 采样）的自动增益，目标是峰值 `agcTarget`。
+    ///
+    /// 三个方向上的取舍：
+    /// - **提升慢**（`agcAttack`）：逐帧 25%，约 80 ms 到位，不会让呼吸声一抽一抽；
+    /// - **回落快**：噪声门一触发就按 `agcRelease` 往回走，否则一句话说完的间隙里，
+    ///   放大了二十几倍的底噪会拖出一段沙沙的尾巴；
+    /// - **双向限幅**：`agcMinGain` 压大嗓门（防编码前削顶），`agcMaxGain` 挡住
+    ///   把整段底噪一起抬起来的冲动。
+    private func applyAutoGain(_ frame: inout [Int16], rawPeak: Float) {
+        if rawPeak < PttMicrophone.agcGate {
+            // 没人在说：往回收到 1 倍，别把底噪带进下一句的开头。
+            autoGainValue = max(1, autoGainValue * PttMicrophone.agcRelease)
         } else {
-            shaped = samples.map { sample -> Int16 in
-                let scaled = (Float(sample) * gain).rounded()
-                return Int16(max(-32768, min(32767, scaled)))
+            let wanted = min(PttMicrophone.agcMaxGain,
+                             max(PttMicrophone.agcMinGain,
+                                 PttMicrophone.agcTarget / rawPeak))
+            if wanted < autoGainValue {
+                // 突然大声了：立刻降下来，削波是不可逆的
+                autoGainValue = wanted
+            } else {
+                autoGainValue += (wanted - autoGainValue) * PttMicrophone.agcAttack
             }
         }
-        pending.append(contentsOf: shaped)
 
-        var sum: Float = 0
-        for v in shaped { sum += Float(v) * Float(v) }
-        let rms = Float(sqrt(Double(sum / Float(max(shaped.count, 1)))))
-        // 0…1 的近似显示刻度：满幅约 -6 dB 就打满
-        level = min(1, rms / 6000)
+        if autoGainValue > lastAutoGain { lastAutoGain = autoGainValue }
 
-        while pending.count >= PttMicrophone.frameSamples {
-            let frame = Array(pending[0..<PttMicrophone.frameSamples])
-            pending.removeFirst(PttMicrophone.frameSamples)
-            onFrame?(frame)
+        guard autoGainValue != 1 else { return }
+        for i in frame.indices {
+            let scaled = (Float(frame[i]) * autoGainValue).rounded()
+            frame[i] = Int16(max(-32768, min(32767, scaled)))
         }
     }
 

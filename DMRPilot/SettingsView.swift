@@ -216,6 +216,10 @@ struct SettingsView: View {
                 }
             }
 
+            Toggle(isOn: micAutoGainBinding) {
+                Label("麦克风自动增益", systemImage: "waveform")
+            }
+
             HStack(spacing: 12) {
                 Text("麦克风增益")
                 Slider(value: micGainBinding, in: Settings.micGainRange, step: 1)
@@ -227,6 +231,8 @@ struct SettingsView: View {
             }
         } header: {
             Text("语音")
+        } footer: {
+            Text("自动增益按说话音量自己补足电平；关掉之后只按下面的滑杆走。")
         }
     }
 
@@ -256,6 +262,17 @@ struct SettingsView: View {
             get: { app.settings.micGainDb },
             set: { newValue in
                 app.settings.micGainDb = newValue
+                hotspot.applyMicGain(app.settings)
+            }
+        )
+    }
+
+    /// 自动增益开关：同样立刻推给采集端，正在发射时也能开/关。
+    private var micAutoGainBinding: Binding<Bool> {
+        Binding(
+            get: { app.settings.micAutoGain },
+            set: { newValue in
+                app.settings.micAutoGain = newValue
                 hotspot.applyMicGain(app.settings)
             }
         )

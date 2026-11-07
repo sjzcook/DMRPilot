@@ -370,6 +370,15 @@ struct Settings: Codable, Equatable {
     /// 所以是在采集后的 8 kHz Int16 采样上做数字放大（见 `PttMicrophone`）。
     var micGainDb: Double = 0
 
+    /// 发射时是否自动补足麦克风电平（默认开）。
+    ///
+    /// iOS 的 `.playAndRecord` 在 `.default` 模式下**不启用系统 AGC**（`.voiceChat`
+    /// 才有，而那个 mode 会把播放引擎连带停掉，不能用）。免提距离说话的原始电平
+    /// 比 AMBE 编码器期待的低十几 dB，直接送进去对端听到的就是「声音很小」。
+    /// 这里在采集后的 8 kHz 采样上自己补（见 `PttMicrophone`），
+    /// 手动增益 `micGainDb` 变成它之后的微调。
+    var micAutoGain: Bool = true
+
     /// 麦克风增益滑杆的范围（dB）。24 dB 约 16 倍幅度，再往上削波只会更糊。
     static let micGainRange: ClosedRange<Double> = -12...24
 
@@ -522,6 +531,9 @@ extension Settings {
         let gain = try container.decodeIfPresent(Double.self, forKey: .micGainDb) ?? defaults.micGainDb
         micGainDb = min(Settings.micGainRange.upperBound,
                         max(Settings.micGainRange.lowerBound, gain))
+        // 老存档没有这个键 → 默认开。它正是「发射声音小」的解药，
+        // 让已有用户升级后不必自己去翻滑杆。
+        micAutoGain = try container.decodeIfPresent(Bool.self, forKey: .micAutoGain) ?? defaults.micAutoGain
     }
 }
 

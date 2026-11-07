@@ -437,6 +437,7 @@ final class HomebrewClient: ObservableObject {
         encoder.reset()
         // 增益在采集端做（见 `PttMicrophone.consume`），这里只把设置里的 dB 换算过去。
         mic.gain = PttMicrophone.linearGain(db: activeSettings.micGainDb)
+        mic.autoGain = activeSettings.micAutoGain
 
         // 采集一帧就排队，编码放到发射循环里做——编码要 2～3 ms，塞进采集回调会丢帧
         mic.onFrame = { [weak self] frame in
@@ -483,6 +484,20 @@ final class HomebrewClient: ObservableObject {
         txLevel = 0
         mic.onFrame = nil
         mic.stop()
+
+        // 采集电平体检。这一行是用来分流「对端说声音小」的：
+        // - 输入峰值只有一两百（-45 dBFS 以下）→ 麦克风几乎没收到声，是遮挡 / 路由问题，
+        //   再大的增益也救不回来（`hint` 会提示）；
+        // - 输入峰值正常（-30~-20 dBFS）而自动增益已经顶到 ×24 —— 说明增益给足了，
+        //   对端还嫌小就是编码器那侧的电平标定偏了（`HREncoder.calibrateIfNeeded`）。
+        // 手动增益没算进「补到」那一项，它是在自动增益之后叠加的用户微调。
+        let peak = Double(mic.lastPeak)
+        let auto = mic.lastAutoGain
+        let inputDb = peak > 1 ? 20 * log10(peak / 32768) : -120
+        let outputDb = inputDb + 20 * log10(Double(auto))
+        let hint = peak < 200 ? "，麦克风几乎没收到声音（检查是否被遮挡 / 外接设备占用）" : ""
+        append(.info, String(format: "🎙️ 采集电平：输入峰值 %.0f（%.0f dBFS），自动增益 ×%.1f → 约 %.0f dBFS%@",
+                             peak, inputDb, auto, outputDb, hint))
 
         if let started = txStartedAt {
             txSeconds = Date().timeIntervalSince(started)
@@ -555,6 +570,7 @@ final class HomebrewClient: ObservableObject {
         pttFrames.removeAll(keepingCapacity: true)
         encoder.reset()
         mic.gain = PttMicrophone.linearGain(db: activeSettings.micGainDb)
+        mic.autoGain = activeSettings.micAutoGain
 
         mic.onFrame = { [weak self] frame in
             guard let self else { return }
@@ -822,7 +838,9 @@ final class HomebrewClient: ObservableObject {
     /// 麦克风增益改了立刻生效：通话中调滑杆，下一次采集就按新系数放大，不必重连、不必松手。
     func applyMicGain(_ settings: Settings) {
         activeSettings.micGainDb = settings.micGainDb
+        activeSettings.micAutoGain = settings.micAutoGain
         mic.gain = PttMicrophone.linearGain(db: settings.micGainDb)
+        mic.autoGain = settings.micAutoGain
     }
 
     /// 续订、订阅相关的设置在连接期间改了也要立刻生效，不必重连。
