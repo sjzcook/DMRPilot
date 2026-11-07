@@ -98,10 +98,17 @@ final class HomebrewClient: ObservableObject {
 
     /// C++ 核心：握手状态机 + 组帧 / 拆帧。
     private let core = dmr_core_create()!
+    /// BrandMeister 的 ODTP / Rewind 核心。和 `core` 是两套互不相通的协议，
+    /// 同一时刻只用其中一个，由 `settings.linkProtocol` 决定。
+    private let rw = rw_core_create()!
 
     // MARK: - 内部状态
 
     private var activeSettings = Settings()
+
+    /// 当前是否走 BrandMeister 的 ODTP（Rewind）而不是 Homebrew。
+    /// ODTP 没有时隙、没有色码、订阅是显式命令；Homebrew 三者都要自己凑。
+    private var isOdtp: Bool { activeSettings.linkProtocol == .odtp }
     private var connection: NWConnection?
     private var webSocket: URLSessionWebSocketTask?
     private var webSocketSession: URLSession?
@@ -132,7 +139,7 @@ final class HomebrewClient: ObservableObject {
     // MARK: - 发射状态
 
     private enum TxKind {
-        /// 向某个通话组发一次「静音 PTT」，让服务器记成动态订阅
+        /// 向某个通话组发一次「静音 PTT」，让服务器记成动态订阅（仅 Homebrew 需要）
         case subscribe
         /// 用户按住 PTT
         case ptt
@@ -157,6 +164,7 @@ final class HomebrewClient: ObservableObject {
     private var trafficTotal = 0
     private var lastTrafficReport = Date()
     private var warnedNoTraffic = false
+    private var audioErrorReported = false
 
     private let pingInterval: TimeInterval = 5
     private let silenceTimeout: TimeInterval = 15
@@ -173,10 +181,13 @@ final class HomebrewClient: ObservableObject {
         dmr_core_set_text(core, DMR_TEXT_URL, "https://brandmeister.network")
         dmr_core_set_text(core, DMR_TEXT_SOFTWARE, "20260101")
         dmr_core_set_text(core, DMR_TEXT_PACKAGE, "DMRPilot_iOS")
+
+        rw_core_set_version(rw, "DMRPilot 1.0")
     }
 
     deinit {
         dmr_core_destroy(core)
+        rw_core_destroy(rw)
     }
 
     // MARK: - 通话组
@@ -248,6 +259,12 @@ final class HomebrewClient: ObservableObject {
         lastSubscribeTalkgroup = talkgroup
         talkgroupAliveAt = now
 
+        // ODTP 有真正的订阅命令，不需要「发一次静音发射」来让服务器记事。
+        if isOdtp {
+            sendSubscribe(talkgroup: talkgroup)
+            return
+        }
+
         let slot = UInt8(activeSettings.callSlot == 1 ? 1 : 2)
         let cc = UInt8(min(15, max(0, activeSettings.colorCode)))
         guard sendHeader(talkgroup: talkgroup, slot: slot, cc: cc) else { return }
@@ -315,7 +332,9 @@ final class HomebrewClient: ObservableObject {
         isTransmitting = true
         txSeconds = 0
         txStartedAt = Date()
-        append(.tx, "🔴 按住发射 → TG \(talkgroup)（TS\(slot)，CC\(cc)，DMR ID \(activeSettings.dmrId)）")
+        append(.tx, "🔴 按住发射 → TG \(talkgroup)（"
+            + (isOdtp ? "ODTP" : "TS\(slot) CC\(cc)")
+            + "，DMR ID \(activeSettings.dmrId)）")
 
         txKind = .ptt
         startTxTimer()
@@ -340,6 +359,23 @@ final class HomebrewClient: ObservableObject {
 
     /// 语音头。成功返回 true。
     private func sendHeader(talkgroup: Int, slot: UInt8, cc: UInt8) -> Bool {
+        if isOdtp {
+            var buffer = [UInt8](repeating: 0, count: 32)
+            let n = rw_core_tx_header(rw, UInt32(talkgroup), 0, &buffer, Int32(buffer.count))
+            guard n > 0 else { return false }
+            send(Data(buffer[0..<Int(n)]), label: "DMR 语音头 → TG \(talkgroup)", quiet: true)
+
+            // 规范：语音头/结束符可以重复 2～3 次，但**必须用同一个序号**（服务器按序号去重）。
+            // 所以第 2、3 次走 tx_header_again，而不是重新生成一个包。
+            for _ in 0..<2 {
+                let again = rw_core_tx_header_again(rw, UInt32(talkgroup), 0, &buffer, Int32(buffer.count))
+                guard again > 0 else { break }
+                send(Data(buffer[0..<Int(again)]), label: "DMR 语音头（同序号重发）", quiet: true)
+            }
+            append(.tx, "→ 语音头 → TG \(talkgroup)（ODTP，连发 3 次、同一序号）")
+            return true
+        }
+
         var buffer = [UInt8](repeating: 0, count: 64)
         let n = dmr_core_tx_begin(core, UInt32(talkgroup), slot, cc, &buffer, Int32(buffer.count))
         guard n == 55 else {
@@ -351,6 +387,21 @@ final class HomebrewClient: ObservableObject {
     }
 
     private func sendBurst(_ codec: [UInt8], quiet: Bool) {
+        if isOdtp {
+            var buffer = [UInt8](repeating: 0, count: 64)
+            let n = codec.withUnsafeBufferPointer { pointer in
+                rw_core_tx_audio(rw, pointer.baseAddress, &buffer, Int32(buffer.count))
+            }
+            guard n > 0 else { return }
+            send(Data(buffer[0..<Int(n)]), label: "DMR 语音帧", quiet: quiet)
+            // 每 83 帧（约 5 秒）插一次 KEEP_ALIVE：发射期间也要维持会话，
+            // 否则长按超过服务器的心跳窗口就会被踢。
+            if rw_core_tx_count(rw) % 83 == 0 {
+                sendPing()
+            }
+            return
+        }
+
         var buffer = [UInt8](repeating: 0, count: 64)
         let n = codec.withUnsafeBufferPointer { pointer in
             dmr_core_tx_burst(core, pointer.baseAddress, &buffer, Int32(buffer.count))
@@ -410,6 +461,20 @@ final class HomebrewClient: ObservableObject {
         txTimer?.invalidate()
         txTimer = nil
 
+        if isOdtp {
+            var buffer = [UInt8](repeating: 0, count: 32)
+            let n = rw_core_tx_end(rw, &buffer, Int32(buffer.count))
+            if n > 0 {
+                // 结束符同样按规范重复一次：原样重发同一段字节，序号自然相同。
+                let packet = Data(buffer[0..<Int(n)])
+                send(packet, label: "DMR 语音结束符")
+                send(packet, label: "DMR 语音结束符（同序号重发）", quiet: true)
+            }
+            append(.tx, label)
+            txBurstsLeft = 0
+            return
+        }
+
         if dmr_core_tx_active(core) == 1 {
             var buffer = [UInt8](repeating: 0, count: 64)
             let n = dmr_core_tx_end(core, &buffer, Int32(buffer.count))
@@ -451,10 +516,11 @@ final class HomebrewClient: ObservableObject {
         activeSettings.sendConfig = settings.sendConfig
 
         // 时隙和色码都只体现在「发出去的那几帧」里，改完不重新订阅等于没改。
+        // ODTP 没有时隙 / 色码，这两项对它没有意义。
         if slotChanged || ccChanged {
             dmr_core_set_color_code(core, UInt8(min(15, max(0, settings.colorCode))))
         }
-        if (slotChanged || ccChanged), state == .online, activeTalkgroup > 0, txTimer == nil {
+        if !isOdtp, (slotChanged || ccChanged), state == .online, activeTalkgroup > 0, txTimer == nil {
             lastSubscribeAt = nil
             let cc = min(15, max(0, settings.colorCode))
             let slot = settings.callSlot == 1 ? 1 : 2
@@ -513,8 +579,29 @@ final class HomebrewClient: ObservableObject {
         syncVoiceUI()
 
         guard settings.dmrId > 0, !settings.sanitizedPassword.isEmpty else {
-            state = .failed("请先在设置里填写 DMR ID 与 Hotspot 密码")
-            append(.error, "身份信息不完整：DMR ID 与 Hotspot 密码不能为空")
+            state = .failed("请先在设置里填写 DMR ID 与密码")
+            append(.error, "身份信息不完整：DMR ID 与密码不能为空（"
+                + (settings.linkProtocol == .odtp ? "ODTP 用 7 位 DMR ID + 终端密码" : "Homebrew 用 9 位热点 ID + Hotspot Security 密码")
+                + "）")
+            return
+        }
+
+        if settings.linkProtocol == .odtp, settings.dmrId > 0xFF_FFFF {
+            state = .failed("ODTP 要用 7 位 DMR ID")
+            append(.error, "现在填的 \(settings.dmrId) 是 9 位，像热点 ID。ODTP 登录要的是 7 位 DMR ID（不带后缀），请改「DMR ID」那一栏")
+            return
+        }
+
+        let trimmedHost = settings.host.trimmingCharacters(in: .whitespaces)
+        if trimmedHost.isEmpty {
+            state = .failed("服务器地址是空的")
+            append(.error, "去「设置 → 服务器」选一台服务器，或手填域名（不要带 https:// 和端口）")
+            return
+        }
+        // 常见误填：把 REST 接口的域名写到服务器里，那个域名上没有 54006 / 62031。
+        if trimmedHost.lowercased().hasPrefix("api.brandmeister") {
+            state = .failed("服务器填成了 api.brandmeister.network")
+            append(.error, "这是查询接口的域名，上面没有热点端口。ODTP 请填 <地区>.master.brandmeister.network（如 4601.master.brandmeister.network），端口 54006")
             return
         }
 
@@ -527,18 +614,27 @@ final class HomebrewClient: ObservableObject {
         applyCoreConfiguration(settings)
 
         state = .connecting
-        append(.info, "开始连接 \(settings.host):\(settings.port)（\(settings.transport.short)）")
-        append(.info, "登录 ID \(settings.hotspotId)"
-            + (settings.hotspotIdOverride >= 10_000_000 ? "（设置里直接指定）" : settings.usesEssid ? "（DMR ID + ESSID 后缀）" : "（没填 ESSID，多数服务器不认）"))
-        if settings.sendConfig {
-            append(.info, "握手：RPTL → RPTK → RPTC → RPTPING（与参考实现 DroidStar 一致）")
+
+        if settings.linkProtocol == .odtp {
+            append(.info, "开始连接 \(settings.host):\(settings.port)（ODTP / Rewind）")
+            append(.info, "登录 ID \(settings.dmrId)（ODTP 用 7 位 DMR ID，不带热点后缀）")
+            append(.info, "握手：KEEP_ALIVE → CHALLENGE → AUTHENTICATION → SUBSCRIPTION")
         } else {
-            append(.info, "握手：RPTL → RPTK（跳过 RPTC，只给不接受配置包的服务器用）")
+            append(.info, "开始连接 \(settings.host):\(settings.port)（\(settings.transport.short)）")
+            append(.info, "登录 ID \(settings.hotspotId)"
+                + (settings.hotspotIdOverride >= 10_000_000 ? "（设置里直接指定）" : settings.usesEssid ? "（DMR ID + ESSID 后缀）" : "（没填 ESSID，多数服务器不认）"))
+            if settings.sendConfig {
+                append(.info, "握手：RPTL → RPTK → RPTC → RPTPING（与参考实现 DroidStar 一致）")
+            } else {
+                append(.info, "握手：RPTL → RPTK（跳过 RPTC，只给不接受配置包的服务器用）")
+            }
         }
 
-        switch settings.transport {
-        case .udp: startUDP()
-        case .websocket: startWebSocket()
+        // ODTP 只走 UDP（Rewind 就是 UDP 协议），WebSocket 只可能是 Homebrew 网关。
+        if settings.linkProtocol == .odtp || settings.transport == .udp {
+            startUDP()
+        } else {
+            startWebSocket()
         }
     }
 
@@ -555,6 +651,9 @@ final class HomebrewClient: ObservableObject {
         dmr_core_set_text(core, DMR_TEXT_PASSWORD, settings.sanitizedPassword)
         dmr_core_set_text(core, DMR_TEXT_CALLSIGN, settings.normalizedCallsign.isEmpty ? "N0CALL" : settings.normalizedCallsign)
         dmr_core_set_talkgroup(core, UInt32(max(0, settings.talkgroup)))
+
+        // ODTP 的身份是「7 位 DMR ID + SelfCare 密码」，没有热点后缀的概念
+        rw_core_set_identity(rw, UInt32(clamping: settings.dmrId), settings.sanitizedPassword)
     }
 
     func disconnect() {
@@ -686,10 +785,24 @@ final class HomebrewClient: ObservableObject {
     private func sendLogin() {
         loginAttempt += 1
         guard loginAttempt <= 3 else {
-            fail("服务器连续 3 次没有回应登录请求（RPTL）")
+            fail(isOdtp ? "服务器连续 3 次没有回应 KEEP_ALIVE（ODTP）" : "服务器连续 3 次没有回应登录请求（RPTL）")
             return
         }
         state = .loggingIn
+
+        if isOdtp {
+            var buffer = [UInt8](repeating: 0, count: 128)
+            let n = rw_core_keepalive(rw, &buffer, Int32(buffer.count))
+            guard n > 0 else {
+                fail("协议核心没能生成 KEEP_ALIVE（DMR ID \(activeSettings.dmrId)）", allowRetry: false)
+                return
+            }
+            append(.info, "→ KEEP_ALIVE 登录（第 \(loginAttempt) 次），DMR ID \(activeSettings.dmrId)")
+            send(Data(buffer[0..<Int(n)]), label: "KEEP_ALIVE")
+            armLoginTimeout()
+            return
+        }
+
         var buffer = [UInt8](repeating: 0, count: 16)
         let n = dmr_core_login(core, &buffer, Int32(buffer.count))
         guard n > 0 else {
@@ -702,6 +815,14 @@ final class HomebrewClient: ObservableObject {
     }
 
     private func sendPing() {
+        if isOdtp {
+            var buffer = [UInt8](repeating: 0, count: 128)
+            let n = rw_core_keepalive(rw, &buffer, Int32(buffer.count))
+            guard n > 0 else { return }
+            send(Data(buffer[0..<Int(n)]), label: "KEEP_ALIVE", quiet: true)
+            return
+        }
+
         var buffer = [UInt8](repeating: 0, count: 16)
         let n = dmr_core_ping(core, &buffer, Int32(buffer.count))
         guard n > 0 else { return }
@@ -709,6 +830,14 @@ final class HomebrewClient: ObservableObject {
     }
 
     private func sendLogout() {
+        if isOdtp {
+            var buffer = [UInt8](repeating: 0, count: 32)
+            let n = rw_core_close(rw, &buffer, Int32(buffer.count))
+            guard n > 0 else { return }
+            send(Data(buffer[0..<Int(n)]), label: "REWIND CLOSE")
+            return
+        }
+
         var buffer = [UInt8](repeating: 0, count: 16)
         let n = dmr_core_logout(core, &buffer, Int32(buffer.count))
         guard n > 0 else { return }
@@ -719,6 +848,11 @@ final class HomebrewClient: ObservableObject {
 
     private func handleInbound(_ data: Data) {
         lastServerPacket = Date()
+
+        if isOdtp {
+            handleRewindInbound(data)
+            return
+        }
 
         var result = dmr_result_t()
         let event = data.withUnsafeBytes { raw -> Int32 in
@@ -758,6 +892,136 @@ final class HomebrewClient: ObservableObject {
         }
     }
 
+    // MARK: - ODTP / Rewind 入站
+
+    /// BrandMeister 的 ODTP 分支。和 Homebrew 的差别集中在三处：
+    /// 登录是 KEEP_ALIVE → CHALLENGE → AUTHENTICATION → 空 KEEP_ALIVE，
+    /// 订阅是显式 SUBSCRIPTION 命令，语音帧直接就是 27 字节 AMBE（不用拆 LC / 反交织）。
+    private func handleRewindInbound(_ data: Data) {
+        var result = rw_result_t()
+        let event = data.withUnsafeBytes { raw -> Int32 in
+            let pointer = raw.baseAddress?.assumingMemoryBound(to: UInt8.self)
+            return rw_core_receive(rw, pointer, Int32(data.count), &result)
+        }
+
+        switch event {
+        case RW_EVT_AUTH:
+            loginTimer?.cancel()
+            state = .authenticating
+            let count = Int(result.out_len)
+            if count > 0 {
+                let payload = withUnsafeBytes(of: result.out) { Data(bytes: $0.baseAddress!, count: count) }
+                append(.info, "← 收到挑战盐，→ AUTHENTICATION（SHA256(盐‖密码)）")
+                send(payload, label: "AUTHENTICATION")
+                // 参考实现 RewindClient 回完 AUTHENTICATION 后 `continue` 回到循环顶部，
+                // 也就是**紧接着再发一个 KEEP_ALIVE**，然后等服务器的空 KEEP_ALIVE。
+                // 规范说鉴权成功服务器会主动回空 KEEP_ALIVE，多发一次心跳没有副作用，
+                // 还能兜住那些只在你下次心跳时才确认的 master。
+                sendPing()
+            }
+            armLoginTimeout()
+
+        case RW_EVT_AUTHENTICATED:
+            loginTimer?.cancel()
+            state = .configuring
+            append(.info, "← 鉴权通过")
+            if activeSettings.talkgroup > 0 {
+                _ = sendSubscribe(talkgroup: activeSettings.talkgroup)
+                // 订阅确认也可能永远不来（组没权限时服务器直接沉默），必须挂超时，
+                // 否则界面会一直停在「配置中」。
+                armLoginTimeout()
+            } else {
+                append(.warning, "还没有选通话组：ODTP 必须先订阅才会收到语音，去「热点」页选一个组")
+                goOnline()
+            }
+
+        case RW_EVT_SUBSCRIBED:
+            goOnline()
+
+        case RW_EVT_PONG:
+            // 心跳应答，静默即可：每 5 秒打一行会把日志刷满
+            break
+
+        case RW_EVT_REPORT:
+            let count = Int(result.out_len)
+            let text = withUnsafeBytes(of: result.payload) { raw -> String in
+                guard count > 0, let base = raw.baseAddress else { return "" }
+                return String(bytes: UnsafeRawBufferPointer(start: base, count: count), encoding: .utf8) ?? ""
+            }
+            append(.info, "← 服务器：\(text)")
+
+        case RW_EVT_FAILURE:
+            // R3ABM 的头文件里没定义 FailureCode 结构体，实测前两字节是小端错误码。
+            var code = 0
+            if result.out_len >= 2 {
+                let raw = withUnsafeBytes(of: result.payload) { Array($0.prefix(2)) }
+                code = Int(raw[0]) | (Int(raw[1]) << 8)
+            }
+            append(.warning, "← 服务器返回失败码 \(code)（订阅被拒 / 会话不被允许）")
+            if state == .configuring {
+                fail("服务器拒绝了订阅（失败码 \(code)）：这个 DMR ID 可能没被授权收这个通话组，"
+                    + "或者账号还没在 SelfCare 里给这个组开放", allowRetry: false)
+            }
+
+        case RW_EVT_CLOSED:
+            handleRefused("REWIND CLOSE")
+
+        case RW_EVT_RX_HEADER, RW_EVT_RX_VOICE, RW_EVT_RX_EOT:
+            var frame = dmr_result_t()
+            frame.src = result.src
+            frame.dst = result.dst
+            // ODTP 没有时隙概念，服务器自己决定走哪个时隙；界面上统一按 TS2 显示
+            frame.slot = 2
+            frame.is_private = result.is_private
+            frame.codec = result.codec
+
+            let mirror: Int32
+            switch event {
+            case RW_EVT_RX_HEADER:
+                mirror = DMR_EVT_RX_HEADER
+                frame.data_type = 1
+            case RW_EVT_RX_EOT:
+                mirror = DMR_EVT_RX_EOT
+                frame.data_type = 2
+            default:
+                mirror = DMR_EVT_RX_VOICE
+            }
+            // 复用 Homebrew 的通话列表 / 电平 / 流量统计逻辑
+            handleDmrFrame(event: mirror, result: frame)
+
+        default:
+            logUnknownRewind(data)
+        }
+    }
+
+    /// ODTP 的包是二进制，按 ASCII 前缀打日志会出来一串乱码。
+    /// 这里按「包类型」去重记录 —— 类型号直接对着 Rewind.h 查得到。
+    private func logUnknownRewind(_ data: Data) {
+        guard data.count >= 10 else { return }
+        let bytes = [UInt8](data.prefix(10))
+        let type = Int(bytes[8]) | (Int(bytes[9]) << 8)
+        let tag = String(format: "RW%04X", type)
+        guard !unknownTags.contains(tag) else { return }
+        unknownTags.insert(tag)
+        append(.rx, "← 未处理的 Rewind 包类型 0x\(String(format: "%04X", type))（\(data.count) 字节），后续同类不再提示",
+               hex: data.hexDump)
+    }
+
+    /// ODTP 订阅：发 SUBSCRIPTION(type=7 组呼)，服务器回一个空的同类型包表示成功。
+    @discardableResult
+    private func sendSubscribe(talkgroup: Int) -> Bool {
+        guard talkgroup > 0 else { return false }
+        var buffer = [UInt8](repeating: 0, count: 32)
+        let n = rw_core_subscribe(rw, UInt32(talkgroup), &buffer, Int32(buffer.count))
+        guard n > 0 else { return false }
+        send(Data(buffer[0..<Int(n)]), label: "SUBSCRIPTION TG \(talkgroup)")
+        append(.info, "→ 已订阅 TG \(talkgroup)（ODTP 显式订阅，等服务器确认）")
+        lastSubscribeAt = Date()
+        lastSubscribeTalkgroup = talkgroup
+        talkgroupAliveAt = Date()
+        return true
+    }
+
     private func sendResult(_ result: dmr_result_t, label: String) {
         let count = Int(result.out_len)
         guard count > 0 else { return }
@@ -772,8 +1036,11 @@ final class HomebrewClient: ObservableObject {
         refusals += 1
 
         guard refusals <= 2 else {
-            fail("会话被服务器反复关闭（\(name)）：核对 9 位热点 ID 与 SelfCare 里是否一致；"
-                + "如果另一台设备（手机 MMDVM / 盒子）也用这个 ID，先把它断开", allowRetry: false)
+            fail("会话被服务器反复关闭（\(name)）："
+                + (isOdtp
+                   ? "核对这个 7 位 DMR ID 是否已在 SelfCare 注册为终端、密码是否是它自己的；同一个 ID 不能同时登两台设备"
+                   : "核对 9 位热点 ID 与 SelfCare 里是否一致；如果另一台设备（手机 MMDVM / 盒子）也用这个 ID，先把它断开"),
+                allowRetry: false)
             return
         }
         retryLater(after: 5, message: "5 秒后重新登录（第 \(refusals) 次）")
@@ -788,11 +1055,15 @@ final class HomebrewClient: ObservableObject {
         connectedSince = Date()
         loginAttempt = 0
         refusals = 0
-        append(.info, "✅ 已登录，进入在线状态，每 \(Int(pingInterval)) 秒发一次 RPTPING")
+        append(.info, "✅ 已登录，进入在线状态，每 \(Int(pingInterval)) 秒发一次"
+            + (isOdtp ? " KEEP_ALIVE" : " RPTPING"))
         startTimers()
         verifyHotspotRegistration()
 
-        // 连上就向当前 TG 订阅一次：不发的话服务器只会推 SelfCare 里的静态组。
+        // ODTP 的订阅在鉴权通过时就已经发了，这里不能再补一次。
+        guard !isOdtp else { return }
+
+        // Homebrew 没有订阅指令：真让 master 记住这个组的是「发一次真实发射」。
         if activeSettings.autoCallOnConnect, activeSettings.talkgroup > 0 {
             let talkgroup = activeSettings.talkgroup
             Task { [weak self] in
@@ -824,15 +1095,30 @@ final class HomebrewClient: ObservableObject {
 
     private func loginTimedOut() {
         switch state {
-        case .loggingIn, .authenticating:
+        case .loggingIn:
             if loginAttempt < 3 {
-                append(.warning, "登录超时，重试")
+                append(.warning, "登录超时，重试 (\(loginAttempt)/3)")
                 sendLogin()
             } else {
-                fail("登录超时：检查服务器地址、端口与网络")
+                fail(isOdtp
+                     ? "服务器没有回应 KEEP_ALIVE：地址/端口要写 <地区>.master.brandmeister.network:54006，且这个 7 位 DMR ID 必须已在 SelfCare 里注册为终端"
+                     : "登录超时：检查服务器地址、端口与网络")
+            }
+        case .authenticating:
+            if loginAttempt < 3 {
+                append(.warning, "鉴权超时，重试 (\(loginAttempt)/3)")
+                sendLogin()
+            } else {
+                fail(isOdtp
+                     ? "鉴权失败：ODTP 的密码错了服务器**不会回任何包**（规范如此），所以只能超时。请核对 SelfCare 里这台终端的密码"
+                     : "鉴权超时：密码或热点 ID 可能不对")
             }
         case .configuring:
-            fail("服务器没有回应配置包（RPTC）：到「设置 → 服务器」关掉「上报配置包 RPTC」再连一次", allowRetry: false)
+            if isOdtp {
+                fail("服务器没有确认订阅（SUBSCRIPTION）：确认这个通话组对当前 DMR ID 开放", allowRetry: false)
+            } else {
+                fail("服务器没有回应配置包（RPTC）：到「设置 → 服务器」关掉「上报配置包 RPTC」再连一次", allowRetry: false)
+            }
         default:
             break
         }
@@ -943,6 +1229,7 @@ final class HomebrewClient: ObservableObject {
             }
             let codec = withUnsafeBytes(of: result.codec) { Array($0) }
             voice.push(key: key, codec: codec)
+            reportAudioErrorOnce()
             syncVoiceUI()
             trackSpeaker(src: src, dst: dst, slot: slot, isPrivate: isPrivate, at: Date())
 
@@ -957,6 +1244,14 @@ final class HomebrewClient: ObservableObject {
         default:
             append(.rx, "← DMRD 控制帧 类型 \(result.data_type)（\(src) → \(dst)）")
         }
+    }
+
+    /// 音频会话起不来时只在日志里提示一次，避免每个语音包刷一条。
+    private func reportAudioErrorOnce() {
+        guard !audioErrorReported, let error = voice.audioError else { return }
+        audioErrorReported = true
+        append(.warning, "⚠️ \(error)")
+        append(.warning, "有语音包进来但放不出声：先看手机侧边静音键 / 音量，再确认没有别的 App 占用麦克风或通话通道")
     }
 
     private func beginStream(key: String, src: Int, dst: Int, slot: Int, isPrivate: Bool, at date: Date) {
@@ -1066,7 +1361,9 @@ final class HomebrewClient: ObservableObject {
     }
 
     /// 动态 TG 静默太久会被 BrandMeister 释放，静默超时就再订一次。
+    /// ODTP 的订阅是账号级的，登着就一直有效，不需要这套续订。
     private func renewTalkgroupIfIdle() {
+        guard !isOdtp else { return }
         let target = serverTalkgroup ?? activeTalkgroup
         guard target > 0, state == .online, txTimer == nil else { return }
         guard activeSettings.autoCallOnConnect, activeSettings.autoRenewTalkgroup else { return }
@@ -1085,6 +1382,10 @@ final class HomebrewClient: ObservableObject {
     // MARK: - 上线后核对设备
 
     private func verifyHotspotRegistration() {
+        // ODTP 用的是 7 位 DMR ID，BM 设备库里那条 9 位热点记录跟它对不上，
+        // 查了只会误导，直接跳过。
+        guard !isOdtp else { return }
+
         let id = activeSettings.hotspotId
         guard activeSettings.host.lowercased().contains("brandmeister") else { return }
 
@@ -1163,6 +1464,7 @@ final class HomebrewClient: ObservableObject {
         txTimer = nil
         txBurstsLeft = 0
         dmr_core_reset(core)
+        rw_core_reset(rw)
 
         mic.onFrame = nil
         mic.stop()

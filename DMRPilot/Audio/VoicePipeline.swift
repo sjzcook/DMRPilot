@@ -34,6 +34,9 @@ final class VoicePipeline {
     /// 当前正在出声的通话 key
     private(set) var activeKey: String?
 
+    /// 音频会话/引擎起不来的原因，正常时为 nil。
+    var audioError: String? { player.audioSessionError }
+
     /// 0…1
     var volume: Float = 1.0 {
         didSet { player.volume = volume }

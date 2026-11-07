@@ -57,7 +57,7 @@ final class DMRVoiceDecoder {
         for frame in frames {
             let result = HRFec.decodeAirFrame(frame)
             lastErrorCount = result.errors
-            decoder.decode(bits: result.bits, pcm: &pcm)
+            _ = decoder.decode(bits: result.bits, pcm: &pcm)
             output.append(contentsOf: pcm)
         }
         return output

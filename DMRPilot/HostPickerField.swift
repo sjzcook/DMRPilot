@@ -252,7 +252,9 @@ private struct HostPickerSheet: View {
         Button {
             settings.hostName = host.name
             settings.host = host.hostname
-            settings.port = Int(host.port)
+            // 主机表是 Pi-Star 的 Homebrew 列表（62031）；走 ODTP 时端口固定在 54006，
+            // 不能把表里的端口照抄进来，否则会连到一个不认 Rewind 的端口上。
+            settings.port = settings.linkProtocol == .odtp ? settings.linkProtocol.defaultPort : Int(host.port)
             dismiss()
         } label: {
             HStack(spacing: 8) {

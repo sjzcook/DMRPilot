@@ -29,7 +29,8 @@ struct SettingsView: View {
             HStack {
                 Text("DMR ID")
                 Spacer()
-                TextField("热点编号", text: idBinding)
+                TextField(app.settings.linkProtocol == .odtp ? "7 位 DMR ID" : "7 位，后缀在下面填",
+                          text: idBinding)
                     .keyboardType(.numberPad)
                     .multilineTextAlignment(.trailing)
             }
@@ -44,7 +45,7 @@ struct SettingsView: View {
             }
 
             HStack {
-                Text("Hotspot 密码")
+                Text(app.settings.linkProtocol == .odtp ? "终端密码" : "Hotspot 密码")
                 Spacer()
                 SecureField("必填", text: $app.settings.password)
                     .multilineTextAlignment(.trailing)
@@ -52,7 +53,17 @@ struct SettingsView: View {
         } header: {
             Text("身份")
         } footer: {
-            Text("DMR ID 是热点自己的编号。密码在 BrandMeister 自助页 SelfCare → Hotspot Security 设置，不是登录 BrandMeister 网站用的账号密码。\n呼号只在「上报配置包 RPTC」打开时才会用到（写进配置块的前 8 字节）。这个开关默认打开，所以建议照实填写；关掉之后可以不填。")
+            Text(identityFooter)
+        }
+    }
+
+    /// 身份说明随协议变：ODTP 和 Homebrew 的 ID 位数、密码来源、失败表现都不一样。
+    private var identityFooter: String {
+        switch app.settings.linkProtocol {
+        case .odtp:
+            return "ODTP 登录用的是 7 位 DMR ID（不带热点后缀）+ SelfCare 里给这台终端设的密码。规范原文：RewindVersionData 里的 Remote ID 就是密码对应的那个 DMR ID，不能带热点常用的两位后缀。\n密码不是登录 BrandMeister 网站用的账号密码。注意鉴权失败时服务器不回任何包，客户端只能超时，所以连不上先怀疑密码。\n呼号在 ODTP 下不参与握手，可以不填。"
+        case .homebrew:
+            return "Homebrew 用的是 9 位热点 ID：7 位 DMR ID 后面追加两位别名（4601234 + 01 → 460123401）。这里填 7 位，后缀在下面「服务器」里填，App 会自己算。\n密码在 SelfCare → Hotspot Security 设置，不是登录 BrandMeister 网站用的账号密码。\n呼号只在「上报配置包 RPTC」打开时才会用到（写进配置块的前 8 字节）。这个开关默认打开，所以建议照实填写；关掉之后可以不填。"
         }
     }
 
@@ -62,66 +73,75 @@ struct SettingsView: View {
         Section {
             HostPickerField(store: app.hostStore, settings: $app.settings)
 
+            Picker("协议", selection: linkProtocolBinding) {
+                ForEach(LinkProtocol.allCases) { item in
+                    Text(item.title).tag(item)
+                }
+            }
+
             HStack {
                 Text("端口")
                 Spacer()
-                TextField("62031", text: portBinding)
+                TextField("\(app.settings.linkProtocol.defaultPort)", text: portBinding)
                     .keyboardType(.numberPad)
                     .multilineTextAlignment(.trailing)
             }
 
-            HStack {
-                Text("ESSID 后缀")
-                Spacer()
-                TextField("01", text: essidBinding)
-                    .keyboardType(.numberPad)
-                    .multilineTextAlignment(.trailing)
-                    .frame(maxWidth: 56)
-                Stepper("ESSID", value: $app.settings.essid, in: 0...99)
-                    .labelsHidden()
-            }
-
-            HStack {
-                Text("自定义热点 ID")
-                Spacer()
-                TextField("可空", text: hotspotOverrideBinding)
-                    .keyboardType(.numberPad)
-                    .multilineTextAlignment(.trailing)
-                    .frame(maxWidth: 120)
-            }
-
-            if app.settings.usesEssid || app.settings.hotspotIdOverride > 0 {
+            // 这些只在 Homebrew 下有含义：ODTP 没有热点后缀、没有时隙/色码，
+            // 也不发 RPTC，而且只走 UDP。
+            if app.settings.linkProtocol == .homebrew {
                 HStack {
-                    Text("登录热点 ID")
+                    Text("ESSID 后缀")
                     Spacer()
-                    Text(String(app.settings.hotspotId))
-                        .font(.callout.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            Picker("传输方式", selection: $app.settings.transport) {
-                ForEach(HbTransport.allCases) { transport in
-                    Text(transport.title).tag(transport)
-                }
-            }
-
-            if app.settings.transport == .websocket {
-                HStack {
-                    Text("WS 路径")
-                    Spacer()
-                    TextField("/ws", text: $app.settings.wsPath)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
+                    TextField("01", text: essidBinding)
+                        .keyboardType(.numberPad)
                         .multilineTextAlignment(.trailing)
+                        .frame(maxWidth: 56)
+                    Stepper("ESSID", value: $app.settings.essid, in: 0...99)
+                        .labelsHidden()
                 }
-            }
 
-            Toggle("上报配置包 RPTC（实验性）", isOn: $app.settings.sendConfig)
+                HStack {
+                    Text("自定义热点 ID")
+                    Spacer()
+                    TextField("可空", text: hotspotOverrideBinding)
+                        .keyboardType(.numberPad)
+                        .multilineTextAlignment(.trailing)
+                        .frame(maxWidth: 120)
+                }
+
+                if app.settings.usesEssid || app.settings.hotspotIdOverride > 0 {
+                    HStack {
+                        Text("登录热点 ID")
+                        Spacer()
+                        Text(String(app.settings.hotspotId))
+                            .font(.callout.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Picker("传输方式", selection: $app.settings.transport) {
+                    ForEach(HbTransport.allCases) { transport in
+                        Text(transport.title).tag(transport)
+                    }
+                }
+
+                if app.settings.transport == .websocket {
+                    HStack {
+                        Text("WS 路径")
+                        Spacer()
+                        TextField("/ws", text: $app.settings.wsPath)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .multilineTextAlignment(.trailing)
+                    }
+                }
+                Toggle("上报配置包 RPTC（实验性）", isOn: $app.settings.sendConfig)
+            }
         } header: {
             Text("服务器")
         } footer: {
-            Text("服务器表来自 ds.vu3lvo.com/DMRHosts.txt（Pi-Star 格式），选中后自动填好域名和端口，也可以切到「自定义服务器」手填。\nBrandMeister 的热点是 9 位：7 位 Radio ID 后面追加两位别名，所以登录 ID = DMR ID × 100 + 后缀（DMR ID 4601234 + 后缀 01 → 460123401）。上面那行「登录热点 ID」就是要发给服务器的号码，请和 SelfCare → My Hotspots 里显示的数字逐位对照。不想算就把那串 9 位数字直接填进「自定义热点 ID」，它优先于后缀换算。后缀留 0 表示用 7 位 DMR ID 直接登录（BrandMeister 不认，收不到任何语音）。\nBrandMeister 热点标准走 UDP 62031。\n「上报配置包 RPTC」默认打开，与参考实现 DroidStar 一致：它的握手是三段 RPTL → RPTK → RPTC，收到第三个 RPTACK 才算进入收发状态，那之前下来的 DMRD 一律不处理。只有自建网关 / HBLink 明确不收这个包时才关掉——关掉后就只剩两段，属于非标准流程。\nWebSocket 走 wss，仅部分自建 HBLink 或网关支持。")
+            Text("**ODTP（BrandMeister）**：BrandMeister 现在的手机客户端走的就是这条，UDP 54006。登录用 **7 位 DMR ID**（不带热点后缀）+ SelfCare 密码，登录后发一条显式订阅命令，服务器确认即开始推语音。没有时隙、色码、ESSID 这些概念。\n**Homebrew（MMDVM / HBlink）**：UDP 62031，TGIF / FreeDMR / 自建网关走这条。登录 ID 是 **9 位热点 ID**（7 位 DMR ID 后面追加两位别名，DMR ID 4601234 + 后缀 01 → 460123401），请和 SelfCare → My Hotspots 里那串数字逐位对照；不想算就把 9 位号码直接填进「自定义热点 ID」。这个协议**没有订阅指令**，靠连上后发一次静音发射让服务器记住这个组。\n服务器表来自 ds.vu3lvo.com/DMRHosts.txt（Pi-Star 格式，端口一般是 62031）；BrandMeister 的 ODTP 地址形如 4602.master.brandmeister.network:54006，需要手填。\nWebSocket 走 wss，仅部分自建 HBLink 或网关支持。")
         }
     }
 
@@ -131,34 +151,49 @@ struct SettingsView: View {
         Section {
             Toggle("断线自动重连", isOn: $app.settings.autoReconnect)
 
-            Toggle("连接后自动呼叫通话组", isOn: $app.settings.autoCallOnConnect)
+            Toggle(app.settings.linkProtocol == .odtp ? "连接后自动订阅通话组" : "连接后自动呼叫通话组",
+                   isOn: $app.settings.autoCallOnConnect)
 
             Toggle("跟随服务器下发的通话组", isOn: $app.settings.followServerTalkgroups)
 
-            Toggle("静默后自动续订", isOn: $app.settings.autoRenewTalkgroup)
+            // 时隙 / 色码 / 续订都只属于 Homebrew：ODTP 没有时隙与色码，
+            // 订阅也不会静默过期（会话靠 KEEP_ALIVE 维持）。
+            if app.settings.linkProtocol == .homebrew {
+                Toggle("静默后自动续订", isOn: $app.settings.autoRenewTalkgroup)
 
-            if app.settings.autoRenewTalkgroup {
-                Picker("续订间隔", selection: $app.settings.talkgroupRenewMinutes) {
-                    Text("5 分钟").tag(5)
-                    Text("8 分钟").tag(8)
-                    Text("10 分钟").tag(10)
+                if app.settings.autoRenewTalkgroup {
+                    Picker("续订间隔", selection: $app.settings.talkgroupRenewMinutes) {
+                        Text("5 分钟").tag(5)
+                        Text("8 分钟").tag(8)
+                        Text("10 分钟").tag(10)
+                    }
                 }
-            }
 
-            Picker("呼叫时隙", selection: $app.settings.callSlot) {
-                Text("TS1").tag(1)
-                Text("TS2").tag(2)
-            }
+                Picker("呼叫时隙", selection: $app.settings.callSlot) {
+                    Text("TS1").tag(1)
+                    Text("TS2").tag(2)
+                }
 
-            Picker("色码 CC", selection: $app.settings.colorCode) {
-                ForEach(0...15, id: \.self) { value in
-                    Text("CC\(value)").tag(value)
+                Picker("色码 CC", selection: $app.settings.colorCode) {
+                    ForEach(0...15, id: \.self) { value in
+                        Text("CC\(value)").tag(value)
+                    }
                 }
             }
         } header: {
             Text("行为")
         } footer: {
-            Text("Homebrew 没有「订阅」指令：连上后在通话组上发一次完整 PTT（语音头 + 6 个突发 + 结束符，带嵌入 LC），BrandMeister 才会把这个组标成动态订阅，它的语音也才会推下来。热点页点「确定」切换组时也会自动来一次。\n「跟随服务器下发的通话组」对应参考实现 DroidStar 的接收策略：它收到 DMRD 就直接解，从不按目的地址过滤。BrandMeister 推的是这台热点被订阅的组，其中可能包含 SelfCare 里的静态组——如果它跟你在上面选的不一样，按 TG 硬丢帧就会表现成「订阅没建立」，其实语音一直在下来。关掉这个开关才会严格只听选中的那一个组。\n订阅时隙要和该组在 SelfCare 里挂的时隙一致——中国区多数 TG 在 TS2。\nBrandMeister 的动态订阅静默约 10 分钟会被释放，打开「静默后自动续订」后，App 会在该组连续没有语音时自动再发一次（间隔取上面的值，建议 8 分钟，留出余量）。\n色码只写进我们发出去的语音帧（slot type 与嵌入信令 DMREMB）和上报配置包里的资料字段，**连接与接收都不需要它**：Homebrew 握手没有任何色码校验，收帧也不按色码过滤。只有收听方电台固定了 CC 时才需要跟它一致，BrandMeister 上一般是 CC1。")
+            Text(behaviourFooter)
+        }
+    }
+
+    private var behaviourFooter: String {
+        let follow = "「跟随服务器下发的通话组」是参考实现 DroidStar 的接收策略：收到帧就直接解，从不按目的地址过滤。服务器推的是这个账号被订阅的组，可能包含 SelfCare 里的静态组——它跟你在上面选的不一样时，按 TG 硬丢帧就会表现成「订阅没建立」，其实语音一直在下来。关掉这个开关才会严格只听选中的那一个组。"
+        switch app.settings.linkProtocol {
+        case .odtp:
+            return "ODTP 的订阅是一条显式命令：鉴权通过后立刻发 SUBSCRIPTION(组呼, TG)，服务器回一个空确认包才开始推语音。点「确定」换组会再订一次。订阅不会自己过期，只要 KEEP_ALIVE 还通就一直有效。\n" + follow
+        case .homebrew:
+            return "Homebrew 没有「订阅」指令：连上后在通话组上发一次完整 PTT（语音头 + 12 个突发 + 结束符，带嵌入 LC），BrandMeister 才会把这个组标成动态订阅，它的语音也才会推下来。热点页点「确定」切换组时也会自动来一次。\n" + follow + "\n订阅时隙要和该组在 SelfCare 里挂的时隙一致——中国区多数 TG 在 TS2。\nBrandMeister 的动态订阅静默约 10 分钟会被释放，打开「静默后自动续订」后，App 会在该组连续没有语音时自动再发一次（间隔取上面的值，建议 8 分钟，留出余量）。\n色码只写进我们发出去的语音帧（slot type 与嵌入信令 DMREMB）和上报配置包里的资料字段，连接与接收都不需要它：Homebrew 握手没有任何色码校验，收帧也不按色码过滤。"
         }
     }
 
@@ -200,7 +235,8 @@ struct SettingsView: View {
             HStack {
                 Text("协议")
                 Spacer()
-                Text("Homebrew / MMDVM")
+                Text("ODTP (54006) / Homebrew (62031)")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
             HStack {
@@ -219,7 +255,7 @@ struct SettingsView: View {
         } header: {
             Text("关于")
         } footer: {
-            Text("握手、组帧、编码与拆帧由内置的 C++ 核心完成（Core/DMRCore.cpp，移植自 DroidStar 的 dmr.cpp，GPL-3.0），Swift 只负责网络收发与界面；语音由纯 Swift 的 AMBE+2 半速率解码器还原（同样移植自 DroidStar 的 halfrate，GPL-3.0）。语音开关与音量在「热点」页。")
+            Text("两条链路的握手、组帧与拆帧都在内置的 C++ 核心里：Core/RewindCore.cpp 走 ODTP（移植自 BrandMeister DigestPlay 的 RewindClient，GPL-3.0），Core/DMRCore.cpp 走 Homebrew（移植自 DroidStar 的 dmr.cpp，GPL-3.0）。Swift 只负责网络收发、定时器与界面；语音由纯 Swift 的 AMBE+2 半速率解码器还原（移植自 DroidStar 的 halfrate，GPL-3.0）。语音开关与音量在「热点」页。")
         }
     }
 
@@ -235,7 +271,22 @@ struct SettingsView: View {
     private var portBinding: Binding<String> {
         Binding(
             get: { String(app.settings.port) },
-            set: { app.settings.port = Int($0.filter(\.isNumber)) ?? 62031 }
+            set: { app.settings.port = Int($0.filter(\.isNumber)) ?? app.settings.linkProtocol.defaultPort }
+        )
+    }
+
+    /// 切换协议时同步端口：只有当前端口还是「旧协议的默认值」才跟着换，
+    /// 用户自己改过的端口不动。
+    private var linkProtocolBinding: Binding<LinkProtocol> {
+        Binding(
+            get: { app.settings.linkProtocol },
+            set: { newValue in
+                let old = app.settings.linkProtocol
+                app.settings.linkProtocol = newValue
+                if app.settings.port == old.defaultPort {
+                    app.settings.port = newValue.defaultPort
+                }
+            }
         )
     }
 

@@ -40,6 +40,7 @@
 		FA11C0DE0000000000000105 /* chamming.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE0000000000000005 /* chamming.cpp */; };
 		FA11C0DE0000000000000106 /* CRCenc.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE0000000000000006 /* CRCenc.cpp */; };
 		FA11C0DE0000000000000107 /* SHA256.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE0000000000000007 /* SHA256.cpp */; };
+		FA11C0DE0000000000000110 /* RewindCore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE0000000000000010 /* RewindCore.cpp */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -85,6 +86,8 @@
 		FA11C0DE000000000000000D /* chamming.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = chamming.h; sourceTree = "<group>"; };
 		FA11C0DE000000000000000E /* CRCenc.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CRCenc.h; sourceTree = "<group>"; };
 		FA11C0DE000000000000000F /* SHA256.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SHA256.h; sourceTree = "<group>"; };
+		FA11C0DE0000000000000010 /* RewindCore.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = RewindCore.cpp; sourceTree = "<group>"; };
+		FA11C0DE0000000000000011 /* RewindCore.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RewindCore.h; sourceTree = "<group>"; };
 		FA11C0DE00000000000000FF /* DMRPilot-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = DMRPilot-Bridging-Header.h; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -170,6 +173,7 @@
 			isa = PBXGroup;
 			children = (
 				FA11C0DE0000000000000001 /* DMRCore.cpp */,
+				FA11C0DE0000000000000010 /* RewindCore.cpp */,
 				FA11C0DE0000000000000002 /* crs129.cpp */,
 				FA11C0DE0000000000000003 /* cbptc19696.cpp */,
 				FA11C0DE0000000000000004 /* cgolay2087.cpp */,
@@ -177,6 +181,7 @@
 				FA11C0DE0000000000000006 /* CRCenc.cpp */,
 				FA11C0DE0000000000000007 /* SHA256.cpp */,
 				FA11C0DE0000000000000008 /* DMRCore.h */,
+				FA11C0DE0000000000000011 /* RewindCore.h */,
 				FA11C0DE0000000000000009 /* DMRDefines.h */,
 				FA11C0DE000000000000000A /* crs129.h */,
 				FA11C0DE000000000000000B /* cbptc19696.h */,
@@ -289,6 +294,7 @@
 				FA11C0DE0000000000000105 /* chamming.cpp in Sources */,
 				FA11C0DE0000000000000106 /* CRCenc.cpp in Sources */,
 				FA11C0DE0000000000000107 /* SHA256.cpp in Sources */,
+				FA11C0DE0000000000000110 /* RewindCore.cpp in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

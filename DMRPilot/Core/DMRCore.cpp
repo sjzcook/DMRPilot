@@ -64,7 +64,13 @@ static const uint8_t DMR_SILENCE_AMBE[9] = {0xB9U, 0xE8U, 0x81U, 0x52U, 0x61U, 0
 
 /// 单帧长度：55 字节是 MMDVMHost 2024+ / BrandMeister 的现行格式
 /// （streamId 4 字节 @16…19，载荷 33 字节 @20…52，BER/RSSI @53/54）。
+/// 发送侧固定用 55。
 static const int32_t DMR_FRAME_BYTES = 55;
+
+/// 收帧的下限长度。53 字节的窄帧就是 55 去掉尾部 BER / RSSI 两个字节，
+/// 前面的布局一字不差：载荷同样从 20 开始、同样 33 字节。
+/// 按 55 硬判会把 HBlink3 / 自建网关的整条语音流全部丢掉。
+static const int32_t DMR_FRAME_MIN_BYTES = 53;
 
 /// 发射流号的自增部分（见 dmr_core_tx_begin）。
 static uint32_t g_stream_seq = 0U;
@@ -763,10 +769,14 @@ int32_t dmr_core_receive(dmr_core_t* c, const uint8_t* in, int32_t len, dmr_resu
     }
 
     // ---- 语音 ----
-    // 只认 55 字节 —— 参考实现 DroidStar 就是 `buf.size() == 55` 硬判，这里照抄。
-    // 53 字节的窄帧（省掉 BER / RSSI 两个尾巴）在 HBlink3 与其它实现之间的载荷偏移
-    // 并不一致，与其猜，不如丢一帧：读错偏移会把整段 LC 解成垃圾，还会污染解码器状态。
-    if (len != DMR_FRAME_BYTES || std::memcmp(in, "DMRD", 4) != 0) {
+    // 53 与 55 字节都是合法 DMRD：
+    //   55 = 4 魔法 + 1 序号 + 3 src + 3 dst + 4 peer + 1 flags + 4 stream + 33 载荷 + BER + RSSI
+    //   53 = 同样的布局，只是省掉尾部 BER / RSSI
+    // 两者的载荷都从第 20 字节开始、都是 33 字节，解出来的 LC 与语音完全一样。
+    // 参考实现 DroidStar 是 `buf.size() == 55` 硬判，在 BrandMeister 上够用；
+    // 但 HBlink3 与不少自建网关发的是 53 字节 —— 硬判 55 会让这些服务器
+    // 「握手成功、一帧语音都收不到」，这正是踩过的坑。
+    if (len < DMR_FRAME_MIN_BYTES || std::memcmp(in, "DMRD", 4) != 0) {
         return DMR_EVT_NONE;
     }
 
@@ -809,7 +819,7 @@ int32_t dmr_core_receive(dmr_core_t* c, const uint8_t* in, int32_t len, dmr_resu
 
 int32_t dmr_core_tx_begin(dmr_core_t* c, uint32_t talkgroup, uint8_t slot,
                           uint8_t color_code, uint8_t* out, int32_t cap) {
-    if (c == NULL || out == NULL || cap < 55) {
+    if (c == NULL || out == NULL || cap < DMR_FRAME_BYTES) {
         return 0;
     }
 
@@ -828,13 +838,13 @@ int32_t dmr_core_tx_begin(dmr_core_t* c, uint32_t talkgroup, uint8_t slot,
     encode_header(c, DT_VOICE_LC_HEADER);
     build_frame(c);
 
-    std::memcpy(out, c->frame, 55U);
+    std::memcpy(out, c->frame, size_t(DMR_FRAME_BYTES));
     c->dmr_cnt++;
-    return 55;
+    return DMR_FRAME_BYTES;
 }
 
 int32_t dmr_core_tx_burst(dmr_core_t* c, const uint8_t* codec27, uint8_t* out, int32_t cap) {
-    if (c == NULL || out == NULL || cap < 55 || !c->tx_active) {
+    if (c == NULL || out == NULL || cap < DMR_FRAME_BYTES || !c->tx_active) {
         return 0;
     }
     if (codec27 == NULL) {
@@ -850,13 +860,13 @@ int32_t dmr_core_tx_burst(dmr_core_t* c, const uint8_t* codec27, uint8_t* out, i
     encode_data(c);
     build_frame(c);
 
-    std::memcpy(out, c->frame, 55U);
+    std::memcpy(out, c->frame, size_t(DMR_FRAME_BYTES));
     c->dmr_cnt++;
-    return 55;
+    return DMR_FRAME_BYTES;
 }
 
 int32_t dmr_core_tx_end(dmr_core_t* c, uint8_t* out, int32_t cap) {
-    if (c == NULL || out == NULL || cap < 55) {
+    if (c == NULL || out == NULL || cap < DMR_FRAME_BYTES) {
         return 0;
     }
     if (!c->tx_active) {
@@ -866,10 +876,10 @@ int32_t dmr_core_tx_end(dmr_core_t* c, uint8_t* out, int32_t cap) {
     encode_header(c, DT_TERMINATOR_WITH_LC);
     build_frame(c);
 
-    std::memcpy(out, c->frame, 55U);
+    std::memcpy(out, c->frame, size_t(DMR_FRAME_BYTES));
     c->dmr_cnt++;
     c->tx_active = false;
-    return 55;
+    return DMR_FRAME_BYTES;
 }
 
 int32_t dmr_core_tx_active(dmr_core_t* c) {

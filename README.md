@@ -1,10 +1,17 @@
 # DMR Pilot —— 连接 BrandMeister 的 iOS App
 
-Swift + SwiftUI 写的 BrandMeister 客户端，三条腿：
+Swift + SwiftUI 写的 BrandMeister 客户端，两条链路 + 一条查询腿：
 
-1. **真协议连接**：以 MMDVM / Homebrew 热点身份登录 BrandMeister Master，完成 `RPTL → RPTK → RPTC` 三段握手，用 `RPTPING/MSTPONG` 保持心跳，然后持续接收 `DMRD` 语音数据帧，本地聚合成实时通话列表。握手、组帧、拆帧全部在 **C++ 协议核心里**（`DMRPilot/Core/DMRCore.cpp`，去 Qt 之后的 DroidStar `dmr.cpp` 直译），Swift 只负责 UDP / WebSocket、定时器、音频与界面。
-2. **真的能出声**：C++ 核心把 `DMRD` 的 33 字节载荷拆成 3 个 9 字节空中帧，交给**纯 Swift 实现的 AMBE+2 半速率解码器**还原成 8 kHz PCM，用 `AVAudioEngine` 播出来。声码器（FEC、反量化、谐波合成、增强、限幅）全部是 Swift，不依赖第三方二进制。
-3. **REST 查询**：`api.brandmeister.network/v2` 的设备详情与全球通话组名称表。
+1. **ODTP（默认，BrandMeister 手机端现在走的这条）**：UDP **54006**，协议是 Rewind / Open DMR Terminal。
+   `KEEP_ALIVE → CHALLENGE → AUTHENTICATION → SUBSCRIPTION`，订阅是**显式命令**（`type=7` 组呼），
+   收到确认就开始推语音；语音帧直接就是 27 字节 mode-33 AMBE，喂给解码器就行，不用拆 LC、不用反交织。
+   实现在 `DMRPilot/Core/RewindCore.cpp`。
+2. **Homebrew（TGIF / FreeDMR / 自建网关）**：UDP **62031**，以 MMDVM 热点身份完成 `RPTL → RPTK → RPTC`
+   三段握手，用 `RPTPING/MSTPONG` 保活，收 `DMRD` 55 字节帧。这个协议**没有订阅指令**，
+   要靠连上后发一次静音发射让服务器记事。握手机器在 `DMRPilot/Core/DMRCore.cpp`（去 Qt 之后的 DroidStar `dmr.cpp` 直译）。
+3. **真的能出声**：两条链路最终都交出 3 个 9 字节 AMBE 帧，交给**纯 Swift 实现的 AMBE+2 半速率解码器**
+   还原成 8 kHz PCM，用 `AVAudioEngine` 播出来。声码器（FEC、反量化、谐波合成、增强、限幅）全部是 Swift。
+4. **REST 查询**：`api.brandmeister.network/v2` 的设备详情与全球通话组名称表。
 
 ---
 
@@ -19,18 +26,20 @@ DMRApp/
 │   ├── AppState.swift           # 设置持久化 / 通话组缓存 / 我的设备
 │   ├── Models.swift             # BmDevice / Settings / LiveCall / LogEntry
 │   ├── BrandMeisterAPI.swift    # v2 REST 客户端
-│   ├── Core/                    # ★ 协议核心（C++，移植自 DroidStar，GPL-3.0）
-│   │   ├── DMRCore.h                # 纯 C 接口：Swift 经桥接头调用
+│   ├── Core/                    # ★ 协议核心（C++，移植自 DroidStar / DigestPlay，GPL-3.0）
+│   │   ├── DMRCore.h                # 纯 C 接口：Homebrew
 │   │   ├── DMRCore.cpp              # 握手状态机 + 组帧 / 拆帧 / 编码链
+│   │   ├── RewindCore.h             # 纯 C 接口：ODTP / Rewind
+│   │   ├── RewindCore.cpp           # KEEP_ALIVE 登录 + 显式订阅 + 27 字节语音帧
 │   │   ├── DMRDefines.h             # 同步字、静音 AMBE、突发类型
 │   │   ├── crs129.cpp               # RS(12,9) 12,9,3 里德-所罗门
 │   │   ├── cbptc19696.cpp           # BPTC(196,96) 交织 + 汉明
 │   │   ├── cgolay2087.cpp           # Golay(20,8) slot type
 │   │   ├── chamming.cpp             # Hamming(16,11) 嵌入 LC
 │   │   ├── CRCenc.cpp               # 嵌入 LC 的 CRC-5
-│   │   └── SHA256.cpp               # RPTK 的挑战应答
+│   │   └── SHA256.cpp               # RPTK / AUTHENTICATION 的挑战应答
 │   ├── DMRPilot-Bridging-Header.h   # SWIFT_OBJC_BRIDGING_HEADER
-│   ├── HomebrewClient.swift     # UDP / WebSocket 传输 + 定时器 + 界面状态
+│   ├── HomebrewClient.swift     # 传输 + 定时器 + 两条链路的分发 + 界面状态
 │   ├── RootView.swift           # TabView
 │   ├── HotspotView.swift        # 状态卡 + 电平表 + 实时通话
 │   ├── DirectoryView.swift      # 设备查询 + 通话组搜索
@@ -57,8 +66,9 @@ DMRApp/
 ├── Logo/                        # 图标设计稿与对比图
 ├── tools/
 │   ├── gen_tables.py            # 从 DroidStar 源码抽取数值表生成 HalfrateTables.swift
-│   ├── core_check.py            # C++ 发射路径的逐字节核对（对着 DroidStar 的 Python 复刻）
+│   ├── core_check.py            # Homebrew 发射路径的逐字节核对（对着 DroidStar 的 Python 复刻）
 │   ├── dmr_ref.py               # DroidStar 的 TX 路径 Python 复刻，core_check 的参照
+│   ├── rewind_check.py          # ODTP 拼包 + 拆包双向核对（对着 BrandMeister 规范）
 │   ├── enc_check.py             # 编码器「量化 → 反量化」闭环检查
 │   └── gen_icon.py              # 用代码精确绘制 App icon
 └── README.md
@@ -94,17 +104,19 @@ python tools/gen_icon.py
 2. 双击 `DMRPilot.xcodeproj`。
 3. 选中 `DMRPilot` target → *Signing & Capabilities* → 勾 **Automatically manage signing**，选自己的 Team。Bundle ID 已设为 `com.sjzcook.dmrpilot`，若你的开发者账号下这个名字被占用，改成 `com.sjzcook.dmrpilot.你的后缀` 即可。
 4. 选真机或模拟器运行。模拟器可以验证 REST 查询；**UDP 热点连接建议真机**（模拟器共享宿主网络，收包行为不稳定）。
-5. 打开「设置」页填三项：DMR ID、Hotspot 密码、（可选）呼号，然后点「保存并连接」。
+5. 打开「设置」页：先选**协议**（默认 ODTP），再填 DMR ID、密码、（Homebrew 下才需要）呼号，然后点「保存并连接」。
 
 > 如果工程打不开：新建一个 iOS App 工程（SwiftUI 模板），把 `DMRPilot/` 下**所有子目录**里的 `.swift` 都拖进去并勾选 target，效果一样。
 
 ### BrandMeister 侧要准备什么
 
-| 项 | 在哪拿 |
-|---|---|
-| **DMR ID**（热点自己的编号，不是你的个人 ID） | 自助页 SelfCare 创建 Hotspot 后分配 |
-| **Hotspot Security 密码** | SelfCare → 你的热点 → Hotspot Security（不是网站账号密码） |
-| 服务器 / 端口 | 设置页下拉列表里选，自动带出域名与端口 |
+| 项 | ODTP（默认） | Homebrew |
+|---|---|---|
+| **ID** | **7 位 DMR ID**，不带后缀 | **9 位热点 ID**（7 位 + 两位别名） |
+| **密码** | SelfCare 里给这台终端设的密码 | SelfCare → 你的热点 → Hotspot Security |
+| 服务器 / 端口 | `<地区>.master.brandmeister.network` : **54006** | 设置页下拉列表里选，自动带出域名与端口（62031） |
+
+两种都**不是**登录 BrandMeister 网站用的账号密码。
 
 ### 服务器列表
 
@@ -223,6 +235,10 @@ $ python tools/enc_check.py
 
 位置：设置 → 行为（开关与时隙）、热点页 → 通话组（点「确定」触发）。
 
+> **协议不同，订阅方式完全不同。** ODTP 有一条真正的订阅命令，服务器会回确认包；
+> 下面是 Homebrew 的做法——它没有订阅指令，只能靠「发一次静音发射」让服务器自己记事。
+> ODTP 下点「确定」会直接发 `SUBSCRIPTION`，日志里看得到 `→ 已订阅 TG xxx` 和 `← 鉴权通过` 之后的确认。
+
 - **连接成功后 2 秒**自动向设置里的通话组订阅一次；**点「确定」切换组**时也来一次。
   两者都受「连接后自动呼叫通话组」开关控制，时隙在「呼叫时隙」里选（默认 TS2）。
   延迟 2 秒是故意的：DroidStar 靠人按键，天然比上线晚几秒；自动发就得自己留出
@@ -334,7 +350,85 @@ $ python tools/enc_check.py
 
 ## 协议实现说明
 
-### 握手
+### 先选链路
+
+| | ODTP / Rewind | Homebrew |
+|---|---|---|
+| 端口 | **54006** | **62031** |
+| 谁用 | BrandMeister（官方手机端 / DroidStar iOS 都走这条） | TGIF、FreeDMR、HBlink、自建网关 |
+| 登录身份 | **7 位 DMR ID**（不带后缀）+ 终端密码 | **9 位热点 ID**（7 位 + 两位别名）+ Hotspot Security 密码 |
+| 订阅 | **显式 `SUBSCRIPTION` 命令**，服务器回确认 | **没有订阅指令**，靠发一次静音发射 |
+| 语音载荷 | 27 字节 mode-33 AMBE，直接用 | 33 字节 DMRD 载荷，要 RS / BPTC / 交织 / 同步字 |
+| 时隙 / 色码 | 没有这些概念 | 都要自己凑（色码服务器其实不看） |
+
+设置页「协议」一栏就是切这个，端口会跟着自动改。**默认是 ODTP**，因为 BrandMeister 上它比 Homebrew 稳：
+Homebrew 那套要靠「按一次话筒」让服务器记住组，漏一次就整段静音；ODTP 的订阅有确认包，说得清。
+
+### ODTP / Rewind（BrandMeister 54006）
+
+协议来源：[BrandMeister Wiki · Open DMR Terminal Protocol](https://wiki.brandmeister.network/index.php/Open_DMR_Terminal_Protocol)
+与参考实现 [DigestPlay（ODMRTP 分支）](https://github.com/BrandMeister/DigestPlay/tree/ODMRTP)。
+字段与常量以该分支的 `Rewind.h` 为准，实现在 `DMRPilot/Core/RewindCore.cpp`。
+
+**包结构：18 字节头 + 载荷，全部小端**
+
+| 偏移 | 长度 | 含义 |
+|---|---|---|
+| 0…7 | 8 | 签名 `REWIND01` |
+| 8…9 | 2 | 类型 `REWIND_TYPE_*` |
+| 10…11 | 2 | 标志（实时数据必须带 `REAL_TIME_1 = 0x0001`） |
+| 12…15 | 4 | 序号 |
+| 16…17 | 2 | 载荷长度 |
+| 18… | n | 载荷 |
+
+**登录（没有独立的 login 包）**
+
+```
+App                                  Master
+ |── KEEP_ALIVE (VersionData) ───────▶|   number=7 位 DMR ID, service=0x21(Open Terminal), 后接软件名
+ |◀──────────────── CHALLENGE (盐) ───|
+ |── AUTHENTICATION (32B) ───────────▶|   SHA256(盐 ‖ 密码)
+ |◀──── KEEP_ALIVE（空）──────────────|   鉴权成功才回；失败**什么都不回**，只能等超时
+ |── KEEP_ALIVE（心跳，顺便触发确认）─▶|
+ |── SUBSCRIPTION (type=7, number=TG)▶|
+ |◀──── SUBSCRIPTION（空）────────────|   订阅成功
+ |◀──── DMR_DATA_BASE+1 / AUDIO / +2 ─|   语音头 / 语音帧 / 结束符
+```
+
+几处容易踩的点，都写在核心注释里了：
+
+- **两个序号计数器**：常规包一个、实时包（`DATA_BASE` 到 `AUDIO_FRAME`）一个。实时包用哪个计数器
+  由 `flags & REAL_TIME_1` 决定，不是随便挑一个。
+- **Remote ID 是 7 位**：规范原文「That DMR ID must not include the two-digit suffix commonly used for hotspots」。
+  填 9 位会算出错误的 SHA256，症状就是「一直没反应」——因为失败时服务器**不回包**（不是回错误码）。
+- **鉴权成功后客户端还要再发一次心跳**：参考实现 `ConnectRewindClient` 回完 `AUTHENTICATION` 就
+  `continue` 回到循环顶部，等于紧接着又发一个 `KEEP_ALIVE`。本 App 照做，能兜住那些要等下个心跳才确认的 master。
+- **重复帧必须同序号**：语音头和结束符各发 2～3 次提高投递率，但要用**同一个序号**（服务器按序号去重），
+  所以 `rw_core_tx_header_again()` 会把计数器退回一格再拼包，而不是生成一个新序号。
+- **长发射要插心跳**：连发 83 个语音帧（约 5 秒）就插一个 `KEEP_ALIVE`，与 DigestPlay 的 `count % 83` 一致。
+
+**收语音**
+
+语音头是 12 字节 Full LC，和 Homebrew 那条的 LC 内容一致，只是**不带纠错编码**：
+
+```
+byte0  flco(6) | reserved(1) | protect(1)     flco 0 = 组呼，3 = 单呼
+byte1  FID                                    0
+byte2  服务选项
+byte3…5  目的地址（3 字节大端）
+byte6…8  源地址（3 字节大端）
+byte9…11 CRC                                 DigestPlay 全填 0，服务器不校验
+```
+
+`REWIND_TYPE_DMR_AUDIO_FRAME` 的载荷就是 **27 字节 = 3 × 9 字节 mode-33 AMBE**，
+也就是 DMR 一个突发里的三帧。所以 ODTP 的接收路径比 Homebrew 短一截：不用找同步字、
+不用反交织、不用 RS 纠错，`result.codec[27]` 直接进 `DMRVoicePath`。
+
+> 调试口诀：`tools/rewind_check.py` 会把「拼包」和「拆包」两边都对着规范逐字节跑一遍。
+> 收不到语音时先看日志里有没有 `← 鉴权通过` / `→ 已订阅 TG xxx` / `← 服务器返回失败码`，
+> 三条分别对应「密码错 / 组没权限 / 根本没连上」。
+
+### 握手（Homebrew）
 
 ```
 App                          Master
@@ -390,10 +484,11 @@ App                          Master
 - **53 字节版本只是省掉了 BER / RSSI 两个尾巴**，streamId 仍是 4 字节、载荷仍从 20 开始。
   以前按长度分「窄帧 / 宽帧」两套偏移是错的：HBlink3 读的是 `_data[16:20]` 与 `_data[20:53]`，
   参考实现（`BMClient.handleDMRD`）也是 `bytes[20..<53]`，两边都印证这一点。
-- 但**接收侧只认 55 字节**，和参考实现 DroidStar 一样硬判（`buf.size() == 55`）。
-  BrandMeister 的 master 出站固定 55 字节，53 字节的帧只可能来自另一套实现，
-  而且它在各家实现里的载荷偏移并不统一——与其猜，宁可丢。
-- MMDVMHost 出站固定发 55 字节，本 App 跟随它。
+- **接收侧 53 与 55 都收**（`len >= 53`）。参考实现 DroidStar 是 `buf.size() == 55` 硬判，
+  在 BrandMeister 上够用；但 HBlink3 和不少自建网关发的是 53 字节，
+  按 55 硬判会让这些服务器「握手成功、一帧语音都收不到」——这个坑踩过一次。
+  两种长度的载荷都从第 20 字节开始、都是 33 字节，解出来的 LC 与语音完全一致。
+- **发送侧固定 55 字节**，与 MMDVMHost 出站一致。
 
 标志位第 15 字节：
 
@@ -440,7 +535,26 @@ App                          Master
 
 ## 常见问题
 
-**`MSTNAK` / 一直登录超时**
+**ODTP（54006）连不上：一直停在「发送登录请求…」或「鉴权中…」**
+
+ODTP 的失败表现和 Homebrew 完全不同——**鉴权失败时服务器一个包都不回**（规范如此），
+所以只能靠超时看出来。按日志停在哪一步判断：
+
+| 日志最后一行 | 含义 | 处理 |
+|---|---|---|
+| `→ KEEP_ALIVE 登录` 之后再无任何 `←` | 服务器没理这个连接 | 地址要是 `<地区>.master.brandmeister.network`，端口 **54006**；确认这个网络没封 UDP |
+| `← 收到挑战盐` 但一直没有「鉴权通过」 | **密码错**（服务器对失败鉴权保持沉默） | 核对 SelfCare 里这台终端的密码；注意这里要的是**7 位 DMR ID**，不是 9 位热点 ID |
+| `← 鉴权通过` 但没有订阅确认 | 订阅没被接受 | 看有没有 `← 服务器返回失败码`；那个组可能没对这台终端开放 |
+| `← 服务器返回失败码 N` | 订阅被拒 / 会话不被允许 | 换一个组试；或先到 SelfCare 确认这个 ID 有权收这个组 |
+| `← 服务器：...` | 服务器的文本报告，通常写得很直白 | 按文字处理 |
+
+另外两个坑：
+
+- **不要填 9 位热点 ID**。规范写明 `RewindVersionData.number` 是「密码对应的那个 DMR ID，
+  不能带热点常用的两位后缀」。填 9 位算出来的 SHA256 一定不对，而且失败时没有错误码，只表现为超时。
+- **同一个 ID 不能同时登两台设备**（手机 + 盒子）。先登的那条会被后登的顶掉，日志里表现为连接不断被关。
+
+**`MSTNAK` / 一直登录超时（Homebrew）**
 1. 日志里那条 `← MSTNAK / MSTCL` 会带上**阶段**（`state.label`，如「发送登录请求…」「鉴权中…」「上报热点配置…」），
    按阶段判断：
    - 登录阶段就被拒 —— ID 不认。没在 SelfCare 注册、或 9 位 ID 填错
@@ -532,6 +646,8 @@ DMRD 55 字节
   `dmr.cpp` 去 Qt 之后的直译，编码链的算法文件（`crs129` / `cbptc19696` / `cgolay2087` /
   `chamming` / `CRCenc` / `SHA256`）是 MMDVMHost 的原文件，两者都以 **GPL-3.0-or-later** 发布。
   因此 `Core/` 同样受 GPL-3.0 约束：**分发二进制时必须提供完整源码**。
+- `Core/RewindCore.cpp` 是照着 [BrandMeister DigestPlay（ODMRTP 分支）](https://github.com/BrandMeister/DigestPlay/tree/ODMRTP)
+  （作者 Artem Prilutskiy / R3ABM）的 `Rewind.h` / `RewindClient.c` 重写的，同样是 **GPL-3.0-or-later**。
 - 本目录 `Vocoder/` 下的解码器**移植自 [DroidStar](https://github.com/nostar/DroidStar) 的 `mbe/` 子系统**
   （原作者 David Rowe / N0MJS 等），该子系统以 **GPL-3.0-or-later** 发布。
   因此 `Vocoder/` 下的这些 Swift 文件同样受 GPL-3.0 约束。
@@ -562,6 +678,9 @@ DMRD 55 字节
 - C++ 核心的**发射路径已做逐字节验证**：`tools/core_check.py` 把 `DMRCore.cpp` 的状态机照抄成 Python，
   与 `tools/dmr_ref.py`（DroidStar TX 路径的复刻）在 TG 46001 / 91、CC 0/1/15、TS1/TS2 下比对
   语音头 / 6 个突发 / 第二轮首突发 / 结束符，全部一致，并做了「突发 → 拆帧」往返。
+- ODTP 那一层做了**收发双向**核对：`tools/rewind_check.py` 按 BrandMeister 规范检查 18 字节头、
+  小端序、VersionData、订阅内容、语音头重发（同序号）、以及「服务器 → 客户端」的 CHALLENGE / 空 KEEP_ALIVE /
+  语音头偏移 / 27 字节语音帧，全部一致。
 - 声码器按 DroidStar 的 `mbe/` 逐函数移植，常量用十六进制浮点原样搬。
 - 但**本机没有 Swift / Clang 工具链，全部代码未经真机编译验证**。首次编译若有零星报错
   （多为 SDK 版本差异导致的 API 签名，或桥接头路径），按提示改一处即可，不影响整体结构。

@@ -79,6 +79,50 @@ enum HbTransport: String, Codable, CaseIterable, Identifiable {
 
 // MARK: - 设置
 
+/// 连接 DMR 服务器用的协议。两者**互不相通**，端口和登录方式都不一样：
+///
+/// - `odtp`：BrandMeister 的 Open DMR Terminal Protocol（Rewind），UDP **54006**。
+///   订阅是显式命令，登录用 7 位 DMR ID + SelfCare 密码，没有时隙 / 色码。
+///   DroidStar 的 iOS 版在 BrandMeister 上默认走这条。
+/// - `homebrew`：MMDVM / HBlink 的 Homebrew 协议，UDP **62031**。
+///   登录用 9 位热点 ID，订阅靠「发一次真实发射」。TGIF / FreeDMR / 自建网关走这条。
+enum LinkProtocol: String, Codable, CaseIterable, Identifiable {
+    case odtp
+    case homebrew
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .odtp: return "ODTP（BrandMeister）"
+        case .homebrew: return "Homebrew（MMDVM / HBlink）"
+        }
+    }
+
+    var short: String {
+        switch self {
+        case .odtp: return "ODTP"
+        case .homebrew: return "Homebrew"
+        }
+    }
+
+    /// 该协议的默认端口。
+    var defaultPort: Int {
+        switch self {
+        case .odtp: return 54006
+        case .homebrew: return 62031
+        }
+    }
+
+    /// 这个协议用哪种身份：ODTP 是 7 位 DMR ID，Homebrew 是 9 位热点 ID。
+    var identityHint: String {
+        switch self {
+        case .odtp: return "DMR ID（7 位）+ SelfCare 密码"
+        case .homebrew: return "热点 ID（9 位）+ Hotspot Security 密码"
+        }
+    }
+}
+
 struct Settings: Codable, Equatable {
     /// 热点自身的 DMR ID（不是你的个人呼号 ID）
     var dmrId: Int = 0
@@ -96,9 +140,16 @@ struct Settings: Codable, Equatable {
     /// 从 DMRHosts.txt 选中的服务器名字（如 BM_4602_China）；空字符串表示自定义域名。
     /// 只用于回显下拉框选中态，连接时真正用的是 host / port。
     var hostName: String = ""
-    var host: String = "api.brandmeister.network"
-    var port: Int = 62031
+    /// 默认给一台 BrandMeister master。**不能**用 `api.brandmeister.network`——
+    /// 那是 REST 接口的域名，54006 上没有任何服务。ODTP 的地址形如
+    /// `<地区>.master.brandmeister.network`（中国区 4601 / 4602）。
+    var host: String = "4601.master.brandmeister.network"
+    /// 默认跟着默认协议走（ODTP = 54006）。
+    var port: Int = 54006
     var transport: HbTransport = .udp
+    /// 服务器说哪种协议。默认 ODTP —— 目标是 BrandMeister，而且它的订阅是显式命令，
+    /// 不像 Homebrew 那样需要「发一次静音发射」去碰运气。
+    var linkProtocol: LinkProtocol = .odtp
     /// WebSocket 路径，仅在 transport == .websocket 时生效
     var wsPath: String = "/ws"
     /// 登录成功后是否上报 `RPTC` 配置包（302 字节：呼号 / 频率 / 位置 / 软件名）。
@@ -251,6 +302,14 @@ extension Settings {
         host = try container.decodeIfPresent(String.self, forKey: .host) ?? defaults.host
         port = try container.decodeIfPresent(Int.self, forKey: .port) ?? defaults.port
         transport = try container.decodeIfPresent(HbTransport.self, forKey: .transport) ?? defaults.transport
+        // 老存档（这个键还不存在的年代）只可能是 Homebrew：那会儿填的是 9 位热点 ID
+        // 和 62031。决不能把它悄悄切到 ODTP —— ODTP 要 7 位 ID，切过去会连不上，
+        // 而用户并不知道发生了什么。新装用户的 Settings() 走默认值，不受这里影响。
+        if let stored = try container.decodeIfPresent(LinkProtocol.self, forKey: .linkProtocol) {
+            linkProtocol = stored
+        } else {
+            linkProtocol = .homebrew
+        }
         wsPath = try container.decodeIfPresent(String.self, forKey: .wsPath) ?? defaults.wsPath
         sendConfig = try container.decodeIfPresent(Bool.self, forKey: .sendConfig) ?? defaults.sendConfig
         autoReconnect = try container.decodeIfPresent(Bool.self, forKey: .autoReconnect) ?? defaults.autoReconnect

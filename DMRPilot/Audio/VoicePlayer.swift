@@ -25,6 +25,9 @@ final class VoicePlayer {
     private var isRunning = false
     private var isAttached = false
     private var pendingFrames = 0
+    /// 最近一次配置 AVAudioSession 的失败原因，成功时为 nil。
+    /// 这段失败以前被静默吞掉，症状就是「有通话但完全没声音」，所以留出来给界面提示。
+    private(set) var audioSessionError: String?
     /// 引擎启动失败次数。push 每个语音包都会试着调 start()，
     /// 如果硬件真的起不来，不拦住就会 25 次/秒反复尝试。
     private var startFailures = 0
@@ -59,11 +62,16 @@ final class VoicePlayer {
         #if os(iOS)
         let session = AVAudioSession.sharedInstance()
         do {
-            // playback + mixWithOthers：不打断用户正在听的音乐，也允许被别的 App 混音
-            try session.setCategory(.playback, mode: .voiceChat, options: [.mixWithOthers])
+            // 只用 .playback + .default：`.voiceChat` 这个 mode 是给 .playAndRecord 的，
+            // 和 .playback 组合属于非法搭配，setCategory 会抛错 —— 抛错后 session 就停在
+            // 系统默认的 soloAmbient（会被响铃/静音键静音），表现正是「连上了、有通话、
+            // 却一点声音都没有」。mixWithOthers 让本 App 不打断用户正在听的音乐。
+            try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
             try session.setActive(true)
+            audioSessionError = nil
         } catch {
             // 会话起不来时仍然尝试启动引擎，真正的失败会在 engine.start() 暴露
+            audioSessionError = error.localizedDescription
         }
         #endif
 
@@ -79,6 +87,7 @@ final class VoicePlayer {
         } catch {
             isRunning = false
             startFailures += 1
+            audioSessionError = "音频引擎启动失败：\(error.localizedDescription)"
             return
         }
 

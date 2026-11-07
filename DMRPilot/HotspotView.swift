@@ -350,7 +350,7 @@ struct HotspotView: View {
         } header: {
             Text("通话组")
         } footer: {
-            Text("输入号码后点「确定」，App 会向这个组订阅一次；留空再点「确定」= 听全部。单呼只要发给你，照样会响。\n订阅 = 一次完整发射：语音头 + 12 个语音突发（两个超帧，带嵌入 LC）+ 结束符，约 0.75 秒。BrandMeister 收到后把它记为动态订阅，这个组的语音才会推下来；静默一段时间后 App 会自动再来一次续上（设置 → 行为 里可调）。\n接收侧照参考实现 DroidStar：服务器推什么就解什么，不按目的地址丢帧。所以「正在收听」和「服务器实际下发」可能不是同一个组 —— BrandMeister 推的是这台热点被订阅的全部组，包括 SelfCare 里的静态组。想只听选中的那一个，去设置 → 行为 关掉「跟随服务器下发的通话组」。")
+            Text("输入号码后点「确定」订阅这个组；留空再点「确定」= 听全部。单呼只要发给你，照样会响。\n**ODTP（BrandMeister）**：订阅是一条显式的 SUBSCRIPTION 命令，服务器回执后立即生效，不需要发射。\n**Homebrew（MMDVM / HBlink）**：没有订阅指令，实际做法是发一次完整发射——语音头 + 12 个语音突发（两个超帧，带嵌入 LC）+ 结束符，约 0.75 秒，服务器把这台热点记成动态订阅；静默一段时间后 App 会自动再续一次（设置 → 行为 里可调）。\n接收侧照参考实现 DroidStar：服务器推什么就解什么，不按目的地址丢帧。所以「正在收听」和「服务器实际下发」可能不是同一个组 —— 服务器推的往往是这台热点被订阅的全部组，包括 SelfCare 里的静态组。想只听选中的那一个，去设置 → 行为 关掉「跟随服务器下发的通话组」。")
         }
     }
 
@@ -471,7 +471,10 @@ struct HotspotView: View {
             parts.append("TG \(speaker.dst)")
         }
 
-        parts.append("TS\(speaker.slot)")
+        // ODTP 没有时隙概念，标个 TS2 只会误导
+        if app.settings.linkProtocol == .homebrew {
+            parts.append("TS\(speaker.slot)")
+        }
 
         // 主行已经是呼号时才重复显示 ID；主行本来就是 ID 的话没必要再来一遍。
         if callsigns.callsign(for: speaker.src) != nil {
