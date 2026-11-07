@@ -140,7 +140,14 @@ struct PTTSendIntent: AppIntent {
     /// 只在后台跑：不想按一下 Action Button 就把 App 弹到前台。
     static var openAppWhenRun: Bool = false
 
-    @Parameter(title: "持续秒数", description: "1–120 秒", default: 10, inclusiveRange: 1...120)
+    // 注意：这里**不要**写 `inclusiveRange: 1...120`。
+    // Xcode 27 的 AppIntents 把 `inclusiveRange` 重载成「两个编译期字面量」
+    // （`(lowerBound:upperBound:)` 的 tuple），传 `ClosedRange` 会直接编译失败：
+    //   error: cannot convert value of type 'ClosedRange<Int>' to expected
+    //          argument type '(lowerBound: Int, upperBound: Int)'
+    //   error: expect a compile-time constant literal
+    // 范围改由 `perform()` 里的 clamp 保证，`description` 里也写明了 1–120。
+    @Parameter(title: "持续秒数", description: "1–120 秒", default: 10)
     var seconds: Int
 
     init() {}
