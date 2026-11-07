@@ -64,11 +64,16 @@ jobs:
                         "重复的 ID 只有一条生效，另一个文件会被静默排除")
                   bad = True
 
-          # 2) 每个 Swift 源文件都要在工程里登记
-          for swift in sorted(pathlib.Path("DMRPilot").rglob("*.swift")):
-              if f"path = {swift.name};" not in proj:
-                  print(f"::error file={swift}::{swift} 没有登记进 project.pbxproj")
-                  bad = True
+          # 2) 每个 Swift 源文件都要在工程里登记。
+          #    主 App 和 Widget 扩展（Live Activity / 灵动岛）两个目录都要扫。
+          SOURCE_DIRS = [pathlib.Path("DMRPilot"), pathlib.Path("DMRPilotWidget")]
+          for folder in SOURCE_DIRS:
+              if not folder.is_dir():
+                  continue
+              for swift in sorted(folder.rglob("*.swift")):
+                  if f"path = {swift.name};" not in proj:
+                      print(f"::error file={swift}::{swift} 没有登记进 project.pbxproj")
+                      bad = True
 
           # 2b) C++ 与头文件也要登记。.cpp / .cc 还必须进 Sources——
           #     漏了不会报编译错误，要到链接期才炸出一堆 undefined symbol。
@@ -105,7 +110,8 @@ jobs:
           names = dict(re.findall(r"^\t\t([0-9A-F]{24}) /\* (.+?) \*/", proj, re.M))
           for oid, ref in re.findall(r"^\t\t([0-9A-F]{24}) /\* .+? \*/ = \{isa = PBXBuildFile; fileRef = ([0-9A-F]{24})", proj, re.M):
               name = names.get(ref, "")
-              if name.endswith((".swift", ".cpp", ".cc")) and not list(pathlib.Path("DMRPilot").rglob(name)):
+              on_disk = any(list(d.rglob(name)) for d in SOURCE_DIRS if d.is_dir())
+              if name.endswith((".swift", ".cpp", ".cc")) and not on_disk:
                   print(f"::error file={proj_path}::{name} 在 Sources 里，但磁盘上找不到这个文件")
                   bad = True
 
@@ -147,6 +153,19 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             archive
+
+      - name: Verify widget / Live Activity wiring
+        shell: bash
+        run: |
+          # 不设 -e：这两项缺了只是功能少一块，不应该让整包失败，但要在日志里喊出来。
+          set -uo pipefail
+          APP_PATH="$PWD/build/DMRPilot.xcarchive/Products/Applications/DMRPilot.app"
+          echo "--- Info.plist 的实时活动开关"
+          /usr/libexec/PlistBuddy -c "Print :NSSupportsLiveActivities" "$APP_PATH/Info.plist" \
+            || echo "::warning::NSSupportsLiveActivities 没写进 Info.plist，锁定屏幕/灵动岛不会出现"
+          echo "--- 嵌入的扩展"
+          ls -la "$APP_PATH/PlugIns" \
+            || echo "::warning::没有 PlugIns 目录：Widget 扩展没被嵌进 App"
 
       - name: Package unsigned IPA
         shell: bash

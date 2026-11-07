@@ -128,6 +128,8 @@ final class HomebrewClient: ObservableObject {
 
     private var pingTimer: Timer?
     private var tickTimer: Timer?
+    /// 锁屏卡片 / 灵动岛的 1 秒节拍（见 `syncLiveActivity()`）。
+    private var liveTimer: Timer?
     private var loginTimer: DispatchWorkItem?
     private var loginToken = 0
     private var loginAttempt = 0
@@ -568,6 +570,11 @@ final class HomebrewClient: ObservableObject {
         if !settings.audioEnabled {
             voiceLevel = 0
             isVoicePlaying = false
+            // 关掉语音就同时把引擎和静音保活停掉，否则后台会一直空跑音频栈白耗电。
+            voice.stopListening()
+        } else if state == .online {
+            // 重新打开时立刻把引擎点起来，不用等下一帧语音（后台保活也靠它）。
+            voice.startListening()
         }
     }
 
@@ -1157,6 +1164,12 @@ final class HomebrewClient: ObservableObject {
         append(.info, "✅ 已登录，进入在线状态，每 \(Int(pingInterval)) 秒发一次"
             + (isOdtp ? " KEEP_ALIVE" : " RPTPING"))
         startTimers()
+
+        // 连上就把音频栈点起来（含循环静音保活），不要等第一帧语音。
+        // 否则「刚连上还没人说话就切后台」这段里引擎没渲染过音频，系统会把 App 挂起，
+        // 之后别人再说话就收不到了——这就是以前「后台听不到」的根因。
+        voice.startListening()
+
         verifyHotspotRegistration()
 
         // ODTP 的订阅在鉴权通过时就已经发了，这里不能再补一次。
@@ -1259,6 +1272,22 @@ final class HomebrewClient: ObservableObject {
         }
         RunLoop.main.add(tick, forMode: .common)
         tickTimer = tick
+
+        // 锁屏卡片 / 灵动岛：单独一个 1 秒的节拍，不挂在 `tick()` 上——
+        // `tick()` 只在在线时跑，而卡片也需要反映「正在连接」「已断开」这些中间态。
+        liveTimer?.invalidate()
+        let live = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.syncLiveActivity() }
+        }
+        RunLoop.main.add(live, forMode: .common)
+        liveTimer = live
+        syncLiveActivity()
+    }
+
+    /// 每秒把当前状态喂给 Live Activity；节流与重建逻辑都在控制器里。
+    private func syncLiveActivity() {
+        guard #available(iOS 16.1, *) else { return }
+        LiveActivityController.shared.sync(hotspot: self, settings: activeSettings)
     }
 
     private func tick() {
@@ -1577,6 +1606,11 @@ final class HomebrewClient: ObservableObject {
         pingTimer = nil
         tickTimer?.invalidate()
         tickTimer = nil
+        liveTimer?.invalidate()
+        liveTimer = nil
+        if #available(iOS 16.1, *) {
+            LiveActivityController.shared.end()
+        }
         loginTimer?.cancel()
         loginTimer = nil
         loginToken += 1

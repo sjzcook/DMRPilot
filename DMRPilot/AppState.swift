@@ -62,6 +62,14 @@ final class AppState: ObservableObject {
         let callLog = CallLogStore.shared
         callLog.callsigns = callsigns
         callLog.app = self
+
+        // 锁屏卡片 / 灵动岛要显示说话人的呼号，控制器自己拿不到本地库，
+        // 这里把查询闭包挂过去（`callsigns` 查的是内存里的索引，同步且很便宜）。
+        if #available(iOS 16.1, *) {
+            LiveActivityController.shared.nameResolver = { [weak self] id in
+                self?.callsigns.callsign(for: id)
+            }
+        }
     }
 
     // MARK: - 查询辅助

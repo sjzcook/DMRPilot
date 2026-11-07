@@ -22,6 +22,11 @@ final class VoicePlayer {
     private let player = AVAudioPlayerNode()
     private let format: AVAudioFormat?
 
+    /// 后台保活用的第二条通道（循环播静音），详见 `startKeepAlive()`。
+    private let keepAlive = AVAudioPlayerNode()
+    private var keepAliveAttached = false
+    private var keepAliveBuffer: AVAudioPCMBuffer?
+
     private var isRunning = false
     private var isAttached = false
     private var pendingFrames = 0
@@ -81,6 +86,13 @@ final class VoicePlayer {
             isAttached = true
         }
 
+        if !keepAliveAttached {
+            engine.attach(keepAlive)
+            engine.connect(keepAlive, to: engine.mainMixerNode, format: format)
+            keepAliveBuffer = Self.silentBuffer(format: format, seconds: 1)
+            keepAliveAttached = true
+        }
+
         engine.prepare()
         do {
             try engine.start()
@@ -95,11 +107,14 @@ final class VoicePlayer {
         player.volume = volume
         player.play()
         isRunning = true
+        startKeepAlive()
     }
 
     func stop() {
         // 用户主动断开时清掉退避计数，下次连接重新给引擎一次机会
         startFailures = 0
+
+        keepAlive.stop()
 
         guard isRunning else {
             pendingFrames = 0
@@ -161,5 +176,33 @@ final class VoicePlayer {
         player.stop()
         pendingFrames = 0
         player.play()
+    }
+
+    // MARK: - 后台保活
+
+    /// 恒定播一条静音，让引擎一直在渲染。
+    ///
+    /// iOS 只在「真有音频在渲染」的时候才让带 `UIBackgroundModes: audio` 的 App 留在后台。
+    /// 守听偏偏是间歇的：连上之后可能几十分钟没人说话，`player` 播完最后一段就空了，
+    /// 系统随即把 App 挂起，之后别人再说话就永远收不到——表现正是「切后台就掉线」。
+    ///
+    /// 这条静音通道是**独立的 player node**，不占用语音那条队列，所以不会给通话加延迟；
+    /// 内容全是 0，混进主混音器后听不出任何东西，只是让音频栈保持忙碌。
+    private func startKeepAlive() {
+        guard let buffer = keepAliveBuffer else { return }
+        keepAlive.stop()
+        keepAlive.scheduleBuffer(buffer, at: nil, options: [.loops])
+        keepAlive.play()
+    }
+
+    private static func silentBuffer(format: AVAudioFormat, seconds: Double) -> AVAudioPCMBuffer? {
+        let frames = AVAudioFrameCount(format.sampleRate * seconds)
+        guard frames > 0,
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else { return nil }
+        buffer.frameLength = frames
+        if let channel = buffer.int16ChannelData?[0] {
+            channel.update(repeating: 0, count: Int(frames))
+        }
+        return buffer
     }
 }

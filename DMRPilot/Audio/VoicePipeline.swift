@@ -64,6 +64,21 @@ final class VoicePipeline {
 
     // MARK: - 控制
 
+    /// 连上就把音频栈点起来，不等第一帧语音。
+    ///
+    /// 以前是收到第一个语音包才 `player.start()`，于是「刚连上、还没人说话、切后台」
+    /// 这段时间里音频会话根本没激活过，系统直接把 App 挂起，之后再也收不到任何语音。
+    /// 现在上线就起引擎，`VoicePlayer` 里还有一条循环静音通道保活（见 `startKeepAlive`）。
+    func startListening() {
+        guard !isMuted else { return }
+        player.start()
+    }
+
+    /// 关掉「语音播放」时调用：引擎和那条静音保活一起停，不留在后台空跑。
+    func stopListening() {
+        player.stop()
+    }
+
     /// 通话开始（收到语音头）
     func begin(key: String) {
         // 换了一路：把上一路还没播完的尾巴丢掉，否则新通话要等旧音频播完才出声

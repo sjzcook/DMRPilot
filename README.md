@@ -75,6 +75,7 @@ DMRApp/
 │   ├── CallsignDirectory.swift  # DMR ID → 呼号（本地库优先，网络兜底 + Caches 缓存）
 │   ├── DMRUserDatabase.swift    # RadioID.net 整包用户库：下载 / 建索引 / 二分查询
 │   ├── PTTIntents.swift         # 快捷指令 / Action Button 的 PTT 动作（App Intents）
+│   ├── LiveActivityController.swift  # 锁屏卡片 / 灵动岛：申请、节流推送、收尾
 │   ├── LogConsoleView.swift     # 十六进制协议日志
 │   ├── Vocoder/                 # 只剩发送方向的 Swift 编码器（解码已改走 Core/Vocoder）
 │   │   ├── HalfrateEncoder.swift    # 分析 + 码本量化（PTT 用）
@@ -88,6 +89,11 @@ DMRApp/
 │   │   ├── PttMicrophone.swift  # 麦克风采集 → 8 kHz / 160 采样
 │   │   └── VoicePlayer.swift    # AVAudioEngine 8 kHz 播放
 │   └── Assets.xcassets          # AppIcon / AccentColor
+├── DMRPilotWidget/              # ★ Widget 扩展（Live Activity / 灵动岛）
+│   ├── DMRPilotWidgetBundle.swift    # @main
+│   ├── HotspotActivityAttributes.swift # 与主 App 共用的数据契约（两个 target 各编一份）
+│   ├── HotspotLiveActivity.swift     # 锁屏卡片 + 灵动岛展开/紧凑/极简四种布局
+│   └── Info.plist                    # NSExtension = com.apple.widgetkit-extension
 ├── Logo/                        # 图标设计稿与对比图
 ├── tools/
 │   ├── gen_tables.py            # 从 DroidStar 源码抽取数值表生成 HalfrateTables.swift
@@ -129,8 +135,11 @@ python tools/gen_icon.py
 1. macOS 上装 **Xcode 16 或更新**（部署目标 iOS 16.0，Xcode 16 的 SDK 直接可编译）。
 2. 双击 `DMRPilot.xcodeproj`。
 3. 选中 `DMRPilot` target → *Signing & Capabilities* → 勾 **Automatically manage signing**，选自己的 Team。Bundle ID 已设为 `com.sjzcook.dmrpilot`，若你的开发者账号下这个名字被占用，改成 `com.sjzcook.dmrpilot.你的后缀` 即可。
-4. 选真机或模拟器运行。模拟器可以验证 REST 查询；**UDP 热点连接建议真机**（模拟器共享宿主网络，收包行为不稳定）。
-5. 打开「设置」页：填 **7 位 DMR ID**、**BM密码**（呼号可选），服务器从列表里选一台
+4. 工程里有两个 target：`DMRPilot`（主 App）和 `DMRPilotWidget`（Widget 扩展，提供锁屏卡片 / 灵动岛）。
+   **Automatically manage signing** 会把两个一起签；如果改用手动签名，记得给扩展也选一个 profile，
+   否则 Archive 会报 `requires a provisioning profile`。
+5. 选真机或模拟器运行。模拟器可以验证 REST 查询；**UDP 热点连接建议真机**（模拟器共享宿主网络，收包行为不稳定）。
+6. 打开「设置」页：填 **7 位 DMR ID**、**BM密码**（呼号可选），服务器从列表里选一台
    （协议固定 ODTP、端口固定 54006，界面上没有这两项）。设置页不再有「保存并连接」——
    连接统一在首页按；**更换服务器时会自动断开重连**，没在线就只是保存。
 
@@ -236,6 +245,34 @@ python tools/gen_icon.py
   改完回来不用重连。
 - 发射期间**暂停播放**收到的语音：半双工，而且麦克风会把扬声器声音再收进去，变成回声。
 
+### 后台播放 / 锁屏卡片 / 灵动岛
+
+**后台收听**靠两件事拼起来，缺一件都会「切后台就掉线」：
+
+1. `INFOPLIST_KEY_UIBackgroundModes = audio`（工程设置里生成进 Info.plist）。
+2. **音频栈一直有东西在渲染**。iOS 只在真的输出音频时才让 App 留在后台，
+   而守听是间歇的——连上之后可能几十分钟没人说话。所以 `VoicePlayer` 里多了一条
+   `keepAlive` 通道：一个独立的 `AVAudioPlayerNode` 循环播 1 秒静音，混进主混音器，
+   引擎因此一直在跑；它和语音那条队列分开，不会给通话增加延迟。
+   另外连线成功时（`goOnline`）就调 `voice.startListening()` 把引擎点起来，
+   不等第一帧语音——否则「刚连上还没人说话就切后台」这段会直接被挂起。
+
+**锁屏卡片 / 灵动岛**（Live Activity，iOS 16.1+）：
+
+- 连上之后自动出现，断开时立刻收走；`NSSupportsLiveActivities = YES` 写进 App 的 Info.plist。
+- 显示：呼号（没有就退到 DMR ID）、服务器、通话组、信号报告、电平条、当前讲话人、
+  收帧数；按住 PTT 时换成红色麦克风图标 + 秒表。
+- **更新有节流**：结构性变化（在线状态 / 通话组 / 说话人 / 发射）立刻推，
+  电平、信号、收帧这些连续量最多 3 秒推一次。Live Activity 的更新预算是按小时给的，
+  1 秒一次会被系统降频，表现就是「灵动岛卡在旧状态」。
+- 发射中的秒数不是我们推的，而是 `Text(timerInterval:)` 自己走，省掉每秒一次 update。
+- 灵动岛只在 iPhone 14 Pro 及以后有；其余机型看到的是锁屏卡片。
+- 关闭路径：系统设置 → EasyDMR → 实时活动。关掉之后 App 不会去申请（`areActivitiesEnabled` 为 false）。
+
+> **重签要注意**：`DMRPilotWidget.appex` 嵌在 `Payload/DMRPilot.app/PlugIns/` 里，
+> 自己重签时不能只签主 App——扩展也要一起签，且它的 bundle id 必须是主 App 的前缀
+> （`com.sjzcook.dmrpilot.widget`）。只签主 App 的表现是：App 能装能开，但锁屏/灵动岛永远不出现。
+
 ### 快捷指令 / Action Button
 
 `DMRPilot/PTTIntents.swift` 里用 App Intents 注册了四个动作，装好 App 之后在
@@ -260,8 +297,8 @@ python tools/gen_icon.py
 - **断线会自动重连**：按 Action Button 的意思是「我要说话」，所以发现不在线就先
   `connect()`，最多等 8 秒；身份没填全 / 握手失败才报错。错误文案直接显示在快捷指令里。
 - 麦克风没授权时会失败并提示去系统设置，不会静默什么都不做。
-- 新增 `INFOPLIST_KEY_UIBackgroundModes = audio`（工程设置里生成 Info.plist）。
-  App 在后台 / 锁屏时，只要音频会话还活着就有机会开麦；被系统彻底挂起后，
+- `INFOPLIST_KEY_UIBackgroundModes = audio` 加上播放器里的循环静音保活（见上一节），
+  连上之后 App 能长期留在后台；万一还是被系统回收了，
   第一次按 Action Button 会顺带把 App 唤醒并重连，此时发射会晚 1–3 秒才真正开始。
   这条只在真机上能验，模拟器和本机编译都看不出来。
 
@@ -889,7 +926,7 @@ ODTP / Rewind 那条链路更短：`0x0920` 的载荷本身就是这 27 字节�
 - Static / Dynamic Talkgroup 管理（需要 master 的 `RPTO` 选项帧，各 master 支持度不一）
 - Talker Alias 解析（`DMRA` 帧，能把源 ID 显示成呼号）
 - 按通话组/时隙过滤、离线缓存通话组名称表（现在是内存缓存，重启要重拉）
-- 后台保活做完整（`audio` 后台模式已经加上；还差「空闲时放一段静音把会话撑住」，否则长时间不动会被挂起）
+- 灵动岛加「按住发射」的交互按钮（Live Activity 里可以直接放 `Button(intent:)`）
 - 语音录音 / 回放（PCM 已经在手里，写个 `AVAudioFile` 就行）
 - 把解码挪到独立串行队列（现在是主线程同步解码，25 包/秒时约 1–3 ms/包）
 
