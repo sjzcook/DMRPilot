@@ -44,6 +44,9 @@ struct CallLogView: View {
                                         } label: {
                                             Label("删除", systemImage: "trash")
                                         }
+                                        // 顶层 `.tint(.blue)` 会把左滑按钮也染成蓝色，
+                                        // 这里显式指定红色，保证删除按钮和全滑底色都是红的。
+                                        .tint(.red)
                                     }
                             }
                         }

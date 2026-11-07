@@ -123,6 +123,28 @@ enum LinkProtocol: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - 外观主题
+
+/// App 的整体配色。存在设置里，改完立刻生效（`RootView` 上用 `preferredColorScheme`）。
+///
+/// 只影响**界面**，跟语音、协议、日志都无关——所以改动不需要重连。
+enum AppTheme: String, Codable, CaseIterable, Identifiable {
+    /// 跟随系统的浅色 / 深色设置（默认）。
+    case system
+    case light
+    case dark
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .system: return "跟随系统"
+        case .light: return "日间模式"
+        case .dark: return "夜间模式"
+        }
+    }
+}
+
 struct Settings: Codable, Equatable {
     /// 热点自身的 DMR ID（不是你的个人呼号 ID）
     var dmrId: Int = 0
@@ -220,6 +242,11 @@ struct Settings: Codable, Equatable {
     /// 续订间隔（分钟）。BM 大约 10 分钟释放动态 TG，默认 8 分钟留出余量。
     var talkgroupRenewMinutes: Int = 8
 
+    // MARK: 外观
+
+    /// 主题：跟随系统 / 强制日间 / 强制夜间。只影响界面，不影响连接。
+    var theme: AppTheme = .system
+
     // MARK: 语音
 
     /// 是否解码并播放收到的 DMR 语音
@@ -316,6 +343,10 @@ extension Settings {
         autoCallOnConnect = try container.decodeIfPresent(Bool.self, forKey: .autoCallOnConnect) ?? defaults.autoCallOnConnect
         autoRenewTalkgroup = try container.decodeIfPresent(Bool.self, forKey: .autoRenewTalkgroup) ?? defaults.autoRenewTalkgroup
         talkgroupRenewMinutes = try container.decodeIfPresent(Int.self, forKey: .talkgroupRenewMinutes) ?? defaults.talkgroupRenewMinutes
+        // 老存档里没有这个键，退回「跟随系统」，视觉上不会突然变样。
+        // 这里多包一层 `try?`：枚举存的是原始值字符串，万一将来某个档位被删掉，
+        // 认不出的值也只退回默认主题，不会把整份设置（DMR ID / 密码）一起丢掉。
+        theme = (try? container.decodeIfPresent(AppTheme.self, forKey: .theme)) ?? defaults.theme
         audioEnabled = try container.decodeIfPresent(Bool.self, forKey: .audioEnabled) ?? defaults.audioEnabled
         audioVolume = try container.decodeIfPresent(Double.self, forKey: .audioVolume) ?? defaults.audioVolume
     }

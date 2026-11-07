@@ -128,6 +128,15 @@ struct SettingsView: View {
 
     private var behaviourSection: some View {
         Section {
+            // 外观主题：只是界面配色，改完立刻生效，不涉及连接与音频。
+            // 用 menu 样式就是为了「下拉选择」这个交互（点开才展开三项）。
+            Picker("应用主题", selection: $app.settings.theme) {
+                ForEach(AppTheme.allCases) { theme in
+                    Text(theme.title).tag(theme)
+                }
+            }
+            .pickerStyle(.menu)
+
             Toggle("断线自动重连", isOn: $app.settings.autoReconnect)
 
             Toggle("连接后自动订阅通话组", isOn: $app.settings.autoCallOnConnect)

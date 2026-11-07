@@ -485,6 +485,25 @@ $ python tools/enc_check.py
 
 ---
 
+### 外观主题
+
+位置：**设置 → 行为 → 应用主题**，下拉三选一：
+
+| 选项 | 行为 |
+| --- | --- |
+| 跟随系统 | 默认。跟着 iOS 的浅色 / 深色设置走，系统切换时 App 立刻跟着变 |
+| 日间模式 | 强制浅色，忽略系统设置 |
+| 夜间模式 | 强制深色，忽略系统设置 |
+
+- 存在 `Settings.theme`（`AppTheme` 枚举，原始值 `system` / `light` / `dark`），
+  跟其他设置一起落在 `UserDefaults`；改完立刻生效，不影响连接，也不需要重连。
+- 实现就是最外层一句 `preferredColorScheme(theme.colorScheme)`：`.system` 映射成 `nil`
+  （不覆盖系统），另外两项映射成 `.light` / `.dark`。它挂在整个 `WindowGroup` 内容上，
+  所以弹出的 sheet、日志页、快捷指令唤起的界面都会一起继承。
+- 界面配色本来就全用系统语义色（`Color(uiColor: .secondarySystemFill)` 这类），
+  深色模式不需要另外维护一套色值。
+- 老存档里没有这个键时按「跟随系统」处理，升级后不会突然变黑或变白。
+
 ## 协议实现说明
 
 ### 先选链路

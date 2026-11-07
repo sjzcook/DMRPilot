@@ -21,6 +21,9 @@ struct DMRPilotApp: App {
                 .environmentObject(app.callsigns)
                 .environmentObject(CallLogStore.shared)
                 .tint(.blue)
+                // 主题：`nil` = 跟随系统，`.light` / `.dark` = 强制覆盖。
+                // 放在最外层，弹出的 sheet / 全屏页面也一起继承。
+                .preferredColorScheme(app.settings.theme.colorScheme)
         }
     }
 }
