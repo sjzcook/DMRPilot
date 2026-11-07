@@ -33,6 +33,7 @@ struct HotspotView: View {
                     Section("刚刚结束") {
                         ForEach(recentSpeakerItems) { item in
                             speakerRow(item, at: Date())
+                                .cardRow()
                         }
                     }
                 }
@@ -312,65 +313,83 @@ struct HotspotView: View {
 
     private var speakerSection: some View {
         Section {
-            TimelineView(.periodic(from: .now, by: 1)) { context in
-                if let item = currentSpeakerItem {
+            // 只有真有人说话时才起这个每秒刷新的计时器，空闲时不留一个空转的 TimelineView。
+            if let item = currentSpeakerItem {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
                     speakerRow(item, at: context.date)
-                } else {
-                    waitingRow
                 }
+                .cardRow()
+            } else {
+                waitingRow
             }
         } header: {
             Text("当前讲话人")
         }
     }
 
-    /// 「当前讲话人」和「刚刚结束」共用同一套行：呼号、组 / 时隙 / 姓名 / 城市，
-    /// 右侧是「讲话中 + 电平」或「已结束 + 时长」。两边长得一样，看起来才是一个列表的延续。
+    /// 「当前讲话人」和「刚刚结束」共用同一张卡片，版式照抄日志页：
+    /// 左边三行（呼号+姓名 / 通话组 + 时隙 / 地区），右边时间与时长。
+    /// 差别只有一处——正在说话的那张卡片，时长染成主题色，下面多一条实时电平。
     private func speakerRow(_ item: SpeakerItem, at now: Date) -> some View {
         let speaker = item.speaker
         let speaking = item.isSpeaking(at: now)
+        let name = speakerName(speaker.src)
+        let place = speakerPlace(speaker.src)
 
-        return HStack(spacing: 14) {
-            ZStack {
-                Circle()
-                    .fill(speaking ? Color.accentColor.opacity(0.16) : Color.secondary.opacity(0.12))
-                    .frame(width: 44, height: 44)
-                Image(systemName: speaking ? "waveform" : "person.fill")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(speaking ? Color.accentColor : Color.secondary)
-            }
+        return HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                // 第一行：呼号 + 姓名
+                HStack(spacing: 6) {
+                    Text(speakerCallsign(speaker.src))
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text(speakerLine(for: speaker.src))
-                    .font(.title3.weight(.semibold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.65)
+                    if let name {
+                        Text(name)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
 
-                Text(speakerSubtitle(speaker))
-                    .font(.caption)
+                // 第二行：通话组（Homebrew 下再带时隙）
+                Text(speakerChannel(speaker))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+
+                // 第三行：地区
+                if let place {
+                    Text(place)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
 
             Spacer(minLength: 6)
 
-            VStack(alignment: .trailing, spacing: 5) {
-                Text(speaking ? "讲话中" : "已结束")
-                    .font(.caption2.weight(.semibold))
+            VStack(alignment: .trailing, spacing: 4) {
+                Text(Fmt.clock.string(from: speaker.startedAt))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+
+                Text(Fmt.duration(speaker.talkTime))
+                    .font(.caption2.monospacedDigit())
                     .foregroundStyle(speaking ? Color.accentColor : Color.secondary)
 
                 if speaking {
                     LevelMeter(level: Double(hotspot.voiceLevel))
-                        .frame(width: 54, height: 8)
-                } else {
-                    Text(Fmt.duration(speaker.talkTime))
-                        .font(.caption2)
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
+                        .frame(width: 44, height: 6)
                 }
             }
         }
-        .padding(.vertical, 4)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(uiColor: .secondarySystemGroupedBackground))
+        )
         .animation(.easeInOut(duration: 0.2), value: speaking)
         // 本地库里没有的 ID 才联网补查一次；已知的会被 CallsignDirectory 直接跳过。
         .onAppear { callsigns.request(speaker.src) }
@@ -412,17 +431,30 @@ struct HotspotView: View {
     }
 
     /// 有呼号显示呼号，没有就退回数字 ID——宁可显示得糙一点，也不能空着。
-    private func speakerLine(for id: Int) -> String {
+    private func speakerCallsign(_ id: Int) -> String {
         callsigns.callsign(for: id) ?? "\(id)"
     }
 
-    private func speakerSubtitle(_ speaker: ActiveSpeaker) -> String {
+    /// 本地库里的姓名；没有就返回 nil，那一行只显示呼号。
+    private func speakerName(_ id: Int) -> String? {
+        guard let name = callsigns.user(for: id)?.fullName, !name.isEmpty else { return nil }
+        return name
+    }
+
+    /// 本地库里的地区（国家/省/市拼好的那一行）。
+    private func speakerPlace(_ id: Int) -> String? {
+        guard let place = callsigns.user(for: id)?.placeText, !place.isEmpty else { return nil }
+        return place
+    }
+
+    /// `通话组名 · TG 46001 · TS2`；单呼另说。和日志页的 `channelText` 同一套写法。
+    private func speakerChannel(_ speaker: ActiveSpeaker) -> String {
         var parts: [String] = []
 
         if speaker.isPrivate {
-            parts.append("单呼")
+            parts.append("单呼 \(speaker.src) → \(speaker.dst)")
         } else if let name = app.name(for: speaker.dst) {
-            parts.append("\(name) · \(speaker.dst)")
+            parts.append("\(name) · TG \(speaker.dst)")
         } else {
             parts.append("TG \(speaker.dst)")
         }
@@ -431,16 +463,6 @@ struct HotspotView: View {
         if app.settings.linkProtocol == .homebrew {
             parts.append("TS\(speaker.slot)")
         }
-
-        // 本地 DMR ID 库里有姓名和城市就带上，比一串数字 ID 有用得多。
-        // 换成呼号显示时，再把 ID 补在后面，方便对号。
-        let known = callsigns.callsign(for: speaker.src) != nil
-        if let user = callsigns.user(for: speaker.src) {
-            if !user.fullName.isEmpty { parts.append(user.fullName) }
-            let place = user.placeText
-            if !place.isEmpty { parts.append(place) }
-        }
-        if known { parts.append("ID \(speaker.src)") }
 
         return parts.joined(separator: " · ")
     }
@@ -657,5 +679,17 @@ struct LevelMeter: View {
         if index >= segments - 1 { return .red }
         if index >= segments - 3 { return .orange }
         return .green
+    }
+}
+
+// MARK: - 卡片行
+
+private extension View {
+    /// 卡片行：去掉分组列表默认的底色、内缩和分隔线，让行内部自己画的圆角卡片透出来。
+    /// 和日志页 `CallLogView.row(for:)` 是同一套尺寸（上下各留 4pt 的空隙当卡片间距）。
+    func cardRow() -> some View {
+        listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
     }
 }
