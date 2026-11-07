@@ -66,17 +66,29 @@ final class VoicePlayer {
 
         #if os(iOS)
         let session = AVAudioSession.sharedInstance()
-        do {
-            // 只用 .playback + .default：`.voiceChat` 这个 mode 是给 .playAndRecord 的，
-            // 和 .playback 组合属于非法搭配，setCategory 会抛错 —— 抛错后 session 就停在
-            // 系统默认的 soloAmbient（会被响铃/静音键静音），表现正是「连上了、有通话、
-            // 却一点声音都没有」。mixWithOthers 让本 App 不打断用户正在听的音乐。
-            try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
-            try session.setActive(true)
-            audioSessionError = nil
-        } catch {
-            // 会话起不来时仍然尝试启动引擎，真正的失败会在 engine.start() 暴露
-            audioSessionError = error.localizedDescription
+        if PttMicrophone.talkSessionReady {
+            // 连接期间会话已经被 PTT 预热成 .playAndRecord 了，这里只要保证它还活着。
+            // 千万别再切回 `.playback`：切回去下次按 PTT 又要重新激活一次路由，
+            // 那 0.3～0.5 秒就是用户感觉到的「按住半天才开始发」。
+            do {
+                try session.setActive(true)
+                audioSessionError = nil
+            } catch {
+                audioSessionError = error.localizedDescription
+            }
+        } else {
+            do {
+                // 只用 .playback + .default：`.voiceChat` 这个 mode 是给 .playAndRecord 的，
+                // 和 .playback 组合属于非法搭配，setCategory 会抛错 —— 抛错后 session 就停在
+                // 系统默认的 soloAmbient（会被响铃/静音键静音），表现正是「连上了、有通话、
+                // 却一点声音都没有」。mixWithOthers 让本 App 不打断用户正在听的音乐。
+                try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+                try session.setActive(true)
+                audioSessionError = nil
+            } catch {
+                // 会话起不来时仍然尝试启动引擎，真正的失败会在 engine.start() 暴露
+                audioSessionError = error.localizedDescription
+            }
         }
         #endif
 
@@ -126,7 +138,12 @@ final class VoicePlayer {
         pendingFrames = 0
 
         #if os(iOS)
-        try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+        // 连接期间会话由 PTT 那边托管（一直保持「可录音」），这里不要再关：
+        // 关了下次按下 PTT 又要重新激活一次，那点时间就是「按住半天才开始发」。
+        // 真正交还音频硬件放在 `PttMicrophone.release()`（断开连接时）。
+        if !PttMicrophone.talkSessionReady {
+            try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+        }
         #endif
     }
 

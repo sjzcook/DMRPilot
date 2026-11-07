@@ -1507,6 +1507,11 @@ final class HomebrewClient: ObservableObject {
             + (isYsf ? " YSFP" : isOdtp ? " KEEP_ALIVE" : " RPTPING"))
         startTimers()
 
+        // 提前把音频会话切到「可录音」并保持住（不启动采集，不会亮麦克风指示灯）。
+        // 这一步以前是塞在按下 PTT 时才做的：同步重配音频路由要 0.3～0.5 秒，
+        // 表现就是「按住 PTT 半天才开始发」。挪到上线这一刻，用户感觉不到。
+        mic.prepareForTalk()
+
         // 连上就把音频栈点起来（含循环静音保活），不要等第一帧语音。
         // 否则「刚连上还没人说话就切后台」这段里引擎没渲染过音频，系统会把 App 挂起，
         // 之后别人再说话就收不到了——这就是以前「后台听不到」的根因。
@@ -1984,7 +1989,8 @@ final class HomebrewClient: ObservableObject {
         ysf_core_reset(ysf)
 
         mic.onFrame = nil
-        mic.stop()
+        // 断开才真正拆 tap、把会话还成纯播放；发射收尾只 `stop()`，不动会话。
+        mic.release()
         isTransmitting = false
         txLevel = 0
         pttFrames.removeAll(keepingCapacity: false)

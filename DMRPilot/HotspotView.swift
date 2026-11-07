@@ -397,6 +397,13 @@ struct HotspotView: View {
         pttPressed = true
         UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
 
+        // 已经授权过就**同步**开麦：不绕 async，也不等下一个 runloop 周期。
+        // 麦克风权限只在第一次需要问，常态下这条分支直接生效。
+        if PttMicrophone.permissionGranted {
+            startTransmitting()
+            return
+        }
+
         Task { @MainActor in
             let granted = await PttMicrophone.requestPermission()
             guard granted else {
@@ -407,14 +414,19 @@ struct HotspotView: View {
             pttDenied = false
             // 权限弹框期间用户可能已经松手了，这时候不该再开麦
             guard pttPressed else { return }
-            // 目的地址在按下的那一刻取一次：这之后用户改设置也不影响正在发的这一句。
-            hotspot.beginPtt(destination: app.settings.pttDestination,
-                             isPrivate: app.settings.isPrivateCall)
-            if !hotspot.isTransmitting {
-                // 开麦失败（没权限 / 没有可用输入）时把按钮状态收回来，
-                // 否则会一直显示成按下却不发射。
-                pttPressed = false
-            }
+            startTransmitting()
+        }
+    }
+
+    /// 真正开始发射。目的地址在按下的那一刻取一次：
+    /// 这之后用户改设置也不影响正在发的这一句。
+    private func startTransmitting() {
+        hotspot.beginPtt(destination: app.settings.pttDestination,
+                         isPrivate: app.settings.isPrivateCall)
+        if !hotspot.isTransmitting {
+            // 开麦失败（没权限 / 没有可用输入）时把按钮状态收回来，
+            // 否则会一直显示成按下却不发射。
+            pttPressed = false
         }
     }
 
