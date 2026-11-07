@@ -911,7 +911,7 @@ final class HomebrewClient: ObservableObject {
             let count = Int(result.out_len)
             if count > 0 {
                 let payload = withUnsafeBytes(of: result.out) { Data(bytes: $0.baseAddress!, count: count) }
-                append(.info, "← 收到挑战盐，→ AUTHENTICATION（SHA256(盐‖密码)）")
+                append(.info, "← 收到挑战盐，→ AUTHENTICATION（\(count) 字节：18 字节头 + SHA256(盐‖密码)）")
                 send(payload, label: "AUTHENTICATION")
                 // 参考实现 RewindClient 回完 AUTHENTICATION 后 `continue` 回到循环顶部，
                 // 也就是**紧接着再发一个 KEEP_ALIVE**，然后等服务器的空 KEEP_ALIVE。
@@ -920,6 +920,13 @@ final class HomebrewClient: ObservableObject {
                 sendPing()
             }
             armLoginTimeout()
+
+        case RW_EVT_AUTH_REJECTED:
+            // 服务器连发三次挑战盐 = 它不认我们算出来的摘要。
+            loginTimer?.cancel()
+            fail("密码不对：服务器连续三次要求重新鉴权（ODTP 的 SHA256 摘要没通过）。\n"
+                + "请核对「设置 → 身份」里的密码，它是 SelfCare → Hotspot Security 里给这个 DMR ID 设的，"
+                + "不是 BrandMeister 网站登录密码", allowRetry: false)
 
         case RW_EVT_AUTHENTICATED:
             loginTimer?.cancel()
@@ -939,8 +946,20 @@ final class HomebrewClient: ObservableObject {
             goOnline()
 
         case RW_EVT_PONG:
-            // 心跳应答，静默即可：每 5 秒打一行会把日志刷满
-            break
+            // 心跳应答，平时静默：每 5 秒打一行会把日志刷满。
+            // 但登录阶段收到 KEEP_ALIVE 就说明状态机没跟上（服务器认为已鉴权），必须留痕。
+            if state != .online {
+                append(.rx, "← 收到 KEEP_ALIVE（当前阶段 \(state.label)，不是鉴权确认）")
+            }
+
+        case RW_EVT_REDIRECT:
+            let count = Int(result.out_len)
+            let target = withUnsafeBytes(of: result.payload) { raw -> String in
+                guard count > 0, let base = raw.baseAddress else { return "" }
+                return String(bytes: UnsafeRawBufferPointer(start: base, count: count), encoding: .utf8) ?? ""
+            }
+            append(.warning, "← 服务器要求重定向到 \(target)")
+            fail("这台 master 把连接指到了 \(target)。请到「设置 → 服务器」把地址改成它再连", allowRetry: false)
 
         case RW_EVT_REPORT:
             let count = Int(result.out_len)

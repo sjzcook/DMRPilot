@@ -387,7 +387,7 @@ Homebrew 那套要靠「按一次话筒」让服务器记住组，漏一次就�
 App                                  Master
  |── KEEP_ALIVE (VersionData) ───────▶|   number=7 位 DMR ID, service=0x21(Open Terminal), 后接软件名
  |◀──────────────── CHALLENGE (盐) ───|
- |── AUTHENTICATION (32B) ───────────▶|   SHA256(盐 ‖ 密码)
+ |── AUTHENTICATION (18B 头 + 32B) ──▶|   SHA256(盐 ‖ 密码)
  |◀──── KEEP_ALIVE（空）──────────────|   鉴权成功才回；失败**什么都不回**，只能等超时
  |── KEEP_ALIVE（心跳，顺便触发确认）─▶|
  |── SUBSCRIPTION (type=7, number=TG)▶|
@@ -397,6 +397,14 @@ App                                  Master
 
 几处容易踩的点，都写在核心注释里了：
 
+- **AUTHENTICATION 自己也要套 Rewind 头**：这一点最容易漏 —— `SHA256` 只算出 32 字节摘要，
+  还得再拼上 18 字节头（`REWIND01` + type `0x0003` + 序号 + length=32）才能发出去。
+  只发裸摘要的话，服务器连签名都认不出，直接丢弃、什么都不回，界面就永远停在「鉴权中」。
+  `tools/rewind_check.py` 里专门有一条 `回包不是裸摘要：18 字节头 + 32 字节` 钉这个。
+- **鉴权确认不看载荷长度**：参考实现 `RewindClient.c` 收到 `REWIND_TYPE_KEEP_ALIVE` 就直接去订阅，
+  完全不检查 `length`。有些 master 会在确认里带上 VersionData，按「必须为空」硬判同样会卡在「鉴权中」。
+- **服务器连续发三次挑战盐 = 密码不对**：摘要没通过时服务器不会回错误码，只会重新挑战。
+  核心会计数，第三次直接报 `RW_EVT_AUTH_REJECTED`，不再空转。
 - **两个序号计数器**：常规包一个、实时包（`DATA_BASE` 到 `AUDIO_FRAME`）一个。实时包用哪个计数器
   由 `flags & REAL_TIME_1` 决定，不是随便挑一个。
 - **Remote ID 是 7 位**：规范原文「That DMR ID must not include the two-digit suffix commonly used for hotspots」。
@@ -543,7 +551,9 @@ ODTP 的失败表现和 Homebrew 完全不同——**鉴权失败时服务器一
 | 日志最后一行 | 含义 | 处理 |
 |---|---|---|
 | `→ KEEP_ALIVE 登录` 之后再无任何 `←` | 服务器没理这个连接 | 地址要是 `<地区>.master.brandmeister.network`，端口 **54006**；确认这个网络没封 UDP |
-| `← 收到挑战盐` 但一直没有「鉴权通过」 | **密码错**（服务器对失败鉴权保持沉默） | 核对 SelfCare 里这台终端的密码；注意这里要的是**7 位 DMR ID**，不是 9 位热点 ID |
+| `← 收到挑战盐，→ AUTHENTICATION（50 字节…）` 后没有下文 | 服务器没回鉴权确认 | 先看括号里的字节数：**50 = 18 字节头 + 32 字节摘要**才对；如果日志里是 32，说明包没套头（旧版本 bug）。字节数对就说明摘要没通过 → 密码错 |
+| 反复出现 `← 收到挑战盐`（连续三次） | 摘要一直没通过 = **密码错** | 核对 SelfCare 里这台终端的密码；注意这里要的是**7 位 DMR ID**，不是 9 位热点 ID |
+| `← 服务器要求重定向到 x.x.x.x:port` | master 让你换一台 | 按它给的地址改「设置 → 服务器」 |
 | `← 鉴权通过` 但没有订阅确认 | 订阅没被接受 | 看有没有 `← 服务器返回失败码`；那个组可能没对这台终端开放 |
 | `← 服务器返回失败码 N` | 订阅被拒 / 会话不被允许 | 换一个组试；或先到 SelfCare 确认这个 ID 有权收这个组 |
 | `← 服务器：...` | 服务器的文本报告，通常写得很直白 | 按文字处理 |

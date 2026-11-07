@@ -28,6 +28,7 @@ static const char    RW_SIGN[]       = "REWIND01";
 #define RW_TYPE_CLOSE             0x0001
 #define RW_TYPE_CHALLENGE         0x0002
 #define RW_TYPE_AUTHENTICATION    0x0003
+#define RW_TYPE_REDIRECTION       0x0008
 #define RW_TYPE_REPORT            0x0100
 #define RW_TYPE_SUBSCRIPTION      0x0901
 #define RW_TYPE_CANCELLING        0x0902
@@ -66,6 +67,10 @@ struct rewind_core {
 
     /// 本次发射已经发了多少个语音帧（用于每 5 秒插一次 KEEP_ALIVE）。
     int32_t  tx_count;
+
+    /// 已经回过几次 AUTHENTICATION。服务器连续发挑战盐说明摘要它不认（密码错），
+    /// 参考实现 RewindClient 的上限也是 3 次（ATTEMPT_COUNT）。
+    int32_t  auth_attempt;
 
     int32_t  subscribed;
 };
@@ -181,6 +186,7 @@ void rw_core_reset(rewind_core* c) {
     c->stream_dst = 0;
     c->stream_private = 0;
     c->tx_count = 0;
+    c->auth_attempt = 0;
     c->subscribed = 0;
 }
 
@@ -291,6 +297,13 @@ int32_t rw_core_receive(rewind_core* c, const uint8_t* in, int32_t len, rw_resul
             if (c->status == RW_STATUS_CONNECTED) {
                 break;
             }
+            if (c->auth_attempt >= 3) {
+                // 服务器第三次发挑战盐：它一直不认我们回的摘要（多半是密码不对，
+                // 或者这个 7 位 ID 与密码根本不属于同一台设备）。再算下去只是空转。
+                r->event = RW_EVT_AUTH_REJECTED;
+                break;
+            }
+
             uint8_t buffer[192];
             int32_t salt_len = int32_t(dlen);
             if (salt_len > 128) {
@@ -304,29 +317,57 @@ int32_t rw_core_receive(rewind_core* c, const uint8_t* in, int32_t len, rw_resul
             }
             std::memcpy(buffer + salt_len, c->password, plen);
 
+            uint8_t digest[32];
             CSHA256 sha;
-            sha.buffer(buffer, uint32_t(salt_len) + uint32_t(plen), r->out);
-            r->out_len = 32;
+            sha.buffer(buffer, uint32_t(salt_len) + uint32_t(plen), digest);
+
+            // ★ 必须带 Rewind 头再发。服务器只认 `REWIND01` 开头的包，
+            //   早先这里只把 32 字节摘要丢进 out，Swift 原样发出去 —— 服务器压根没看见，
+            //   症状就是界面永远停在「鉴权中」。
+            r->out_len = build_frame(c, r->out, int32_t(sizeof(r->out)),
+                                     RW_TYPE_AUTHENTICATION, RW_FLAG_NONE, digest, 32);
 
             c->status = RW_STATUS_AUTH;
-            r->event = RW_EVT_AUTH;
+            c->auth_attempt = c->auth_attempt + 1;
+            r->event = r->out_len > 0 ? RW_EVT_AUTH : RW_EVT_NONE;
             break;
         }
 
         case RW_TYPE_KEEP_ALIVE: {
-            if (dlen > 0) {
-                // 带内容的是服务器对我们的 KEEP_ALIVE 的回应？规范里回应是空的，
-                // 这里保守起见只当作心跳。
-                r->event = RW_EVT_PONG;
-                break;
-            }
+            // 参考实现 RewindClient.c 的登录循环里**不看 payload 长度**：
+            // 只要收到 KEEP_ALIVE 就认为鉴权通过、直接发订阅。
+            // 早先这里写的是「dlen > 0 就当心跳」，于是某些 master 带上 VersionData
+            // 回确认时，我们永远等不到 AUTHENTICATED，同样卡在「鉴权中」。
             if (c->status == RW_STATUS_AUTH) {
-                // 鉴权通过：服务器回一个空 KEEP_ALIVE，此时该发订阅。
                 c->status = RW_STATUS_SUBSCRIBING;
                 r->event = RW_EVT_AUTHENTICATED;
             } else {
                 r->event = RW_EVT_PONG;
             }
+            break;
+        }
+
+        case RW_TYPE_REDIRECTION: {
+            // 服务器让你换一台 master：family(2) + port(2) + address。
+            // 这里不自动跟随（要重建 socket），但必须让它出现在日志里 ——
+            // 否则用户只会看到「连不上」，而这其实是服务器明确指了另一台。
+            int32_t n = 0;
+            if (dlen >= 8) {
+                const uint16_t family = read_le16(data);
+                const uint16_t port = read_le16(data + 2);
+                if (family == 2U) {
+                    n = std::snprintf(reinterpret_cast<char*>(r->payload), sizeof(r->payload),
+                                      "%u.%u.%u.%u:%u", unsigned(data[4]), unsigned(data[5]),
+                                      unsigned(data[6]), unsigned(data[7]), unsigned(port));
+                } else {
+                    n = std::snprintf(reinterpret_cast<char*>(r->payload), sizeof(r->payload),
+                                      "family %u port %u", unsigned(family), unsigned(port));
+                }
+            } else {
+                n = std::snprintf(reinterpret_cast<char*>(r->payload), sizeof(r->payload), "地址未知");
+            }
+            r->out_len = n > 0 ? n : 0;
+            r->event = RW_EVT_REDIRECT;
             break;
         }
 

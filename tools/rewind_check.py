@@ -115,15 +115,29 @@ class Rx:
         self.stream_src = 0
         self.stream_dst = 0
         self.stream_private = 0
+        self.auth_attempt = 0
+        self.counter = [0, 0]
+
+    def transmit(self, type_, data=b"", flags=FLAG_NONE):
+        """对应 RewindCore.cpp 的 build_frame：回包也必须带 18 字节头、走序号计数器。"""
+        index = 1 if (flags & FLAG_REAL_TIME) else 0
+        seq = self.counter[index]
+        self.counter[index] = (seq + 1) & 0xFFFFFFFF
+        return SIGN + struct.pack("<HHIH", type_, flags, seq, len(data)) + data
 
     def receive(self, packet):
         type_, flags, seq, data = parse(packet)
         if type_ == TYPE_CHALLENGE:
+            self.auth_attempt += 1
+            if self.auth_attempt > 3:
+                # 服务器第三次还在要盐：摘要它不认，别空转（对应 RW_EVT_AUTH_REJECTED）
+                return "AUTH_REJECTED", b""
             digest = hashlib.sha256(data + self.password.encode()).digest()
             self.status = self.AUTH
-            return "AUTH", digest
+            return "AUTH", self.transmit(TYPE_AUTHENTICATION, digest)
         if type_ == TYPE_KEEP_ALIVE:
-            if not data and self.status == self.AUTH:
+            # 参考实现 RewindClient.c 不看长度：带 VersionData 的 KEEP_ALIVE 也算鉴权通过
+            if self.status == self.AUTH:
                 self.status = self.SUBSCRIBING
                 return "AUTHENTICATED", b""
             return "PONG", b""
@@ -225,14 +239,32 @@ def main():
     print("接收侧（服务器 → 客户端）")
     salt = bytes(range(32))
     rx = Rx(password="secret")
-    event, digest = rx.receive(packet(TYPE_CHALLENGE, salt))
+    rx.transmit(TYPE_KEEP_ALIVE, b"\x92\x35\x46\x00\x21DMRPilot 1.0")   # 登录包，占掉序号 0
+    event, reply = rx.receive(packet(TYPE_CHALLENGE, salt))
     ok &= check("CHALLENGE 触发 AUTH", event == "AUTH")
-    ok &= check("SHA256(盐‖密码) 与 hashlib 一致",
-                digest == hashlib.sha256(salt + b"secret").digest())
-    ok &= check("AUTH 摘要 32 字节", len(digest) == 32)
+    # 这一条是「卡在鉴权中」的命门：以前只回 32 字节裸摘要，服务器直接丢
+    ok &= check("回包不是裸摘要：18 字节头 + 32 字节", len(reply) == HEADER + 32)
+    ok &= check("回包带 REWIND01 签名", reply[:8] == SIGN)
+    t, f, s, d = parse(reply)
+    ok &= check("类型 0x0003（AUTHENTICATION）", t == TYPE_AUTHENTICATION)
+    ok &= check("标志位为 0（与参考实现一致）", f == FLAG_NONE)
+    ok &= check("序号接在登录包之后（登录 0 → 这里 1）", s == 1)
+    ok &= check("摘要 = SHA256(盐‖密码)，与 hashlib 一致",
+                d == hashlib.sha256(salt + b"secret").digest())
+    ok &= check("摘要 32 字节", len(d) == 32)
 
     event, _ = rx.receive(packet(TYPE_KEEP_ALIVE))
     ok &= check("鉴权后空 KEEP_ALIVE = AUTHENTICATED", event == "AUTHENTICATED")
+
+    rx2 = Rx(password="secret")
+    rx2.receive(packet(TYPE_CHALLENGE, salt))
+    event, _ = rx2.receive(packet(TYPE_KEEP_ALIVE, b"\x01\x02\x03"))   # 带内容的确认
+    ok &= check("带内容的 KEEP_ALIVE 同样算鉴权通过", event == "AUTHENTICATED")
+
+    rx3 = Rx(password="wrong")
+    r = [rx3.receive(packet(TYPE_CHALLENGE, salt))[0] for _ in range(4)]
+    ok &= check("连发挑战盐 3 次后报 AUTH_REJECTED（不空转）", r[:3].count("AUTH") == 3 and r[3] == "AUTH_REJECTED")
+
     event, _ = rx.receive(packet(TYPE_SUBSCRIPTION))
     ok &= check("SUBSCRIPTION 确认 = 已连上", event == "SUBSCRIBED")
 

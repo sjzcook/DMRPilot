@@ -46,7 +46,7 @@ typedef struct rewind_core rewind_core_t;
 
 // 处理完一个包之后调用方要做什么。
 #define RW_EVT_NONE          0
-#define RW_EVT_AUTH          1   // 收到挑战盐，回发 result->out（32 字节 SHA256）
+#define RW_EVT_AUTH          1   // 收到挑战盐，回发 result->out（**已带 18 字节头的完整包**）
 #define RW_EVT_AUTHENTICATED 2   // 鉴权通过，应发 SUBSCRIPTION
 #define RW_EVT_SUBSCRIBED    3   // 订阅确认，进入 CONNECTED
 #define RW_EVT_RX_HEADER     4   // 语音头（result->src / dst）
@@ -56,6 +56,8 @@ typedef struct rewind_core rewind_core_t;
 #define RW_EVT_REPORT        8   // 服务器文本报告（result->payload 里是 UTF-8）
 #define RW_EVT_CLOSED        9   // 服务器关闭连接
 #define RW_EVT_FAILURE      10   // 服务器返回失败码（订阅被拒等，result->payload 前 4 字节）
+#define RW_EVT_AUTH_REJECTED 11  // 服务器反复发挑战盐：密码不对，别再无谓重试
+#define RW_EVT_REDIRECT     12   // 服务器要求改连另一台 master（result->payload 里是文本地址）
 
 /// 一次收包的结果。
 typedef struct {
@@ -68,7 +70,7 @@ typedef struct {
     int32_t  out_len;        ///< out 里有效的字节数
     uint8_t  codec[27];      ///< 语音帧的 27 字节 AMBE
     uint8_t  payload[160];   ///< 文本报告 / 原始数据
-    uint8_t  out[64];        ///< 需要回发的数据（AUTHENTICATION 32 字节）
+    uint8_t  out[64];        ///< 需要回发的**完整**包（AUTHENTICATION = 18 字节头 + 32 字节摘要）
 } rw_result_t;
 
 // MARK: - 生命周期
