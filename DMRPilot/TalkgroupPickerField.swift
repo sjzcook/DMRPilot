@@ -2,8 +2,8 @@
 //  TalkgroupPickerField.swift
 //  DMRPilot
 //
-//  首页「连接」按钮右边的通话组选择器。
-//  交互与设置页选择服务器（HostPickerField）一致：一行触发器，点开是弹出式列表，
+//  首页连接按钮上方、和服务器选择器同一行的通话组选择器（YSF 模式下隐藏）。
+//  交互与选择服务器（HostPickerField）一致：一行触发器，点开是弹出式列表，
 //  顶部有范围切换 + 搜索框，行尾带勾选，末尾还能手填号码。
 //
 //  数据来自 BrandMeister 的 v2/talkgroup（AppState.talkgroups），只是显示用的名称表，

@@ -2,10 +2,11 @@
 //  HostPickerField.swift
 //  DMRPilot
 //
-//  设置页「服务器」一栏：一行下拉触发器 + 自定义域名输入框。
+//  首页连接按钮上方的「服务器」选择器：一行下拉触发器 + 自定义域名输入框。
 //  点开后是弹出式选择器（sheet），列表来自 DMRHosts.txt，
 //  搜索框固定在列表上方，按 Hostname（顺带匹配表里的名字）过滤。
 //  选中一项就把 name / hostname / port 写回 Settings。
+//  （原先在设置页，后来搬到首页，方便选完直接按连接。）
 //
 
 import SwiftUI

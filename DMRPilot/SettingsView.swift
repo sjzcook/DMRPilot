@@ -79,18 +79,14 @@ struct SettingsView: View {
     }
 
     // MARK: - 服务器
+    //
+    // 服务器选择器已搬到首页（连接按钮上方）；设置页这里只剩 Homebrew 专属项。
+    // 协议现在固定 ODTP，所以这一节通常整节不显示，留着是为了保住 Homebrew 的代码路径。
 
+    @ViewBuilder
     private var serverSection: some View {
-        Section {
-            HostPickerField(store: hostStore, settings: $app.settings) {
-                // 换服务器后自动断开重连（没在线时只保存）。
-                app.restartForServerChange()
-            }
-
-            // 这些只在 Homebrew 下有含义：ODTP 没有热点后缀、没有时隙/色码，
-            // 也不发 RPTC，而且只走 UDP。协议现在固定 ODTP，所以这段不会显示，
-            // 留着是为了保住 Homebrew 的代码路径。
-            if app.settings.linkProtocol == .homebrew {
+        if app.settings.linkProtocol == .homebrew {
+            Section {
                 HStack {
                     Text("ESSID 后缀")
                     Spacer()
@@ -138,9 +134,9 @@ struct SettingsView: View {
                     }
                 }
                 Toggle("上报配置包 RPTC（实验性）", isOn: $app.settings.sendConfig)
+            } header: {
+                Text("服务器")
             }
-        } header: {
-            Text("服务器")
         }
     }
 

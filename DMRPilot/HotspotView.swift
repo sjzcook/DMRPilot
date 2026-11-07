@@ -12,6 +12,8 @@ struct HotspotView: View {
     @EnvironmentObject private var app: AppState
     @EnvironmentObject private var hotspot: HomebrewClient
     @EnvironmentObject private var callsigns: CallsignDirectory
+    /// 服务器选择器从设置页搬过来了：首页直接挑服务器，数据源还是这一份。
+    @EnvironmentObject private var hostStore: DMRHostStore
     @State private var pttPressed = false
     @State private var pttDenied = false
     /// 电平表的平滑值：快起慢落，免得读数在「59」和「53」之间抖。
@@ -174,39 +176,39 @@ struct HotspotView: View {
             }
             .padding(.vertical, 4)
 
-            HStack(spacing: 6) {
-                Image(systemName: "server.rack")
-                    .font(.caption2)
-                Text("\(app.settings.host):\(String(app.settings.port))")
-                    .font(.caption)
-                    .monospacedDigit()
-            }
-            .foregroundStyle(.secondary)
-
-            // 连接按钮和通话组选择器并排，各占一半宽度。
-            // 选组是「点开列表挑一个」，和设置页选服务器是同一套交互，不再手打号码。
-            HStack(alignment: .center, spacing: 10) {
-                Button(action: toggleConnection) {
-                    Text(buttonTitle)
-                        .font(.body.weight(.semibold))
-                        .frame(maxWidth: .infinity)
+            // 服务器选择器（从设置页搬来）和通话组选择器并排，各占一半宽度；
+            // 连接要用的两样东西都摆在按钮正上方，选完直接按。
+            // 左上角模式切到 YSF 时没有通话组概念，只显示服务器那一格。
+            HStack(alignment: .top, spacing: 10) {
+                HostPickerField(store: hostStore, settings: $app.settings) {
+                    // 换服务器后自动断开重连（没在线时只保存），和原先设置页同一套行为。
+                    app.restartForServerChange()
                 }
-                .buttonStyle(.borderedProminent)
-                // 连上之后按钮变成「断开连接」，底色改红——红色在这套界面里专门留给
-                // 「会中断当前动作」的操作；连着的过程中（connecting 等）仍是主题色。
-                .tint(hotspot.state == .online ? Color.red : Color.accentColor)
-                .controlSize(.large)
                 .frame(maxWidth: .infinity)
 
-                TalkgroupPickerField(talkgroups: app.talkgroups,
-                                     selected: app.settings.talkgroup,
-                                     isLoading: app.isLoadingTalkgroups,
-                                     error: app.talkgroupsError,
-                                     onSelect: { app.setTalkgroup($0) },
-                                     onRefresh: { await app.reloadTalkgroups() })
+                if app.settings.homeMode != .ysf {
+                    TalkgroupPickerField(talkgroups: app.talkgroups,
+                                         selected: app.settings.talkgroup,
+                                         isLoading: app.isLoadingTalkgroups,
+                                         error: app.talkgroupsError,
+                                         onSelect: { app.setTalkgroup($0) },
+                                         onRefresh: { await app.reloadTalkgroups() })
+                        .frame(maxWidth: .infinity)
+                }
+            }
+
+            // 连接按钮独占一行，整行可点。
+            Button(action: toggleConnection) {
+                Text(buttonTitle)
+                    .font(.body.weight(.semibold))
                     .frame(maxWidth: .infinity)
             }
-            .frame(minHeight: 46)
+            .buttonStyle(.borderedProminent)
+            // 连上之后按钮变成「断开连接」，底色改红——红色在这套界面里专门留给
+            // 「会中断当前动作」的操作；连着的过程中（connecting 等）仍是主题色。
+            .tint(hotspot.state == .online ? Color.red : Color.accentColor)
+            .controlSize(.large)
+            .frame(maxWidth: .infinity)
         }
         .padding(.vertical, 6)
     }
@@ -293,7 +295,7 @@ struct HotspotView: View {
             return "连上服务器后才能发射"
         }
         if app.settings.talkgroup <= 0 {
-            return "先在连接按钮右边选一个通话组"
+            return "先在连接按钮上方选一个通话组"
         }
         return "按住说话 · TG \(app.settings.talkgroup)"
     }
