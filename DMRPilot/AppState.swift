@@ -97,15 +97,20 @@ final class AppState: ObservableObject {
     ///
     /// 切到一个具体 TG 时还会顺手向它订阅一次：本地只能决定「播不播」，
     /// 要让服务器真的把语音推下来，得让 master 认为这个组被订阅了。
+    ///
+    /// 这个是**唯一**的切组入口：选择器里点一行、手填号码点「确定」都走这里，
+    /// 所以两条路径的效果一定一致——旧组上挂着的通话先收尾，再切到新组订阅。
     func setTalkgroup(_ talkgroup: Int) {
         let value = max(0, talkgroup)
 
         if settings.talkgroup != value {
-            settings.talkgroup = value
+            // 先让连接层把旧组收掉（结束在途通话、清掉旧订阅的计数），再落设置：
+            // 「断开旧组 → 切到新组」一步完成，不会出现新组已经显示、旧通话还挂着的中间态。
             hotspot.setTalkgroup(value)
+            settings.talkgroup = value
         }
 
-        // 值没变也照发：用户点「确定」的意思就是「我要听这个组，再激活一次」。
+        // 值没变也照发：用户点「确定」/ 点同一行的意思就是「我要听这个组，再激活一次」。
         if value > 0 {
             hotspot.call(talkgroup: value)
         }

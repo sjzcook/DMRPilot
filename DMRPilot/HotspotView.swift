@@ -126,11 +126,7 @@ struct HotspotView: View {
                 LevelMeter(level: Double(hotspot.voiceLevel))
                     .frame(width: 80, height: 10)
 
-                Spacer()
-
-                Text(audioStatusText)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
             }
 
             HStack(spacing: 6) {
@@ -468,12 +464,6 @@ struct HotspotView: View {
     private var audioIcon: String {
         if !app.settings.audioEnabled { return "speaker.slash" }
         return hotspot.isVoicePlaying ? "waveform" : "speaker.wave.1"
-    }
-
-    private var audioStatusText: String {
-        if !app.settings.audioEnabled { return "已静音" }
-        if hotspot.isVoicePlaying { return "解码中" }
-        return "静默"
     }
 
     // MARK: - 辅助

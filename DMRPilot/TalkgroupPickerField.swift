@@ -233,10 +233,7 @@ private struct TalkgroupPickerSheet: View {
     private var list: some View {
         List {
             Section {
-                allRow
                 manualRow
-            } footer: {
-                Text("「全部通话组」= 服务器推什么听什么，不按目的地址过滤。表里没有的号码用手填。")
             }
 
             if isManual {
@@ -275,8 +272,6 @@ private struct TalkgroupPickerSheet: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-            } header: {
-                Text(headerText)
             } footer: {
                 if let error {
                     Text(error).foregroundStyle(.red)
@@ -284,27 +279,6 @@ private struct TalkgroupPickerSheet: View {
             }
         }
         .listStyle(.plain)
-    }
-
-    private var allRow: some View {
-        Button {
-            onSelect(0)
-            dismiss()
-        } label: {
-            HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("全部通话组")
-                        .font(.subheadline)
-                    Text("不过滤，听到所有被推送的组")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 8)
-                if selected == 0 { checkmark }
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
     }
 
     private var manualRow: some View {
@@ -315,13 +289,8 @@ private struct TalkgroupPickerSheet: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { manualFocused = true }
         } label: {
             HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("手动输入号码")
-                        .font(.subheadline)
-                    Text("列表里没有的组 / 私有组")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
+                Text("手动输入号码")
+                    .font(.subheadline)
                 Spacer(minLength: 8)
                 if selected > 0 && !entries.contains(where: { $0.id == selected }) { checkmark }
                 Image(systemName: isManual ? "chevron.up" : "chevron.down")
@@ -335,8 +304,7 @@ private struct TalkgroupPickerSheet: View {
 
     private func entryRow(_ entry: TalkgroupEntry) -> some View {
         Button {
-            onSelect(entry.id)
-            dismiss()
+            commit(entry.id)
         } label: {
             HStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -380,12 +348,17 @@ private struct TalkgroupPickerSheet: View {
         .foregroundStyle(.secondary)
     }
 
-    private var headerText: String {
-        "共 \(baseList.count) 个"
-    }
-
     private func commitManual() {
         guard let value = manualValue else { return }
+        commit(value)
+    }
+
+    /// 列表点选和手动输入「确定」都走这里，两者行为必须一模一样。
+    ///
+    /// 收掉手填框的焦点（还在输入时键盘没退），再交给上层切组：`AppState.setTalkgroup`
+    /// 会先把旧组上挂着的通话收尾、换掉旧的订阅，然后向新组订阅一次，
+    /// 所以「选择后自动断掉原来的组，切到选定的组」这件事由同一个入口保证。
+    private func commit(_ value: Int) {
         manualFocused = false
         onSelect(value)
         dismiss()
