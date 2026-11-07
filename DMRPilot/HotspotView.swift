@@ -182,7 +182,7 @@ struct HotspotView: View {
             // 且服务器列表跟着切到 YSF 反射器那份。
             HStack(alignment: .top, spacing: 10) {
                 HostPickerField(store: hostStore,
-                                kind: app.settings.homeMode == .ysf ? .ysf : .dmr,
+                                kind: app.settings.homeMode.hostKind,
                                 settings: $app.settings) {
                     // 换服务器后自动断开重连（没在线时只保存），和原先设置页同一套行为。
                     app.restartForServerChange()

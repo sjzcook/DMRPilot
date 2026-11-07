@@ -131,11 +131,11 @@ final class AppState: ObservableObject {
                                      port: settings.port)
 
         // 存旧类型的选择
-        settings.rememberCurrentHost(as: settings.homeMode)
+        settings.rememberCurrentHost(as: settings.homeMode.hostKind)
         settings.homeMode = mode
 
         // 回显新类型的选择
-        let remembered = settings.rememberedHost(for: mode)
+        let remembered = settings.rememberedHost(for: mode.hostKind)
         if !remembered.isEmpty {
             settings.applyHost(remembered)
         }

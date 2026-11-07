@@ -132,6 +132,14 @@ enum HomeMode: String, Codable, CaseIterable, Identifiable {
     case ysf = "YSF"
 
     var id: String { rawValue }
+
+    /// 对应的服务器列表类型：记忆的服务器槽、选择器加载的列表都按它分。
+    var hostKind: HostKind {
+        switch self {
+        case .dmr: return .dmr
+        case .ysf: return .ysf
+        }
+    }
 }
 
 // MARK: - 外观主题
