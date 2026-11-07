@@ -76,10 +76,13 @@ final class LiveActivityController {
 
         Task {
             if #available(iOS 16.2, *), let lastContent = lastContent {
+                // 16.2 起用 ActivityContent 版本，能顺带把 staleDate 传进去。
                 await activity.end(ActivityContent(state: lastContent, staleDate: Date()),
                                    dismissalPolicy: .immediate)
             } else {
-                await activity.end(nil, dismissalPolicy: .immediate)
+                // 16.1 只有旧签名：end(using:dismissalPolicy:)。这里没法写 `end(nil, …)`，
+                // 那个重载本身是 16.2 才有的，会直接编译不过。
+                await activity.end(using: lastContent, dismissalPolicy: .immediate)
             }
         }
     }
