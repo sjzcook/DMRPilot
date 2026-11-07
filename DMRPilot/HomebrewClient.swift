@@ -62,6 +62,16 @@ final class HomebrewClient: ObservableObject {
     // MARK: - 对外状态
 
     @Published private(set) var state: ConnectionState = .offline
+
+    /// 手上是不是还握着一条会话：UDP socket / WebSocket 还在，或者状态不是 offline。
+    ///
+    /// 换协议、换呼叫类型时要判断的是这个，而不是 `state`——`disconnect()` 会立刻把状态
+    /// 置成 `.offline`，但真正拆 socket 还要等 0.25 秒把 RPTCL 发出去；那段时间里
+    /// `state == .offline` 却仍然连着，只看状态会漏判。
+    var hasSession: Bool {
+        connection != nil || webSocket != nil || state != .offline
+    }
+
     @Published private(set) var entries: [LogEntry] = []
     @Published private(set) var calls: [LiveCall] = []
     @Published private(set) var rxFrames = 0

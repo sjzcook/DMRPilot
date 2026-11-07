@@ -18,6 +18,11 @@ struct HotspotView: View {
     @State private var pttDenied = false
     /// 电平表的平滑值：快起慢落，免得读数在「59」和「53」之间抖。
     @State private var smoothedLevel: Double = 0
+    /// 单呼号码框在屏幕上的位置（全局坐标）。
+    ///
+    /// 收起键盘靠「点列表任意位置」的手势实现，而点在号码框里是要继续输入，
+    /// 所以得知道框在哪：框外的点才收键盘。
+    @State private var privateFieldFrame: CGRect = .zero
 
     var body: some View {
         NavigationStack {
@@ -40,7 +45,27 @@ struct HotspotView: View {
                 }
             }
             .listStyle(.insetGrouped)
-            // 单呼时那一格是数字键盘，没有回车键：允许下滑收键盘，否则输入完没法关。
+            // 单呼时那一格是数字键盘，没有回车键。除了下滑收键盘以外，点框外任何地方
+            // 也当成「输完了」：这里挂一个不抢事件的手势，只观察点击落在哪。
+            // `simultaneousGesture` 不会挡住按钮 / 选择器本身的点击，键盘收起来的同时
+            // 那一行该干什么还干什么。
+            //
+            // 位置一律用 `.global`：手势的触点和号码框上报的 frame 必须是同一套坐标，
+            // 中途插一个具名坐标空间反而容易对不上（还会踩到 iOS 17 的弃用接口）。
+            .simultaneousGesture(
+                SpatialTapGesture(coordinateSpace: .global).onEnded { value in
+                    // 只有单呼的号码框需要这个；组呼那边是菜单选择器，没有键盘。
+                    guard app.settings.isPrivateCall else { return }
+                    // 点在号码框里就是要接着敲数字，不能收。
+                    if privateFieldFrame.contains(value.location) { return }
+                    dismissKeyboard()
+                }
+            )
+            // 号码框每帧布局后上报自己的位置（切换组呼 / 单呼、滚动、键盘顶起来都会变）。
+            .onPreferenceChange(PrivateFieldFrameKey.self) { frame in
+                privateFieldFrame = frame
+            }
+            // 下滑也能收键盘（数字键盘没有回车，这是另一条退路）。
             .scrollDismissesKeyboard(.interactively)
             // 电平随每个语音帧刷新（约 16 次/秒），原始值直接显示会在「59」和「53」之间乱跳：
             // 这里做一次快起慢落（上升 0.7、回落 0.12），读数稳住但话音一停也能很快掉下去。
@@ -80,11 +105,13 @@ struct HotspotView: View {
     /// 所以不需要对勾，也不会像系统 Picker 那样把标题和值挤在一起。
     ///
     /// 这里不直接写 `settings.homeMode`，而是走 `AppState.setHomeMode`：
-    /// 它还要负责记/换服务器、在线时断线，直接改设置会漏掉这些副作用。
+    /// 它还要负责记/换服务器、把会话断干净，直接改设置会漏掉这些副作用。
     private var modeMenu: some View {
         Menu {
             ForEach(HomeMode.allCases) { mode in
                 Button {
+                    // 导航栏在列表外面，列表上那个「点空白收键盘」的手势够不到这里。
+                    dismissKeyboard()
                     app.setHomeMode(mode)
                 } label: {
                     Text(mode.rawValue)
@@ -211,6 +238,15 @@ struct HotspotView: View {
                     if app.settings.isPrivateCall {
                         PrivateIdField(id: $app.settings.privateId)
                             .frame(maxWidth: .infinity)
+                            // 把框的位置报给列表：点框外收键盘时，框内的点击要放过。
+                            .background(
+                                GeometryReader { proxy in
+                                    Color.clear.preference(
+                                        key: PrivateFieldFrameKey.self,
+                                        value: proxy.frame(in: .global)
+                                    )
+                                }
+                            )
                     } else {
                         TalkgroupPickerField(talkgroups: app.talkgroups,
                                              selected: app.settings.talkgroup,
@@ -274,12 +310,14 @@ struct HotspotView: View {
     /// 组呼 / 单呼切换。外形和导航栏的 DMR / YSF 完全一致（同一个 `selectorLabel`），
     /// 只是字号跟着这一块缩小一号。
     ///
-    /// 绑定走 `AppState.setCallMode` 而不是直接写设置：切回组呼时它要顺手向当前
-    /// 通话组补一次订阅（单呼期间动态 TG 可能已经被服务器释放了）。
+    /// 绑定走 `AppState.setCallMode` 而不是直接写设置：它还要负责「切换后断开连接」
+    /// 和收尾正在发射的那一句。
     private var callModePicker: some View {
         Menu {
             ForEach(CallMode.allCases) { mode in
                 Button {
+                    // 切走以后号码框会消失，键盘留着就没地方可点了。
+                    dismissKeyboard()
                     app.setCallMode(mode)
                 } label: {
                     Text(mode.title)
@@ -393,6 +431,9 @@ struct HotspotView: View {
 
     private func pressPtt() {
         guard !pttPressed else { return }
+        // PTT 用高优先级拖拽手势，列表上那个「点空白收键盘」的观察手势收不到这里；
+        // 手指已经落在 PTT 上就说明不想再输号码了，顺手收掉键盘。
+        dismissKeyboard()
         guard canTransmit else { return }
         pttPressed = true
         UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
@@ -654,11 +695,34 @@ struct HotspotView: View {
     }
 
     private func toggleConnection() {
+        // 连接 / 断开是要动电台的动作，号码已经敲完了，键盘留着只会挡住状态。
+        dismissKeyboard()
         if isConnectedOrBusy {
             app.disconnect()
         } else {
             app.connect()
         }
+    }
+
+    /// 收起键盘。
+    ///
+    /// 单呼号码框用的是数字键盘，没有「完成」键，只能主动取消第一响应者；
+    /// 这里不追踪具体是哪个框，收掉当下那个就对了（页面上同时只有一个输入框）。
+    private func dismissKeyboard() {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
+                                        to: nil, from: nil, for: nil)
+    }
+}
+
+// MARK: - 号码框位置
+
+/// 单呼号码框上报自己在屏幕（全局）坐标系里的位置（点框外收键盘时用来放过框内的点击）。
+private struct PrivateFieldFrameKey: PreferenceKey {
+    // 用 `let` 而不是 `var`：这个值从不参与归并，写死零就够了，也免得将来开严格并发时告警。
+    static let defaultValue: CGRect = .zero
+
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+        value = nextValue()
     }
 }
 

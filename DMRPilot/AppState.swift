@@ -122,7 +122,7 @@ final class AppState: ObservableObject {
     /// 新类型还没选过（槽是空的）就保持现状，等用户在列表里挑一台。
     ///
     /// 类型换了等于换了协议（DMR 的 RPTL/ODTP 与 YSF 的 YSFP 完全不通用），
-    /// 所以只要在线就断开，不替用户自动重连——用户按连接按钮时才用新协议上线。
+    /// 所以只要还有会话就直接断开，不替用户自动重连——用户按连接按钮时才用新协议上线。
     func setHomeMode(_ mode: HomeMode) {
         guard mode != settings.homeMode else { return }
 
@@ -136,9 +136,16 @@ final class AppState: ObservableObject {
             settings.applyHost(remembered)
         }
 
-        // 模式一换就是换协议（RPTL / ODTP ↔ YSFP 完全不通用），在线就断开，
+        // 模式一换就是换协议（RPTL / ODTP ↔ YSFP 完全不通用），只要还有会话就直接断开，
         // 不替用户自动重连——连接按钮按下去时才用新协议上线。
-        if hotspot.state != .offline {
+        //
+        // 判断用 `hotspot.hasSession` 而不是 `state != .offline`：状态可能已经是 offline、
+        // 但 socket 还要 0.25 秒才拆（刚断过一次又切模式就是这个窗口），
+        // 那种情况下也要把残留的会话收干净。
+        if hotspot.isTransmitting {
+            hotspot.endPtt()
+        }
+        if hotspot.hasSession {
             disconnect()
         }
     }
@@ -149,18 +156,26 @@ final class AppState: ObservableObject {
     ///
     /// 只改「发到哪」，不碰接收：接收侧仍然是服务器推什么就播什么。
     ///
-    /// 切回组呼时主动向当前通话组再订阅一次 —— 单呼期间服务器的动态订阅可能已经
-    /// 静默超时被释放（BM 大约 10 分钟），不重发一次的话切回来会「什么都没有」，
-    /// 看上去像切坏了。走的是和选择器完全相同的 `call(talkgroup:)` 入口，
-    /// 没在线时它只记一条日志，交给连上后的 `autoCallOnConnect` 补。
+    /// 切换之后**直接断开**，既不替用户重连，也不再自动补订阅：
+    /// 组订阅是服务器那边记着的，单呼期间留着组订阅，服务器会继续把这台热点订阅的
+    /// 组语音推下来；而切回组呼时补一次订阅（`hotspot.call`）本质上是一整个超帧的
+    /// **真实发射**，用户看到的是「只换了个模式，电台自己发了一次」。
+    ///
+    /// 断开之后由用户按「连接」，用新模式的干净会话重新上线；组呼模式连上后
+    /// `autoCallOnConnect` 会照旧补订阅，所以断开不会让组呼失去订阅。
     func setCallMode(_ mode: CallMode) {
         guard settings.callMode != mode else { return }
+
+        // 正在发射就先收尾：带着「正在发射」的状态断开，PTT 圆会卡在按下态。
+        if hotspot.isTransmitting {
+            hotspot.endPtt()
+        }
+
         settings.callMode = mode
 
-        guard mode == .group else { return }
-        let talkgroup = settings.talkgroup
-        guard talkgroup > 0 else { return }
-        hotspot.call(talkgroup: talkgroup)
+        if hotspot.hasSession {
+            disconnect()
+        }
     }
 
     // MARK: - 通话组
