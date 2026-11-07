@@ -123,6 +123,17 @@ enum LinkProtocol: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - 首页模式选择
+
+/// 首页标题右侧按钮的可选项（DMR / YSF）。rawValue 就是按钮上显示的文案。
+/// 存在 Settings 里持久化；当前只影响显示，不发协议指令——将来接 YSF 从这里接线。
+enum HomeMode: String, Codable, CaseIterable, Identifiable {
+    case dmr = "DMR"
+    case ysf = "YSF"
+
+    var id: String { rawValue }
+}
+
 // MARK: - 外观主题
 
 /// App 的整体配色。存在设置里，改完立刻生效（`RootView` 上用 `preferredColorScheme`）。
@@ -244,6 +255,10 @@ struct Settings: Codable, Equatable {
 
     // MARK: 外观
 
+    /// 首页「首页」右侧按钮的当前模式。持久化，默认 DMR。
+    /// 目前只切换按钮文案，协议逻辑不受它影响。
+    var homeMode: HomeMode = .dmr
+
     /// 主题：跟随系统 / 强制日间 / 强制夜间。只影响界面，不影响连接。
     var theme: AppTheme = .system
 
@@ -351,10 +366,12 @@ extension Settings {
         autoCallOnConnect = try container.decodeIfPresent(Bool.self, forKey: .autoCallOnConnect) ?? defaults.autoCallOnConnect
         autoRenewTalkgroup = try container.decodeIfPresent(Bool.self, forKey: .autoRenewTalkgroup) ?? defaults.autoRenewTalkgroup
         talkgroupRenewMinutes = try container.decodeIfPresent(Int.self, forKey: .talkgroupRenewMinutes) ?? defaults.talkgroupRenewMinutes
-        // 老存档里没有这个键，退回「跟随系统」，视觉上不会突然变样。
+        // 老存档没有这个键，退回默认主题，视觉上不会突然变样。
         // 这里多包一层 `try?`：枚举存的是原始值字符串，万一将来某个档位被删掉，
         // 认不出的值也只退回默认主题，不会把整份设置（DMR ID / 密码）一起丢掉。
         theme = (try? container.decodeIfPresent(AppTheme.self, forKey: .theme)) ?? defaults.theme
+        // 首页模式同理：老存档没有就退回 DMR；认不出的值也退回 DMR。
+        homeMode = (try? container.decodeIfPresent(HomeMode.self, forKey: .homeMode)) ?? defaults.homeMode
         audioEnabled = try container.decodeIfPresent(Bool.self, forKey: .audioEnabled) ?? defaults.audioEnabled
         audioVolume = try container.decodeIfPresent(Double.self, forKey: .audioVolume) ?? defaults.audioVolume
         // 老存档没有这个键，退回 0 dB（和以前完全一样）；顺便把越界值夹回滑杆范围，

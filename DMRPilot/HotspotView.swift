@@ -12,7 +12,6 @@ struct HotspotView: View {
     @EnvironmentObject private var app: AppState
     @EnvironmentObject private var hotspot: HomebrewClient
     @EnvironmentObject private var callsigns: CallsignDirectory
-    @State private var showLog = false
     @State private var pttPressed = false
     @State private var pttDenied = false
     /// 电平表的平滑值：快起慢落，免得读数在「59」和「53」之间抖。
@@ -60,20 +59,42 @@ struct HotspotView: View {
                 callsigns.request(id)
             }
             .toolbar {
+                // 协议日志按钮搬到设置页右上角了；这里只剩模式选择。
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button {
-                        showLog = true
-                    } label: {
-                        Image(systemName: "terminal")
-                    }
-                    .accessibilityLabel("协议日志")
+                    modeMenu
                 }
             }
-            .sheet(isPresented: $showLog) {
-                LogConsoleView()
-                    .environmentObject(hotspot)
+        }
+    }
+
+    // MARK: - 模式选择
+
+    /// 标题右侧的模式按钮：点开是 DMR / YSF 两个选项，选中哪个按钮就显示哪个。
+    /// 选择写进 `app.settings.homeMode`，持久化；当前不影响协议逻辑。
+    private var modeMenu: some View {
+        Menu {
+            ForEach(HomeMode.allCases) { candidate in
+                Button {
+                    app.settings.homeMode = candidate
+                } label: {
+                    if candidate == app.settings.homeMode {
+                        // 系统菜单里带勾的写法：当前项前面打勾。
+                        Label(candidate.rawValue, systemImage: "checkmark")
+                    } else {
+                        Text(candidate.rawValue)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Text(app.settings.homeMode.rawValue)
+                    .font(.subheadline.weight(.semibold))
+                Image(systemName: "chevron.down")
+                    .font(.caption2.weight(.bold))
+                    .imageScale(.small)
             }
         }
+        .accessibilityLabel("模式选择，当前\(app.settings.homeMode.rawValue)")
     }
 
     // MARK: - 状态卡片

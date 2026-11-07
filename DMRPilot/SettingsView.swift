@@ -13,6 +13,8 @@ struct SettingsView: View {
     @EnvironmentObject private var callsigns: CallsignDirectory
     /// 服务器表同理：行内「更新」按钮的转圈和下载后的台数都靠它发布。
     @EnvironmentObject private var hostStore: DMRHostStore
+    /// 协议日志从首页右上角搬过来的，入口挂在这里。
+    @State private var showLog = false
 
     var body: some View {
         NavigationStack {
@@ -25,6 +27,20 @@ struct SettingsView: View {
                 aboutSection
             }
             .navigationTitle("设置")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        showLog = true
+                    } label: {
+                        Image(systemName: "terminal")
+                    }
+                    .accessibilityLabel("协议日志")
+                }
+            }
+            .sheet(isPresented: $showLog) {
+                LogConsoleView()
+                    .environmentObject(hotspot)
+            }
         }
     }
 
