@@ -2,14 +2,15 @@
 //  CallLogView.swift
 //  DMRPilot
 //
-//  日志页：所有已经结束的通话，按天归档。
+//  日志页：所有说过话的人，按最近一次通话的日期归档。
 //
 //  数据来自本地 SQLite（`CallLogStore`），不是内存里的 `HomebrewClient.calls`——
 //  内存那份按 200 条裁剪，只够首页用；日志要的是「一句都不少」，
-//  所以退出 App、重启手机之后这里还在。
+//  所以退出 App、重启手机之后这里还在。同一个人说多次只占一行，
+//  那一行显示的是最近一次（时间 / 通话组 / 帧数都换成最新的）。
 //
 //  支持按呼号 / 数字 ID / 姓名 / 城市 / 通话组名搜索，过滤在 SQL 里做，
-//  翻页时不会漏掉后面的记录。
+//  翻页时不会漏掉后面的记录。单条记录可以左滑删除。
 //
 
 import Foundation
@@ -36,6 +37,14 @@ struct CallLogView: View {
                             ForEach(group.items) { item in
                                 row(for: item.record)
                                     .onAppear { loadMoreIfNeeded(item) }
+                                    // 左滑删单条：只删这一行，不影响其他人，也不影响首页内存里那份。
+                                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                        Button(role: .destructive) {
+                                            log.delete(item.record.id)
+                                        } label: {
+                                            Label("删除", systemImage: "trash")
+                                        }
+                                    }
                             }
                         }
                     }
@@ -213,7 +222,7 @@ struct CallLogView: View {
                 } else if query.trimmingCharacters(in: .whitespaces).isEmpty {
                     Text("还没有通话记录")
                         .font(.subheadline.weight(.medium))
-                    Text("连上服务器后，每说完一句就会写进本机的数据库；退出 App 也不会丢。")
+                    Text("连上服务器后，每个人的最近一次通话都会写进本机的数据库；同一个人只占一行，左滑可以删掉。")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 } else {

@@ -8,7 +8,7 @@
 //
 //  协议层只认得「这一句说完了」，没有历史概念；内存里的 `HomebrewClient.calls`
 //  还按 200 条裁剪着给首页用。日志页要的是「一句都不少」，所以凡是收尾的通话
-//  都在这里写一行，表只增不减（除非用户点清空）。
+//  都在这里写一行，表只增不减（除非用户点清空 / 左滑删掉某一条）。
 //
 //  表结构刻意做成扁平的一张，不拆 src / dst 两张字典：
 //    - 呼号、姓名、城市、通话组名在写入那一刻**快照**下来。日志记录的是当时
@@ -16,8 +16,11 @@
 //    - 好处是搜索能全走 SQL：`LIKE` 一次扫完，翻页不用先在内存里过滤，
 //      「不裁剪」之后表可以有几万行也不怕。
 //
-//  唯一键是 (src, dst, slot, started_at)：同一次通话被收尾两次（先看门狗、
-//  再断线）只会更新那一行，不会写出两条。
+//  唯一键是 **src**（也就是呼号）：同一个人说过多次只留一行，后来的那次
+//  把那一行更新掉（时间、通话组、帧数换成最新的），不再新增重复记录。
+//  这样日志页是一份「谁说过话」的名册，而不是一长串同一个人。
+//  老版本按 (src, dst, slot, started_at) 去重，升级时会一次性把同一个人
+//  的多行并成最新那一行（`PRAGMA user_version` 记账，只跑一次）。
 //
 
 import Foundation
@@ -25,10 +28,10 @@ import SQLite3
 
 // MARK: - 一条记录
 
-/// 一条已经结束的通话。
+/// 一条历史记录。
 ///
 /// 字段名和 `LiveCall` 对得上，但这是**从数据库读出来的历史**，
-/// 不再随内存里的通话状态变化。
+/// 不再随内存里的通话状态变化。同一个人（src）只有一行，内容是他的最近一次通话。
 struct CallRecord: Identifiable, Equatable {
     /// 数据库自增主键；写入前是 0。
     let id: Int64
@@ -90,7 +93,11 @@ final class CallLogDatabase: @unchecked Sendable {
         sqlite3_busy_timeout(pointer, 3_000)
         exec("PRAGMA journal_mode=WAL;")
         exec("PRAGMA synchronous=NORMAL;")
-        exec(Self.schema)
+        // 顺序不能换：先建表（空库也能跑合并），再合并老数据，
+        // 最后才建按 src 的唯一索引——重复行还在的话这条索引建不出来。
+        exec(Self.table)
+        migrate(pointer)
+        exec(Self.indexes)
     }
 
     deinit {
@@ -99,7 +106,7 @@ final class CallLogDatabase: @unchecked Sendable {
         if let handle { sqlite3_close(handle) }
     }
 
-    private static let schema = """
+    private static let table = """
     CREATE TABLE IF NOT EXISTS calls (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
         src         INTEGER NOT NULL,
@@ -114,15 +121,58 @@ final class CallLogDatabase: @unchecked Sendable {
         city        TEXT,
         dst_name    TEXT
     );
-    CREATE UNIQUE INDEX IF NOT EXISTS ux_calls ON calls(src, dst, slot, started_at);
+    """
+
+    /// 唯一键建在 `src` 上——见文件头那段说明。
+    private static let indexes = """
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_calls_src ON calls(src);
     CREATE INDEX IF NOT EXISTS ix_calls_started ON calls(started_at DESC);
-    CREATE INDEX IF NOT EXISTS ix_calls_src ON calls(src);
     CREATE INDEX IF NOT EXISTS ix_calls_dst ON calls(dst);
     """
+
+    /// 老库升级：把「同一个人多行」并成一行，再加按 src 的唯一索引。
+    ///
+    /// 不跑这一步的话 `CREATE UNIQUE INDEX ux_calls_src` 会因为老数据里有
+    /// 同一个 src 的重复行直接失败，之后所有写入都会报约束错误。
+    /// 保留的是**最新**那一行（开始时间最晚），旧行删除，只跑一次。
+    private func migrate(_ handle: OpaquePointer) {
+        guard Self.userVersion(handle) < 2 else { return }
+
+        exec("DROP INDEX IF EXISTS ux_calls;")
+        guard exec(Self.mergeDuplicates) else {
+            openError = "通话记录升级失败：\(String(cString: sqlite3_errmsg(handle)))"
+            return
+        }
+        exec("PRAGMA user_version = 2;")
+    }
+
+    private static let mergeDuplicates = """
+    DELETE FROM calls
+     WHERE id NOT IN (
+           SELECT id FROM (
+                  SELECT id,
+                         ROW_NUMBER() OVER (PARTITION BY src
+                                            ORDER BY started_at DESC, id DESC) AS rn
+                    FROM calls)
+            WHERE rn = 1);
+    """
+
+    private static func userVersion(_ handle: OpaquePointer) -> Int32 {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(handle, "PRAGMA user_version;", -1, &statement, nil) == SQLITE_OK,
+              let statement else { return 0 }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else { return 0 }
+        return sqlite3_column_int(statement, 0)
+    }
 
     // MARK: 写
 
     /// 落一条记录。`finished` 在写完之后回主线程调用。
+    ///
+    /// 冲突目标是 **src**：同一个人之前的那一行会被就地更新成这次的
+    /// 时间 / 通话组 / 帧数，不再新插一行。呼号、姓名、城市这些快照用
+    /// COALESCE 保旧值，免得这次没查到就把上次查到的抹掉。
     func insert(_ record: CallRecord, finished: (() -> Void)? = nil) {
         queue.async { [weak self] in
             guard let self, let handle = self.handle else { return }
@@ -131,13 +181,17 @@ final class CallLogDatabase: @unchecked Sendable {
             INSERT INTO calls (src, dst, slot, is_private, started_at, ended_at, frames,
                                callsign, name, city, dst_name)
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
-            ON CONFLICT(src, dst, slot, started_at) DO UPDATE SET
-                ended_at = excluded.ended_at,
-                frames   = MAX(calls.frames, excluded.frames),
-                callsign = COALESCE(calls.callsign, excluded.callsign),
-                name     = COALESCE(calls.name, excluded.name),
-                city     = COALESCE(calls.city, excluded.city),
-                dst_name = COALESCE(calls.dst_name, excluded.dst_name)
+            ON CONFLICT(src) DO UPDATE SET
+                dst        = excluded.dst,
+                slot       = excluded.slot,
+                is_private = excluded.is_private,
+                started_at = excluded.started_at,
+                ended_at   = excluded.ended_at,
+                frames     = excluded.frames,
+                callsign   = COALESCE(calls.callsign, excluded.callsign),
+                name       = COALESCE(calls.name, excluded.name),
+                city       = COALESCE(calls.city, excluded.city),
+                dst_name   = COALESCE(calls.dst_name, excluded.dst_name)
             """
 
             var statement: OpaquePointer?
@@ -187,6 +241,27 @@ final class CallLogDatabase: @unchecked Sendable {
             self.bind(statement, 3, city)
             sqlite3_bind_int64(statement, 4, Int64(source))
             _ = sqlite3_step(statement)
+        }
+    }
+
+    /// 删掉一条记录（日志页左滑）。返回是否真的删到了行。
+    func delete(id: Int64, finished: @escaping (Bool) -> Void) {
+        queue.async { [weak self] in
+            guard let self, let handle = self.handle else {
+                DispatchQueue.main.async { finished(false) }
+                return
+            }
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(handle, "DELETE FROM calls WHERE id = ?1;", -1, &statement, nil) == SQLITE_OK,
+                  let statement else {
+                DispatchQueue.main.async { finished(false) }
+                return
+            }
+            defer { sqlite3_finalize(statement) }
+            sqlite3_bind_int64(statement, 1, id)
+            let ok = sqlite3_step(statement) == SQLITE_DONE
+            let removed = ok && sqlite3_changes(handle) > 0
+            DispatchQueue.main.async { finished(removed) }
         }
     }
 
@@ -327,7 +402,8 @@ private let sqlTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
 /// 日志页的数据源。@MainActor 这一侧只负责分页状态，真正的 SQL 全在后台队列。
 ///
-/// **不做任何裁剪**：写入只有 INSERT，没有「超过 N 条删最旧」的逻辑。
+/// **不做任何裁剪**：没有「超过 N 条删最旧」的逻辑，只有用户主动清空或左滑删单条。
+/// 写入时按 src（呼号）合并，同一个人只占一行。
 @MainActor
 final class CallLogStore: ObservableObject {
 
@@ -365,7 +441,7 @@ final class CallLogStore: ObservableObject {
 
     // MARK: 写
 
-    /// 通话收尾时调用。可以重复调用，唯一键保证只留一行。
+    /// 通话收尾时调用。可以重复调用：同一个人（src）只留一行，后来那次覆盖前面那次。
     func record(_ call: LiveCall) {
         let user = callsigns?.user(for: call.src)
         let record = CallRecord(id: 0,
@@ -458,6 +534,28 @@ final class CallLogStore: ObservableObject {
     }
 
     // MARK: 删
+
+    /// 左滑删掉一条。库里删成功后立刻从内存列表拿掉，不等整页重读；
+    /// 如果删完这一页不满一页而后面还有，再补一页回来。
+    func delete(_ id: Int64) {
+        db.delete(id: id) { [weak self] removed in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                guard removed else {
+                    // 库里已经没有这行了，列表可能停在旧状态，重读一次对齐。
+                    self.reload()
+                    return
+                }
+                self.entries.removeAll { $0.id == id }
+                self.total = max(0, self.total - 1)
+                self.hasMore = self.entries.count < self.total
+                self.revision &+= 1
+                if self.entries.isEmpty || (self.hasMore && self.entries.count < Self.pageSize) {
+                    self.reload()
+                }
+            }
+        }
+    }
 
     func clear() {
         db.deleteAll { [weak self] _ in

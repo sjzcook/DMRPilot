@@ -70,6 +70,9 @@ struct HotspotView: View {
 
     private var statusCard: some View {
         VStack(alignment: .leading, spacing: 14) {
+            // 这一行的高度单独给个下限：未连接时右边没有 uptime 和静音按钮，
+            // 只剩「圆点 + 状态文字」，会明显比在线时矮一截，看着像整块在跳动。
+            // 只抬行高，字号保持 .headline 不动。
             HStack(spacing: 10) {
                 Circle()
                     .fill(statusColor)
@@ -101,6 +104,7 @@ struct HotspotView: View {
                     .accessibilityLabel(app.settings.audioEnabled ? "静音" : "恢复声音")
                 }
             }
+            .frame(minHeight: 38)
 
             if case .failed(let message) = hotspot.state {
                 Text(message)
