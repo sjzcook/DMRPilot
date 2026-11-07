@@ -94,6 +94,13 @@ final class HomebrewClient: ObservableObject {
     var activeCalls: [LiveCall] { calls.filter { $0.isActive } }
     var recentCalls: [LiveCall] { calls.filter { !$0.isActive } }
 
+    /// 日志页的「清空」：内存里已经结束的记录扔掉，正在说的那句保持不动；
+    /// 落盘的 SQLite 表也一起清掉（否则日志页一刷新又都回来了）。
+    func clearCallLog() {
+        calls.removeAll { !$0.isActive }
+        CallLogStore.shared.clear()
+    }
+
     // MARK: - 协议核心
 
     /// C++ 核心：握手状态机 + 组帧 / 拆帧。
@@ -220,8 +227,7 @@ final class HomebrewClient: ObservableObject {
         endStream(reason: nil)
         let now = Date()
         for index in calls.indices where calls[index].isActive {
-            calls[index].isActive = false
-            calls[index].updatedAt = now
+            closeCall(index, at: now)
         }
         currentSpeaker?.endedAt = now
         syncVoiceUI()
@@ -938,7 +944,7 @@ final class HomebrewClient: ObservableObject {
                 // 否则界面会一直停在「配置中」。
                 armLoginTimeout()
             } else {
-                append(.warning, "还没有选通话组：ODTP 必须先订阅才会收到语音，去「热点」页选一个组")
+                append(.warning, "还没有选通话组：ODTP 必须先订阅才会收到语音，去「首页」选一个组")
                 goOnline()
             }
 
@@ -1235,8 +1241,7 @@ final class HomebrewClient: ObservableObject {
 
         case DMR_EVT_RX_EOT:
             if let index = calls.firstIndex(where: { $0.id == key && $0.isActive }) {
-                calls[index].updatedAt = Date()
-                calls[index].isActive = false
+                closeCall(index, at: Date())
                 append(.rx, "通话结束 \(src) → \(dst)（\(Fmt.duration(calls[index].duration))，\(calls[index].frames) 帧）")
             }
             endStream(reason: nil)
@@ -1281,8 +1286,7 @@ final class HomebrewClient: ObservableObject {
             streamKey = key
             // 旧的同 key 通话先收尾，避免同一个流号出现两条「通话中」
             if let index = calls.firstIndex(where: { $0.id == key && $0.isActive }) {
-                calls[index].isActive = false
-                calls[index].updatedAt = date
+                closeCall(index, at: date)
             }
             calls.insert(makeCall(src: src, dst: dst, slot: slot, isPrivate: isPrivate, key: key), at: 0)
             trimCalls()
@@ -1299,8 +1303,7 @@ final class HomebrewClient: ObservableObject {
             // 有些 master 不推结束符，靠看门狗收尾。这时这条通话在 `calls` 里
             // 还挂着 isActive，不手动收掉就永远进不了「刚刚结束」。
             if let index = calls.firstIndex(where: { $0.id == key && $0.isActive }) {
-                calls[index].isActive = false
-                calls[index].updatedAt = Date()
+                closeCall(index, at: Date())
             }
         }
         streamKey = nil
@@ -1330,9 +1333,23 @@ final class HomebrewClient: ObservableObject {
                         frames: 1, startedAt: now, updatedAt: now, isActive: true)
     }
 
+    /// 把一条通话从「进行中」收掉，并落进本地日志库。
+    ///
+    /// 收尾有五个入口（收到结束符、看门狗超时、切组、断线、同流号重开），
+    /// 全走这一条路才不会出现「首页显示已结束、日志里却没有」。
+    /// 落库是幂等的（唯一键 src+dst+slot+开始时间），重复调用不会写出两条。
+    private func closeCall(_ index: Int, at date: Date) {
+        guard calls.indices.contains(index), calls[index].isActive else { return }
+        calls[index].isActive = false
+        calls[index].updatedAt = max(date, calls[index].startedAt)
+        CallLogStore.shared.record(calls[index])
+    }
+
     private func trimCalls() {
-        if calls.count > 40 {
-            calls.removeLast(calls.count - 40)
+        // 这里裁的只是**内存**里的列表（首页只用前 8 条）。
+        // 每一句在收尾时都已经写进 SQLite 了，日志页读的是库，不受这里影响。
+        if calls.count > 200 {
+            calls.removeLast(calls.count - 200)
         }
     }
 
@@ -1517,8 +1534,7 @@ final class HomebrewClient: ObservableObject {
         // 等于从界面上消失了。
         let closedAt = Date()
         for index in calls.indices where calls[index].isActive {
-            calls[index].isActive = false
-            calls[index].updatedAt = closedAt
+            closeCall(index, at: closedAt)
         }
         serverTalkgroup = nil
         talkgroupAliveAt = nil

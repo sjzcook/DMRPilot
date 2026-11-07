@@ -196,18 +196,18 @@ struct SettingsView: View {
         let follow = "「跟随服务器下发的通话组」是参考实现 DroidStar 的接收策略：收到帧就直接解，从不按目的地址过滤。服务器推的是这个账号被订阅的组，可能包含 SelfCare 里的静态组——它跟你在上面选的不一样时，按 TG 硬丢帧就会表现成「订阅没建立」，其实语音一直在下来。关掉这个开关才会严格只听选中的那一个组。"
         switch app.settings.linkProtocol {
         case .odtp:
-            return "ODTP 的订阅是一条显式命令：鉴权通过后立刻发 SUBSCRIPTION(组呼, TG)，服务器回一个空确认包才开始推语音。点「确定」换组会再订一次。订阅不会自己过期，只要 KEEP_ALIVE 还通就一直有效。\n" + follow
+            return "ODTP 的订阅是一条显式命令：鉴权通过后立刻发 SUBSCRIPTION(组呼, TG)，服务器回一个空确认包才开始推语音。在首页选一个新的组会再订一次。订阅不会自己过期，只要 KEEP_ALIVE 还通就一直有效。\n" + follow
         case .homebrew:
-            return "Homebrew 没有「订阅」指令：连上后在通话组上发一次完整 PTT（语音头 + 12 个突发 + 结束符，带嵌入 LC），BrandMeister 才会把这个组标成动态订阅，它的语音也才会推下来。热点页点「确定」切换组时也会自动来一次。\n" + follow + "\n订阅时隙要和该组在 SelfCare 里挂的时隙一致——中国区多数 TG 在 TS2。\nBrandMeister 的动态订阅静默约 10 分钟会被释放，打开「静默后自动续订」后，App 会在该组连续没有语音时自动再发一次（间隔取上面的值，建议 8 分钟，留出余量）。\n色码只写进我们发出去的语音帧（slot type 与嵌入信令 DMREMB）和上报配置包里的资料字段，连接与接收都不需要它：Homebrew 握手没有任何色码校验，收帧也不按色码过滤。"
+            return "Homebrew 没有「订阅」指令：连上后在通话组上发一次完整 PTT（语音头 + 12 个突发 + 结束符，带嵌入 LC），BrandMeister 才会把这个组标成动态订阅，它的语音也才会推下来。首页选（换）组时也会自动来一次。\n" + follow + "\n订阅时隙要和该组在 SelfCare 里挂的时隙一致——中国区多数 TG 在 TS2。\nBrandMeister 的动态订阅静默约 10 分钟会被释放，打开「静默后自动续订」后，App 会在该组连续没有语音时自动再发一次（间隔取上面的值，建议 8 分钟，留出余量）。\n色码只写进我们发出去的语音帧（slot type 与嵌入信令 DMREMB）和上报配置包里的资料字段，连接与接收都不需要它：Homebrew 握手没有任何色码校验，收帧也不按色码过滤。"
         }
     }
 
     // MARK: - 语音
 
-    /// 从热点页搬过来的整块「语音」。
+    /// 从首页搬过来的整块「语音」。
     ///
-    /// 热点页只留状态显示和「连接时间」右边那个静音按钮，开关与音量统一放到设置里，
-    /// 免得每次想调音量都要翻回热点页。
+    /// 首页只留状态显示和「连接时间」右边那个静音按钮，开关与音量统一放到设置里，
+    /// 免得每次想调音量都要翻回首页。
     private var audioSection: some View {
         Section {
             Toggle(isOn: audioEnabledBinding) {
@@ -244,7 +244,7 @@ struct SettingsView: View {
         } header: {
             Text("语音")
         } footer: {
-            Text("热点页连接成功后，「连接时间」右边也有一个静音按钮，开关的就是这里的「语音播放」，图标会跟着状态切换。\n帧的接收与拆解由 C++ 协议核心完成（Core/DMRCore.cpp，移植自 DroidStar 的 dmr.cpp，GPL-3.0）；AMBE+2 半速率解码器直接用的是 DroidStar 的 halfrate 原文件（Core/Vocoder/，GPL-3.0），参数也与它一致。每一路通话单独维护解码器状态，中途接入的通话也能直接出声。\n纠错比特是 Golay(23,12) 每帧纠正的位数，持续大于 12 说明信号质量很差。")
+            Text("首页连接成功后，「连接时间」右边也有一个静音按钮，开关的就是这里的「语音播放」，图标会跟着状态切换。\n帧的接收与拆解由 C++ 协议核心完成（Core/DMRCore.cpp，移植自 DroidStar 的 dmr.cpp，GPL-3.0）；AMBE+2 半速率解码器直接用的是 DroidStar 的 halfrate 原文件（Core/Vocoder/，GPL-3.0），参数也与它一致。每一路通话单独维护解码器状态，中途接入的通话也能直接出声。\n纠错比特是 Golay(23,12) 每帧纠正的位数，持续大于 12 说明信号质量很差。")
         }
     }
 
@@ -295,7 +295,7 @@ struct SettingsView: View {
 
     // MARK: - 数据
 
-    /// 服务器表 + 本地 DMR ID 库。两者都存在本机，热点页查呼号完全不联网。
+    /// 服务器表 + 本地 DMR ID 库。两者都存在本机，首页查呼号完全不联网。
     private var dataSection: some View {
         Section {
             Button {
@@ -325,13 +325,20 @@ struct SettingsView: View {
             row("服务器表", "\(app.hostStore.hosts.count) 台", detail: app.hostStore.loadedFrom)
             row("最近更新", updateTimeText)
 
+            // 原来的「目录」tab 让给了日志页，设备查询和通话组表从这里进。
+            NavigationLink {
+                DirectoryView()
+            } label: {
+                Label("设备 / 通话组查询", systemImage: "book.closed")
+            }
+
             if let error = app.refreshError {
                 Text(error)
                     .font(.footnote)
                     .foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
             } else if !callsigns.hasDatabase {
-                Text("还没下载 DMR ID 库。热点页只能逐条联网查呼号，慢而且经常查不到。")
+                Text("还没下载 DMR ID 库。首页只能逐条联网查呼号，慢而且经常查不到。")
                     .font(.footnote)
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
@@ -339,7 +346,7 @@ struct SettingsView: View {
         } header: {
             Text("数据")
         } footer: {
-            Text("**服务器信息**：ds.vu3lvo.com 的 DMRHosts.txt（Pi-Star 格式），上面「服务器」里的下拉列表就是它，约 1500 台。\n**DMR ID 库**：RadioID.net 的整包用户表 user.csv（约 17 MB / 31 万条），下载后在本机建索引（2.5 MB），之后热点页的呼号、姓名、城市全部从本地查，不再逐条联网，换人说话也不会卡。库里查不到的 ID（中继台、网关、刚申请还没入库的）才会再走一次网络。\n建议一两周点一次；下载中旧库仍然可用，换到新库是一次性的原子替换，中途失败不会把已有的库弄坏。")
+            Text("**服务器信息**：ds.vu3lvo.com 的 DMRHosts.txt（Pi-Star 格式），上面「服务器」里的下拉列表就是它，约 1500 台。\n**DMR ID 库**：RadioID.net 的整包用户表 user.csv（约 17 MB / 31 万条），下载后在本机建索引（2.5 MB），之后首页的呼号、姓名、城市全部从本地查，不再逐条联网，换人说话也不会卡。库里查不到的 ID（中继台、网关、刚申请还没入库的）才会再走一次网络。\n建议一两周点一次；下载中旧库仍然可用，换到新库是一次性的原子替换，中途失败不会把已有的库弄坏。")
         }
     }
 
@@ -427,7 +434,7 @@ struct SettingsView: View {
         } header: {
             Text("关于")
         } footer: {
-            Text("两条链路的握手、组帧与拆帧都在内置的 C++ 核心里：Core/RewindCore.cpp 走 ODTP（移植自 BrandMeister DigestPlay 的 RewindClient，GPL-3.0），Core/DMRCore.cpp 走 Homebrew（移植自 DroidStar 的 dmr.cpp，GPL-3.0）。Swift 只负责网络收发、定时器与界面；语音由 DroidStar 的 halfrate 解码器还原（Core/Vocoder/ 原文件，GPL-3.0），听感参数也与它一致。语音开关与音量在「热点」页。")
+            Text("两条链路的握手、组帧与拆帧都在内置的 C++ 核心里：Core/RewindCore.cpp 走 ODTP（移植自 BrandMeister DigestPlay 的 RewindClient，GPL-3.0），Core/DMRCore.cpp 走 Homebrew（移植自 DroidStar 的 dmr.cpp，GPL-3.0）。Swift 只负责网络收发、定时器与界面；语音由 DroidStar 的 halfrate 解码器还原（Core/Vocoder/ 原文件，GPL-3.0），听感参数也与它一致。语音开关与音量在「设置 → 语音」。")
         }
     }
 

@@ -17,31 +17,33 @@ struct DirectoryView: View {
     @State private var groupQuery = ""
 
     var body: some View {
-        NavigationStack {
-            List {
-                querySection
+        // 原来这是独立的「目录」tab，现在 tab 让给了日志页，
+        // 这一页改成从 设置 → 数据 → 「设备 / 通话组查询」推进来，
+        // 所以自己不要再套 NavigationStack（会和设置页的那层叠成双层导航栏）。
+        List {
+            querySection
 
-                if let device {
-                    deviceSection(device)
-                }
-
-                if let errorMessage {
-                    Section {
-                        Text(errorMessage)
-                            .font(.footnote)
-                            .foregroundStyle(.red)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-
-                talkgroupSection
+            if let device {
+                deviceSection(device)
             }
-            .listStyle(.insetGrouped)
-            .navigationTitle("目录")
-            .searchable(text: $groupQuery, placement: .navigationBarDrawer(displayMode: .always), prompt: "搜索通话组名称或编号")
-            .refreshable { await app.reloadTalkgroups() }
-            .task { await app.loadTalkgroupsIfNeeded() }
+
+            if let errorMessage {
+                Section {
+                    Text(errorMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            talkgroupSection
         }
+        .listStyle(.insetGrouped)
+        .navigationTitle("设备 / 通话组")
+        .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $groupQuery, placement: .navigationBarDrawer(displayMode: .always), prompt: "搜索通话组名称或编号")
+        .refreshable { await app.reloadTalkgroups() }
+        .task { await app.loadTalkgroupsIfNeeded() }
     }
 
     // MARK: - 查询区

@@ -8,7 +8,7 @@
 //  呼号是 DMR 的 LC（link control）信息，Homebrew 不下发，所以只能外部补。两级：
 //
 //    1. 本地 DMR ID 库（`DMRUserDatabase`）：RadioID.net 的整包用户表，
-//       用户在「设置 → 数据 → 更新数据」下载后完全离线可查。热点页每次换人说话
+//       用户在「设置 → 数据 → 更新数据」下载后完全离线可查。首页每次换人说话
 //       都要把源 ID 翻成呼号，只有走本地库才来得及、也不会被限流。
 //    2. 本地库里没有的 ID（中继台、网关、刚申请还没入库的），再退到网络逐条查：
 //       RadioID.net 的单条接口 → BrandMeister 设备库（中继台在这里有呼号）。
@@ -71,7 +71,7 @@ final class CallsignDirectory: ObservableObject {
 
     // MARK: - 对外
 
-    /// 本地库里的完整记录（姓名、城市）。热点页用它做副标题。
+    /// 本地库里的完整记录（姓名、城市）。首页用它做副标题。
     func user(for id: Int) -> DMRUser? {
         database.lookup(id)
     }

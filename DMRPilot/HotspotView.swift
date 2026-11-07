@@ -2,7 +2,7 @@
 //  HotspotView.swift
 //  DMRPilot
 //
-//  热点主界面：连接状态、实时通话（由 DMRD 信令聚合）、协议日志入口。
+//  首页：连接状态、PTT、当前讲话人 / 刚刚结束（由 DMRD 信令聚合）、协议日志入口。
 //
 
 import SwiftUI
@@ -13,10 +13,8 @@ struct HotspotView: View {
     @EnvironmentObject private var hotspot: HomebrewClient
     @EnvironmentObject private var callsigns: CallsignDirectory
     @State private var showLog = false
-    @State private var talkgroupDraft = ""
     @State private var pttPressed = false
     @State private var pttDenied = false
-    @FocusState private var talkgroupFocused: Bool
 
     var body: some View {
         NavigationStack {
@@ -38,15 +36,13 @@ struct HotspotView: View {
                 }
             }
             .listStyle(.insetGrouped)
-            .navigationTitle("热点")
+            .navigationTitle("首页")
             .onAppear {
-                talkgroupDraft = draftText(for: app.settings.talkgroup)
                 // 切回本页时可能正有人在说话：onChange 不会补发，这里补一次。
                 if let id = hotspot.currentSpeaker?.src { callsigns.request(id) }
             }
-            .onChange(of: app.settings.talkgroup) { newValue in
-                talkgroupDraft = draftText(for: newValue)
-            }
+            // 通话组列表是选择器的数据源，进页面就先拿一次（有缓存时不重复请求）。
+            .task { await app.loadTalkgroupsIfNeeded() }
             // 换人说话时立刻查一次呼号；已知的和刚查过没结果的都会被 CallsignDirectory 跳过，
             // 所以这里不用再判断，每句通话触发一次网络请求是可以接受的。
             .onChange(of: hotspot.currentSpeaker?.src) { newValue in
@@ -146,9 +142,9 @@ struct HotspotView: View {
             }
             .foregroundStyle(.secondary)
 
-            // 连接按钮和通话组输入并排，各占一半宽度：一半留给「连接」，
-            // 另一半拆成「输入框 + 确定」。原来整块的「通话组」Section 就不要了。
-            HStack(spacing: 10) {
+            // 连接按钮和通话组选择器并排，各占一半宽度。
+            // 选组是「点开列表挑一个」，和设置页选服务器是同一套交互，不再手打号码。
+            HStack(alignment: .center, spacing: 10) {
                 Button(action: toggleConnection) {
                     Text(buttonTitle)
                         .font(.body.weight(.semibold))
@@ -158,33 +154,15 @@ struct HotspotView: View {
                 .controlSize(.large)
                 .frame(maxWidth: .infinity)
 
-                HStack(spacing: 8) {
-                    TextField("全部", text: $talkgroupDraft)
-                        .keyboardType(.numberPad)
-                        .font(.body)
-                        .multilineTextAlignment(.center)
-                        .monospacedDigit()
-                        .focused($talkgroupFocused)
-                        .padding(.horizontal, 8)
-                        .frame(maxWidth: .infinity, minHeight: 44)
-                        .background(fieldBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                .stroke(draftValue > 16_777_215 ? Color.red : Color.clear, lineWidth: 1)
-                        )
-
-                    Button { applyTalkgroup() } label: {
-                        Text("确定")
-                            .font(.body.weight(.semibold))
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.large)
+                TalkgroupPickerField(talkgroups: app.talkgroups,
+                                     selected: app.settings.talkgroup,
+                                     isLoading: app.isLoadingTalkgroups,
+                                     error: app.talkgroupsError,
+                                     onSelect: { app.setTalkgroup($0) },
+                                     onRefresh: { await app.reloadTalkgroups() })
                     .frame(maxWidth: .infinity)
-                    .disabled(!canApplyTalkgroup)
-                }
-                .frame(maxWidth: .infinity)
             }
+            .frame(minHeight: 46)
 
             HStack(spacing: 6) {
                 Image(systemName: "dot.radiowaves.left.and.right")
@@ -196,7 +174,7 @@ struct HotspotView: View {
                     .minimumScaleFactor(0.8)
                 Spacer(minLength: 0)
             }
-            .foregroundStyle(draftValue > 16_777_215 ? Color.red : Color.secondary)
+            .foregroundStyle(.secondary)
         }
         .padding(.vertical, 6)
     }
@@ -283,7 +261,7 @@ struct HotspotView: View {
             return "连上服务器后才能发射"
         }
         if app.settings.talkgroup <= 0 {
-            return "先在连接按钮右边的输入框里填一个号码"
+            return "先在连接按钮右边选一个通话组"
         }
         return "按住说话 · TG \(app.settings.talkgroup)"
     }
@@ -322,19 +300,10 @@ struct HotspotView: View {
 
     // MARK: - 通话组
 
-    /// 输入框底色：比卡片略深一点，能看出这是可编辑的框。
-    private var fieldBackground: Color {
-        Color(uiColor: .secondarySystemFill)
-    }
-
     /// 原来「通话组」里那些行都去掉了，只把最要紧的一条留成一行说明：
     /// 现在在听哪个组、服务器实际下发的又是哪个组（两者经常不一样）。
     private var groupStatusText: String {
-        guard draftValue <= 16_777_215 else {
-            return "号码超出范围：DMR 目的地址是 24 位，最大 16777215"
-        }
-
-        // 在线时看服务器认下的那个组（可能被 SelfCare 覆盖），离线时看设置里填的。
+        // 在线时看服务器认下的那个组（可能被 SelfCare 覆盖），离线时看设置里选的。
         let group = hotspot.activeTalkgroup > 0 ? hotspot.activeTalkgroup : app.settings.talkgroup
         let name = groupName(group)
         let base = hotspot.state == .online ? "正在收听 \(name)" : "通话组 \(name)"
@@ -345,32 +314,10 @@ struct HotspotView: View {
         return base
     }
 
-    private var draftValue: Int {
-        Int(talkgroupDraft.trimmingCharacters(in: .whitespaces)) ?? 0
-    }
-
-    private var canApplyTalkgroup: Bool {
-        draftValue <= 16_777_215 && draftValue != app.settings.talkgroup
-    }
-
     private func groupName(_ talkgroup: Int) -> String {
         guard talkgroup > 0 else { return "全部通话组" }
         if let name = app.name(for: talkgroup) { return "\(name) · \(talkgroup)" }
         return "TG \(talkgroup)"
-    }
-
-    private func draftText(for talkgroup: Int) -> String {
-        talkgroup > 0 ? "\(talkgroup)" : ""
-    }
-
-    private func applyTalkgroup() {
-        talkgroupFocused = false
-        commit(talkgroup: draftValue)
-    }
-
-    private func commit(talkgroup: Int) {
-        app.setTalkgroup(talkgroup)
-        talkgroupDraft = draftText(for: talkgroup)
     }
 
     // MARK: - 当前讲话人

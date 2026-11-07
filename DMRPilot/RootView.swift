@@ -9,10 +9,10 @@ struct RootView: View {
     var body: some View {
         TabView {
             HotspotView()
-                .tabItem { Label("热点", systemImage: "antenna.radiowaves.left.and.right") }
+                .tabItem { Label("首页", systemImage: "antenna.radiowaves.left.and.right") }
 
-            DirectoryView()
-                .tabItem { Label("目录", systemImage: "book.closed") }
+            CallLogView()
+                .tabItem { Label("日志", systemImage: "list.bullet.rectangle") }
 
             SettingsView()
                 .tabItem { Label("设置", systemImage: "gearshape") }

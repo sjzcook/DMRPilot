@@ -10,7 +10,7 @@
 //      RADIO_ID,CALLSIGN,FIRST_NAME,LAST_NAME,CITY,STATE,COUNTRY
 //      4600001,BD7IXF,Chiwai,,SHENZHEN,Hunan Guangdong Guangxi Hainan,China
 //
-//  热点页每次换人说话都要把源 ID 翻成呼号，逐条打 API 既慢又会被限流
+//  首页每次换人说话都要把源 ID 翻成呼号，逐条打 API 既慢又会被限流
 //  （`CallsignDirectory` 里那套 250 ms 串行队列就是为此存在）。所以这里把整包
 //  下载到本地，做成「ID → 行偏移」的定长索引：
 //

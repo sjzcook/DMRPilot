@@ -109,6 +109,21 @@ jobs:
                   print(f"::error file={proj_path}::{name} 在 Sources 里，但磁盘上找不到这个文件")
                   bad = True
 
+          # 3c) Frameworks 阶段同理：引用的 buildFile 必须有定义。
+          #     另外源码里 import SQLite3 就必须把 libsqlite3.tbd 链上，
+          #     漏了是链接期 undefined symbol: _sqlite3_open_v2，编译那一步查不出来。
+          frameworks_block = proj.split("isa = PBXFrameworksBuildPhase")[1].split(");")[0]
+          for oid in re.findall(r"^\t\t\t\t([0-9A-F]{24}) ", frameworks_block, re.M):
+              if oid not in builds:
+                  print(f"::error file={proj_path}::Frameworks 阶段引用了不存在的 buildFile {oid}")
+                  bad = True
+
+          imports_sqlite = any("import SQLite3" in p.read_text(encoding="utf-8", errors="ignore")
+                               for p in pathlib.Path("DMRPilot").rglob("*.swift"))
+          if imports_sqlite and "libsqlite3.tbd in Frameworks" not in proj:
+              print(f"::error file={proj_path}::源码 import SQLite3，但工程没有链接 libsqlite3.tbd")
+              bad = True
+
           # 4) 桥接头必须挂在 target 与 project 两份配置上，
           #    否则 Swift 看不到 C++ 接口（只在一边加会随构建方式时灵时不灵）。
           if proj.count('SWIFT_OBJC_BRIDGING_HEADER = "DMRPilot/DMRPilot-Bridging-Header.h";') < 2:

@@ -17,6 +17,7 @@ struct DMRPilotApp: App {
                 .environmentObject(app)
                 .environmentObject(app.hotspot)
                 .environmentObject(app.callsigns)
+                .environmentObject(CallLogStore.shared)
                 .tint(.blue)
         }
     }

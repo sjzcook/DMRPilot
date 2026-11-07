@@ -26,6 +26,8 @@ final class AppState: ObservableObject {
     @Published private(set) var talkgroups: [Int: String] = [:]
     @Published private(set) var talkgroupsLoaded = false
     @Published private(set) var talkgroupsError: String?
+    /// 正在拉通话组名称表（首页的选择器靠它显示转圈）。
+    @Published private(set) var isLoadingTalkgroups = false
     @Published private(set) var myDevice: BmDevice?
     @Published private(set) var myDeviceError: String?
     @Published private(set) var isLoadingDevice = false
@@ -43,7 +45,7 @@ final class AppState: ObservableObject {
     let hotspot = HomebrewClient()
     /// DMRHosts.txt 服务器表，设置页的下拉列表用它。
     let hostStore = DMRHostStore()
-    /// DMR ID → 呼号。热点页的「当前讲话人」靠它把数字 ID 变成呼号。
+    /// DMR ID → 呼号。首页的「当前讲话人」靠它把数字 ID 变成呼号。
     let callsigns = CallsignDirectory()
     private let api = BrandMeisterAPI()
     private static let settingsKey = "dmrpilot.settings.v1"
@@ -51,6 +53,12 @@ final class AppState: ObservableObject {
     init() {
         settings = Self.loadSettings()
         hotspot.adoptTalkgroup(settings.talkgroup)
+
+        // 通话记录落盘时要顺手把呼号和通话组名快照下来，这里把两份引用挂过去。
+        // 用 weak：日志库是单例，不该反过来抓着 AppState 不放。
+        let callLog = CallLogStore.shared
+        callLog.callsigns = callsigns
+        callLog.app = self
     }
 
     // MARK: - 查询辅助
@@ -106,11 +114,16 @@ final class AppState: ObservableObject {
     // MARK: - 远端刷新
 
     func loadTalkgroupsIfNeeded() async {
-        guard !talkgroupsLoaded else { return }
+        guard !talkgroupsLoaded, !isLoadingTalkgroups else { return }
         await reloadTalkgroups()
     }
 
     func reloadTalkgroups() async {
+        guard !isLoadingTalkgroups else { return }
+
+        isLoadingTalkgroups = true
+        defer { isLoadingTalkgroups = false }
+
         do {
             let table = try await api.talkgroups()
             talkgroups = table

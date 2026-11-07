@@ -1,0 +1,23 @@
+# WorkBuddy 工作区数据（会话记忆、临时文件），不入库
+.workbuddy/
+
+# macOS
+.DS_Store
+
+# Xcode 本地用户状态
+xcuserdata/
+*.xcuserdatad/
+*.xcworkspace/xcshareddata/IDEWorkspaceChecks.plist
+
+# 构建产物
+build/
+DerivedData/
+*.ipa
+*.dSYM.zip
+
+# Swift Package Manager
+.swiftpm/
+.build/
+
+# 杂项
+*.log
