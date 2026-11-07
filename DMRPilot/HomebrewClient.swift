@@ -1296,6 +1296,12 @@ final class HomebrewClient: ObservableObject {
     private func endStream(reason: String?) {
         if let key = streamKey {
             voice.end(key: key)
+            // 有些 master 不推结束符，靠看门狗收尾。这时这条通话在 `calls` 里
+            // 还挂着 isActive，不手动收掉就永远进不了「刚刚结束」。
+            if let index = calls.firstIndex(where: { $0.id == key && $0.isActive }) {
+                calls[index].isActive = false
+                calls[index].updatedAt = Date()
+            }
         }
         streamKey = nil
         streamLastFrameAt = nil
@@ -1507,6 +1513,13 @@ final class HomebrewClient: ObservableObject {
         streamKey = nil
         streamLastFrameAt = nil
         currentSpeaker = nil
+        // 断线时还挂着的通话要收尾，否则它既不在「当前讲话人」也不在「刚刚结束」，
+        // 等于从界面上消失了。
+        let closedAt = Date()
+        for index in calls.indices where calls[index].isActive {
+            calls[index].isActive = false
+            calls[index].updatedAt = closedAt
+        }
         serverTalkgroup = nil
         talkgroupAliveAt = nil
         trafficStat.removeAll()

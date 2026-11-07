@@ -25,25 +25,17 @@ struct HotspotView: View {
                     statusCard
                 }
 
-                if !hotspot.activeCalls.isEmpty {
-                    Section("正在通话") {
-                        ForEach(hotspot.activeCalls) { call in
-                            CallRow(call: call, label: app.label(for: call.dst), source: sourceText(call.src))
-                        }
-                    }
-                }
+                speakerSection
 
-                if !hotspot.recentCalls.isEmpty {
+                if !recentSpeakerItems.isEmpty {
                     Section("刚刚结束") {
-                        ForEach(hotspot.recentCalls.prefix(8)) { call in
-                            CallRow(call: call, label: app.label(for: call.dst), source: sourceText(call.src))
+                        ForEach(recentSpeakerItems) { item in
+                            speakerRow(item, at: Date())
                         }
                     }
                 }
 
                 pttSection
-                talkgroupSection
-                speakerSection
                 audioSection
             }
             .listStyle(.insetGrouped)
@@ -143,19 +135,64 @@ struct HotspotView: View {
             }
             .foregroundStyle(.secondary)
 
-            Button(action: toggleConnection) {
-                Label(buttonTitle, systemImage: buttonIcon)
+            // 连接按钮和通话组输入并排，各占一半宽度：一半留给「连接」，
+            // 另一半拆成「输入框 + 确定」。原来整块的「通话组」Section 就不要了。
+            HStack(spacing: 10) {
+                Button(action: toggleConnection) {
+                    Text(buttonTitle)
+                        .font(.body.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .frame(maxWidth: .infinity)
+
+                HStack(spacing: 8) {
+                    TextField("全部", text: $talkgroupDraft)
+                        .keyboardType(.numberPad)
+                        .font(.body)
+                        .multilineTextAlignment(.center)
+                        .monospacedDigit()
+                        .focused($talkgroupFocused)
+                        .padding(.horizontal, 8)
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .background(fieldBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                .stroke(draftValue > 16_777_215 ? Color.red : Color.clear, lineWidth: 1)
+                        )
+
+                    Button { applyTalkgroup() } label: {
+                        Text("确定")
+                            .font(.body.weight(.semibold))
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
                     .frame(maxWidth: .infinity)
+                    .disabled(!canApplyTalkgroup)
+                }
+                .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
+
+            HStack(spacing: 6) {
+                Image(systemName: "dot.radiowaves.left.and.right")
+                    .font(.caption2)
+                Text(groupStatusText)
+                    .font(.caption)
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(draftValue > 16_777_215 ? Color.red : Color.secondary)
         }
         .padding(.vertical, 6)
     }
 
     // MARK: - PTT（按住说话）
 
-    /// 通话组上方的圆形 PTT：按住开始发射，松手停止。
+    /// 状态卡下方的圆形 PTT：按住开始发射，松手停止。
     ///
     /// 交互用 `DragGesture(minimumDistance: 0)` 而不是 `Button`：Button 只有抬起时才有
     /// 回调，拿不到「按住期间」的状态，也就没法做「按住发射 / 松手停止」。
@@ -235,7 +272,7 @@ struct HotspotView: View {
             return "连上服务器后才能发射"
         }
         if app.settings.talkgroup <= 0 {
-            return "先在下面的「通话组」里填一个号码"
+            return "先在连接按钮右边的输入框里填一个号码"
         }
         return "按住说话 · TG \(app.settings.talkgroup)"
     }
@@ -274,84 +311,27 @@ struct HotspotView: View {
 
     // MARK: - 通话组
 
-    private var talkgroupSection: some View {
-        Section {
-            HStack(spacing: 12) {
-                Text("输入号码")
+    /// 输入框底色：比卡片略深一点，能看出这是可编辑的框。
+    private var fieldBackground: Color {
+        Color(uiColor: .secondarySystemFill)
+    }
 
-                Spacer(minLength: 8)
-
-                TextField("全部", text: $talkgroupDraft)
-                    .keyboardType(.numberPad)
-                    .multilineTextAlignment(.trailing)
-                    .monospacedDigit()
-                    .focused($talkgroupFocused)
-                    .frame(maxWidth: 110)
-
-                Button("确定") { applyTalkgroup() }
-                    .buttonStyle(.borderless)
-                    .fontWeight(.semibold)
-                    .disabled(!canApplyTalkgroup)
-            }
-
-            HStack {
-                Text("订阅目标")
-                Spacer()
-                Text(activeGroupText)
-                    .monospacedDigit()
-                    .foregroundStyle(hotspot.activeTalkgroup > 0 ? Color.accentColor : Color.secondary)
-            }
-
-            if let pushed = hotspot.serverTalkgroup, pushed != hotspot.activeTalkgroup {
-                HStack {
-                    Text("服务器实际下发")
-                    Spacer()
-                    Text("TG \(pushed)")
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                }
-                .font(.footnote)
-            }
-
-            if draftValue > 16_777_215 {
-                Text("号码超出范围：DMR 目的地址是 24 位，最大 16777215")
-                    .font(.footnote)
-                    .foregroundStyle(.red)
-            }
-
-            if hotspot.activeTalkgroup > 0 {
-                Button("恢复收听全部通话组") {
-                    commit(talkgroup: 0)
-                }
-                .font(.footnote)
-            }
-
-            if hotspot.activeTalkgroup > 0, hotspot.filteredFrames > 0 {
-                HStack {
-                    Text("已跳过其它通话组")
-                    Spacer()
-                    Text("\(hotspot.filteredFrames) 帧")
-                        .monospacedDigit()
-                }
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-            }
-
-            if hotspot.activeTalkgroup > 0, app.settings.autoRenewTalkgroup {
-                HStack {
-                    Text("静默自动续订")
-                    Spacer()
-                    Text("每 \(app.settings.talkgroupRenewMinutes) 分钟")
-                        .monospacedDigit()
-                }
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-            }
-        } header: {
-            Text("通话组")
-        } footer: {
-            Text("输入号码后点「确定」订阅这个组；留空再点「确定」= 听全部。单呼只要发给你，照样会响。\n**ODTP（BrandMeister）**：订阅是一条显式的 SUBSCRIPTION 命令，服务器回执后立即生效，不需要发射。\n**Homebrew（MMDVM / HBlink）**：没有订阅指令，实际做法是发一次完整发射——语音头 + 12 个语音突发（两个超帧，带嵌入 LC）+ 结束符，约 0.75 秒，服务器把这台热点记成动态订阅；静默一段时间后 App 会自动再续一次（设置 → 行为 里可调）。\n接收侧照参考实现 DroidStar：服务器推什么就解什么，不按目的地址丢帧。所以「正在收听」和「服务器实际下发」可能不是同一个组 —— 服务器推的往往是这台热点被订阅的全部组，包括 SelfCare 里的静态组。想只听选中的那一个，去设置 → 行为 关掉「跟随服务器下发的通话组」。")
+    /// 原来「通话组」里那些行都去掉了，只把最要紧的一条留成一行说明：
+    /// 现在在听哪个组、服务器实际下发的又是哪个组（两者经常不一样）。
+    private var groupStatusText: String {
+        guard draftValue <= 16_777_215 else {
+            return "号码超出范围：DMR 目的地址是 24 位，最大 16777215"
         }
+
+        // 在线时看服务器认下的那个组（可能被 SelfCare 覆盖），离线时看设置里填的。
+        let group = hotspot.activeTalkgroup > 0 ? hotspot.activeTalkgroup : app.settings.talkgroup
+        let name = groupName(group)
+        let base = hotspot.state == .online ? "正在收听 \(name)" : "通话组 \(name)"
+
+        if let pushed = hotspot.serverTalkgroup, pushed != hotspot.activeTalkgroup {
+            return base + " · 服务器下发 TG \(pushed)"
+        }
+        return base
     }
 
     private var draftValue: Int {
@@ -362,8 +342,7 @@ struct HotspotView: View {
         draftValue <= 16_777_215 && draftValue != app.settings.talkgroup
     }
 
-    private var activeGroupText: String {
-        let talkgroup = hotspot.activeTalkgroup
+    private func groupName(_ talkgroup: Int) -> String {
         guard talkgroup > 0 else { return "全部通话组" }
         if let name = app.name(for: talkgroup) { return "\(name) · \(talkgroup)" }
         return "TG \(talkgroup)"
@@ -388,80 +367,106 @@ struct HotspotView: View {
     private var speakerSection: some View {
         Section {
             TimelineView(.periodic(from: .now, by: 1)) { context in
-                speakerRow(at: context.date)
+                if let item = currentSpeakerItem {
+                    speakerRow(item, at: context.date)
+                } else {
+                    waitingRow
+                }
             }
         } header: {
             Text("当前讲话人")
-        } footer: {
-            Text("呼号、姓名、城市都从本机的 DMR ID 库查（RadioID.net 整包用户表，设置 → 数据 → 更新数据 可刷新），不联网、不卡顿。库里没有的 ID（中继台、网关、刚申请还没入库的）才会联网补查一次；还是查不到就显示数字 ID。")
         }
     }
 
-    @ViewBuilder
-    private func speakerRow(at now: Date) -> some View {
-        if let speaker = hotspot.currentSpeaker {
-            let speaking = speaker.isSpeaking(at: now)
+    /// 「当前讲话人」和「刚刚结束」共用同一套行：呼号、组 / 时隙 / 姓名 / 城市，
+    /// 右侧是「讲话中 + 电平」或「已结束 + 时长」。两边长得一样，看起来才是一个列表的延续。
+    private func speakerRow(_ item: SpeakerItem, at now: Date) -> some View {
+        let speaker = item.speaker
+        let speaking = item.isSpeaking(at: now)
 
-            HStack(spacing: 14) {
-                ZStack {
-                    Circle()
-                        .fill(speaking ? Color.accentColor.opacity(0.16) : Color.secondary.opacity(0.12))
-                        .frame(width: 44, height: 44)
-                    Image(systemName: speaking ? "waveform" : "person.fill")
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(speaking ? Color.accentColor : Color.secondary)
-                }
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(speakerLine(for: speaker.src))
-                        .font(.title3.weight(.semibold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.65)
-
-                    Text(speakerSubtitle(speaker))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-
-                Spacer(minLength: 6)
-
-                VStack(alignment: .trailing, spacing: 5) {
-                    Text(speaking ? "讲话中" : "已结束")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(speaking ? Color.accentColor : Color.secondary)
-
-                    if speaking {
-                        LevelMeter(level: Double(hotspot.voiceLevel))
-                            .frame(width: 54, height: 8)
-                    } else {
-                        Text(Fmt.duration(speaker.talkTime))
-                            .font(.caption2)
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                    }
-                }
+        return HStack(spacing: 14) {
+            ZStack {
+                Circle()
+                    .fill(speaking ? Color.accentColor.opacity(0.16) : Color.secondary.opacity(0.12))
+                    .frame(width: 44, height: 44)
+                Image(systemName: speaking ? "waveform" : "person.fill")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(speaking ? Color.accentColor : Color.secondary)
             }
-            .padding(.vertical, 4)
-            .animation(.easeInOut(duration: 0.2), value: speaking)
-        } else {
-            HStack(spacing: 12) {
-                Image(systemName: "person.wave.2")
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(speakerLine(for: speaker.src))
+                    .font(.title3.weight(.semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.65)
+
+                Text(speakerSubtitle(speaker))
+                    .font(.caption)
                     .foregroundStyle(.secondary)
-                Text(hotspot.state == .online ? "等待通话" : "未连接")
-                    .foregroundStyle(.secondary)
-                Spacer()
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 6)
+
+            VStack(alignment: .trailing, spacing: 5) {
+                Text(speaking ? "讲话中" : "已结束")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(speaking ? Color.accentColor : Color.secondary)
+
+                if speaking {
+                    LevelMeter(level: Double(hotspot.voiceLevel))
+                        .frame(width: 54, height: 8)
+                } else {
+                    Text(Fmt.duration(speaker.talkTime))
+                        .font(.caption2)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
             }
         }
+        .padding(.vertical, 4)
+        .animation(.easeInOut(duration: 0.2), value: speaking)
+        // 本地库里没有的 ID 才联网补查一次；已知的会被 CallsignDirectory 直接跳过。
+        .onAppear { callsigns.request(speaker.src) }
+    }
+
+    private var waitingRow: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "person.wave.2")
+                .foregroundStyle(.secondary)
+            Text(hotspot.state == .online ? "等待通话" : "未连接")
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+    }
+
+    // MARK: - 通话记录合并
+
+    private var currentSpeakerItem: SpeakerItem? {
+        hotspot.currentSpeaker.map { SpeakerItem(speaker: $0, isLive: true) }
+    }
+
+    /// 「刚刚结束」的列表，两条规则：
+    ///
+    /// - 同一个 `src→dst→slot` 只保留**最新**一条（核心里的 `calls` 是「新插入在 0」，
+    ///   所以第一次遇到的就是最新的）。
+    /// - 和当前讲话人重复的那条直接跳过——它已经显示在最上面了，不能出现两份。
+    private var recentSpeakerItems: [SpeakerItem] {
+        var seen = Set<String>()
+        if let current = currentSpeakerItem { seen.insert(current.id) }
+
+        var items: [SpeakerItem] = []
+        for call in hotspot.recentCalls {
+            let item = SpeakerItem(call: call)
+            guard seen.insert(item.id).inserted else { continue }
+            items.append(item)
+            if items.count >= 8 { break }
+        }
+        return items
     }
 
     /// 有呼号显示呼号，没有就退回数字 ID——宁可显示得糙一点，也不能空着。
     private func speakerLine(for id: Int) -> String {
-        callsigns.callsign(for: id) ?? "\(id)"
-    }
-
-    /// 通话列表左侧那一列的呼号（本地 DMR ID 库里查）。
-    private func sourceText(_ id: Int) -> String {
         callsigns.callsign(for: id) ?? "\(id)"
     }
 
@@ -574,11 +579,7 @@ struct HotspotView: View {
     }
 
     private var buttonTitle: String {
-        isConnectedOrBusy ? "断开连接" : "连接 BrandMeister"
-    }
-
-    private var buttonIcon: String {
-        isConnectedOrBusy ? "stop.circle" : "bolt.horizontal.circle"
+        isConnectedOrBusy ? "断开连接" : "连接"
     }
 
     private var statusColor: Color {
@@ -608,59 +609,38 @@ struct HotspotView: View {
     }
 }
 
-// MARK: - 通话行
+// MARK: - 一条通话记录
 
-struct CallRow: View {
-    let call: LiveCall
-    let label: String
-    /// 源 ID 的显示文本：本地 DMR ID 库里有呼号就显示呼号，否则就是数字 ID。
-    var source: String = ""
+/// 「当前讲话人」和「刚刚结束」共用的一条记录。
+///
+/// `LiveCall` 和 `ActiveSpeaker` 的字段几乎一样，显示也要求完全一致，
+/// 所以先统一成这个结构再交给同一个行视图渲染。
+private struct SpeakerItem: Identifiable, Equatable {
+    let speaker: ActiveSpeaker
+    /// 是不是最上面那行「当前讲话人」（只有它会每秒刷新、显示实时电平）。
+    let isLive: Bool
+    /// 同一个 `src→dst→slot` 只能出现一次，和核心里的 `LiveCall.id` 是同一个格式。
+    let id: String
 
-    var body: some View {
-        HStack(spacing: 12) {
-            Text(call.slotText)
-                .font(.caption2.weight(.bold))
-                .padding(.horizontal, 7)
-                .padding(.vertical, 4)
-                .background(slotColor.opacity(0.14), in: Capsule())
-                .foregroundStyle(slotColor)
-
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(source.isEmpty ? "\(call.src)" : source)
-                        .font(.subheadline.weight(.semibold))
-                        .monospacedDigit()
-                        .lineLimit(1)
-                    Image(systemName: "arrow.right")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    Text(label)
-                        .font(.subheadline)
-                        .lineLimit(1)
-                }
-
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer(minLength: 4)
-
-            Text(Fmt.duration(call.duration))
-                .font(.footnote)
-                .monospacedDigit()
-                .foregroundStyle(.secondary)
-        }
-        .padding(.vertical, 2)
+    init(speaker: ActiveSpeaker, isLive: Bool) {
+        self.speaker = speaker
+        self.isLive = isLive
+        self.id = "\(speaker.src)-\(speaker.dst)-\(speaker.slot)"
     }
 
-    private var subtitle: String {
-        let status = call.isActive ? "通话中" : "已结束"
-        return "\(call.callTypeText) · \(call.frames) 帧 · \(status)"
+    init(call: LiveCall) {
+        self.init(speaker: ActiveSpeaker(src: call.src,
+                                         dst: call.dst,
+                                         slot: call.slot,
+                                         isPrivate: call.isPrivate,
+                                         startedAt: call.startedAt,
+                                         lastVoiceAt: call.updatedAt,
+                                         endedAt: call.isActive ? nil : call.updatedAt),
+                  isLive: false)
     }
 
-    private var slotColor: Color {
-        call.slot == 1 ? .blue : .purple
+    func isSpeaking(at now: Date) -> Bool {
+        isLive && speaker.isSpeaking(at: now)
     }
 }
 
