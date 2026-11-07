@@ -239,18 +239,22 @@ private struct TalkgroupPickerSheet: View {
             if isManual {
                 Section {
                     HStack(spacing: 8) {
+                        // 键盘用文本类型（默认键盘），不再强拉数字盘。
+                        // 号码合法性仍由 manualValue 校验，非法时下面出红字、确定置灰。
                         TextField("输入号码，最大 16777215", text: $manualDraft)
-                            .keyboardType(.numberPad)
+                            .keyboardType(.default)
                             .monospacedDigit()
                             .focused($manualFocused)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 9)
+                            .background(Color(uiColor: .secondarySystemFill),
+                                        in: RoundedRectangle(cornerRadius: 9, style: .continuous))
 
                         Button("确定") { commitManual() }
                             .buttonStyle(.borderless)
                             .fontWeight(.semibold)
                             .disabled(manualValue == nil)
                     }
-                } header: {
-                    Text("手动输入")
                 } footer: {
                     if !manualDraft.isEmpty && manualValue == nil {
                         Text("号码要在 1…16777215 之间（DMR 目的地址是 24 位）")
