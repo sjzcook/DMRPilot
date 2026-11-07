@@ -2,8 +2,8 @@
 
 Swift + SwiftUI 写的 BrandMeister 客户端，三条腿：
 
-1. **真协议连接**：以 MMDVM / Homebrew 热点身份登录 BrandMeister Master，完成 `RPTL → RPTK` 握手，用 `RPTPING/MSTPONG`（或新版 `DMRP`）保持心跳，然后持续接收 `DMRD` 语音数据帧，本地聚合成实时通话列表。
-2. **真的能出声**：`DMRD` 里的 33 字节载荷送进**纯 Swift 实现的 AMBE+2 半速率解码器**，还原成 8 kHz PCM 用 `AVAudioEngine` 播出来。整个声码器（FEC、反量化、谐波合成、增强、限幅）没有一个 C/C++ 文件，也不依赖第三方二进制。
+1. **真协议连接**：以 MMDVM / Homebrew 热点身份登录 BrandMeister Master，完成 `RPTL → RPTK → RPTC` 三段握手，用 `RPTPING/MSTPONG` 保持心跳，然后持续接收 `DMRD` 语音数据帧，本地聚合成实时通话列表。握手、组帧、拆帧全部在 **C++ 协议核心里**（`DMRPilot/Core/DMRCore.cpp`，去 Qt 之后的 DroidStar `dmr.cpp` 直译），Swift 只负责 UDP / WebSocket、定时器、音频与界面。
+2. **真的能出声**：C++ 核心把 `DMRD` 的 33 字节载荷拆成 3 个 9 字节空中帧，交给**纯 Swift 实现的 AMBE+2 半速率解码器**还原成 8 kHz PCM，用 `AVAudioEngine` 播出来。声码器（FEC、反量化、谐波合成、增强、限幅）全部是 Swift，不依赖第三方二进制。
 3. **REST 查询**：`api.brandmeister.network/v2` 的设备详情与全球通话组名称表。
 
 ---
@@ -19,8 +19,18 @@ DMRApp/
 │   ├── AppState.swift           # 设置持久化 / 通话组缓存 / 我的设备
 │   ├── Models.swift             # BmDevice / Settings / LiveCall / LogEntry
 │   ├── BrandMeisterAPI.swift    # v2 REST 客户端
-│   ├── HomebrewFrames.swift     # 协议帧编解码
-│   ├── HomebrewClient.swift     # UDP / WebSocket 传输 + 登录状态机 + 心跳
+│   ├── Core/                    # ★ 协议核心（C++，移植自 DroidStar，GPL-3.0）
+│   │   ├── DMRCore.h                # 纯 C 接口：Swift 经桥接头调用
+│   │   ├── DMRCore.cpp              # 握手状态机 + 组帧 / 拆帧 / 编码链
+│   │   ├── DMRDefines.h             # 同步字、静音 AMBE、突发类型
+│   │   ├── crs129.cpp               # RS(12,9) 12,9,3 里德-所罗门
+│   │   ├── cbptc19696.cpp           # BPTC(196,96) 交织 + 汉明
+│   │   ├── cgolay2087.cpp           # Golay(20,8) slot type
+│   │   ├── chamming.cpp             # Hamming(16,11) 嵌入 LC
+│   │   ├── CRCenc.cpp               # 嵌入 LC 的 CRC-5
+│   │   └── SHA256.cpp               # RPTK 的挑战应答
+│   ├── DMRPilot-Bridging-Header.h   # SWIFT_OBJC_BRIDGING_HEADER
+│   ├── HomebrewClient.swift     # UDP / WebSocket 传输 + 定时器 + 界面状态
 │   ├── RootView.swift           # TabView
 │   ├── HotspotView.swift        # 状态卡 + 电平表 + 实时通话
 │   ├── DirectoryView.swift      # 设备查询 + 通话组搜索
@@ -28,7 +38,6 @@ DMRApp/
 │   ├── HostDirectory.swift      # DMRHosts.txt 下载 / 解析 / 缓存
 │   ├── HostPickerField.swift    # 服务器弹出选择器 + Hostname 搜索
 │   ├── CallsignDirectory.swift  # DMR ID → 呼号（RadioID.net 查询 + 本地缓存）
-│   ├── DMRCallFrames.swift      # 语音头/结束符编码（RS + BPTC + Golay）+ DMRD 出站帧
 │   ├── LogConsoleView.swift     # 十六进制协议日志
 │   ├── Vocoder/                 # AMBE+2 半速率编解码器（纯 Swift）
 │   │   ├── HalfrateEncoder.swift    # 发送方向：分析 + 码本量化（PTT 用）
@@ -39,7 +48,7 @@ DMRApp/
 │   │   ├── HalfrateSynth.swift      # 谐波合成 / 噪声 / 脉冲
 │   │   ├── HalfrateOptions.swift    # 全部调音参数的默认值
 │   │   ├── HalfrateTables.swift     # 从 C++ 生成的大表（13 万字节，勿手改）
-│   │   └── DMRVoicePath.swift       # DMRD 载荷 → 3 个空中帧 → PCM
+│   │   └── DMRVoicePath.swift       # 27 字节 AMBE → 3 个空中帧 → PCM
 │   ├── Audio/
 │   │   ├── VoicePipeline.swift  # 每路通话一个解码器 + 播放调度
 │   │   ├── PttMicrophone.swift  # 麦克风采集 → 8 kHz / 160 采样
@@ -48,7 +57,8 @@ DMRApp/
 ├── Logo/                        # 图标设计稿与对比图
 ├── tools/
 │   ├── gen_tables.py            # 从 DroidStar 源码抽取数值表生成 HalfrateTables.swift
-│   ├── dmr_check.py             # 语音头/突发的逐字节比对（对着 DroidStar 的 Python 复刻）
+│   ├── core_check.py            # C++ 发射路径的逐字节核对（对着 DroidStar 的 Python 复刻）
+│   ├── dmr_ref.py               # DroidStar 的 TX 路径 Python 复刻，core_check 的参照
 │   ├── enc_check.py             # 编码器「量化 → 反量化」闭环检查
 │   └── gen_icon.py              # 用代码精确绘制 App icon
 └── README.md
@@ -217,36 +227,36 @@ $ python tools/enc_check.py
   两者都受「连接后自动呼叫通话组」开关控制，时隙在「呼叫时隙」里选（默认 TS2）。
   延迟 2 秒是故意的：DroidStar 靠人按键，天然比上线晚几秒；自动发就得自己留出
   master 把热点登记进时隙的时间，否则第一帧会被丢掉。
-- 一次订阅 = **一个完整的 DMR 发射**，共 8 帧，约 0.5 秒：
+- 一次订阅 = **一个完整的 DMR 发射**，共 14 帧，约 0.75 秒：
 
   ```
-  Voice LC Header  →  6 个语音突发（一个完整超帧）  →  Voice Terminator
+  Voice LC Header  →  12 个语音突发（两个超帧）  →  Voice Terminator
   ```
 
-  6 个突发里第 0 个带音频同步字，第 1…4 个带**嵌入 LC** 分片，第 5 个只有 EMB。
+  12 个突发是刻意选的长度：一个超帧（6 个突发，360 ms）有时太短，master 还没来得及把这个
+  peer 登记完帧就发完了；12 个接近真人「按一下话筒说两个字」，实测最容易让动态订阅落地。
+  突发里第 0、6 个带音频同步字，其余带**嵌入 LC** 分片 / `DMREMB`——全由 C++ 核心按
+  `(计数 - 1) % 6` 算，Swift 侧只管每 60 ms 要一帧。
   这段结构和 DroidStar 的 `encode_data()` 逐字节一致（见下面「嵌入 LC」）。
 - 为什么必须这么做：Homebrew 协议**没有订阅指令**，master 只推它认为已订阅的 TG。
   BrandMeister 把「有人在这个 TG 上发射」当成动态订阅，所以想让服务器改推某个组，
   只能自己发一次。DroidStar 的 README 原话就是
   **「You must TX with a talkgroup entered to link to that talkgroup」**。
-- 怎么确认订阅成功：订阅之后收到语音，日志会打
-  `✅ TG 46001 的语音已下发，动态订阅生效`。
-  如果下来的不是这个组，会明确写成
-  `✅ 链路已收到语音，但服务器推的是 TG 46050（TS2），不是 46001 —— 可能 SelfCare 里挂的是静态组`。
-- 补发策略跟 DroidStar 一样克制：**10 秒内一帧都没收到**才补一次（共 2 次），
-  只要有任何 DMRD 帧下来就说明链路和订阅都活着，不再往别人的通话里插噪音。
-  之后**每 15 秒**打一行流量摘要，这是排查这一步最有用的信息：
+- 怎么确认订阅成功：不看订阅本身，看**下来的帧**。订阅之后**每 15 秒**会打一行流量摘要：
 
   ```
   ← 近期流量 15s：46001(TS1)×12 ← 当前组、91(TS1)×86，共 98 帧
   ```
 
+  有「← 当前组」= 订阅成功，只是这一刻可能刚好没人讲话；只有别的组 = 订阅落在别的组上
+  （SelfCare 里的静态组），默认已跟随播放，不必再折腾。
+
   | 摘要里有什么 | 结论 |
   |---|---|
   | 有「← 当前组」 | 订阅成功，只是这一刻没人讲话（或之前那几秒刚好空白） |
   | 只有别的组 | 链路正常、订阅落在别的组上（Static TG）；默认已跟随播放，不必再折腾 |
-  | `30 秒内没收到任何 DMRD 帧` | 服务器根本没向这台热点推流量：回 SelfCare 看这个 TG 有没有对热点开放 / 有没有配静态 TG |
-  | 补发 2 次都没有任何帧 | 订阅帧本身没被接受：先确认 DMR ID / 热点 ID / 密码三者属于同一台设备 |
+  | `30 秒内没收到任何 DMRD` | 服务器根本没向这台热点推流量：回 SelfCare 看这个 TG 有没有对热点开放 / 有没有配静态 TG |
+  | 一直 0 帧 | 订阅帧本身没被接受：先确认 DMR ID / 热点 ID / 密码三者属于同一台设备 |
 
   切换「呼叫时隙」之后 App 会自动重新订阅一次（不用再点「确定」），否则时隙只在发送那一刻生效，改了等于没改。
 - BM 的动态订阅静默一段时间（约 10 分钟）会被释放，释放后这个组就不再推下来。
@@ -266,21 +276,23 @@ $ python tools/enc_check.py
 
   外加 slot type 的 `Golay(20,8)`、6 字节**数据同步字（MS 那一组：`0D 5D 7F 77 FD 75 70`）**、
   以及头/结束符各自异或的 CRC 常数
-  （`0x96` / `0x99`）。实现逐行移植自 MMDVMHost 的 `RS129.cpp` / `BPTC19696.cpp` /
-  `Hamming.cpp` / `Golay2087.cpp` / `Sync.cpp`，代码在 `DMRPilot/DMRCallFrames.swift`。
+  （`0x96` / `0x99`）。这几个算法是 MMDVMHost 的 `RS129.cpp` / `BPTC19696.cpp` /
+  `Hamming.cpp` / `Golay2087.cpp` / `Sync.cpp` 原文件搬进 `DMRPilot/Core/`（GPL-3.0），
+  一行没改，由 `DMRCore.cpp` 调用。
 - **嵌入 LC**（`encode_embedded_data` / `get_embedded_data` / `get_emb_data`）：
   9 字节 LC 用 5 bit CRC（9 字节求和 mod 31）+ `Hamming(16,11)` 编成 128 bit，
   按 32 bit 一段分给突发 1…4，突发 5 只带 `DMREMB`。
   `DMREMB` 那 7 个信息位（色码 4 + LCSS 2）还要过一遍 **QR(16,7)** 加 9 位校验，
-  表来自 DroidStar 的 `ENCODING_TABLE_1676`（128 项，已内联到 Swift）。
+  表来自 DroidStar 的 `ENCODING_TABLE_1676`（128 项，已内联到 `DMRCore.cpp`）。
   没有这张表，`DMREMB` 就缺校验，对端会当「没有信令」，色码和 LC 分片全丢。
 - **RS(12,9) 的反馈抽头必须是 `parity[2]`**。这里曾经写成 `parity[3]`、循环也从 `j = 3` 起，
   等于多算一级还把上一轮的余数又异或进去，三个校验字节全错。当时用「encode → decode 往返」
   验证过，看起来是对的——因为解码器也是照错的实现写的，两端一起错，往返当然通过。
   正确做法是和参考实现**逐字节比对 33 字节输出**。`tools/dmr_ref.py` 是 DroidStar
   `dmr.cpp` TX 路径的 Python 复刻（含 `full_lc_encode`、`encode_data`、嵌入 LC），
-  `tools/dmr_check.py` 会把 Swift 里那套算法照抄一遍再和它比对：
-  语音头 / 结束符 / 6 个突发在 TG 46001、91、CC 0/1/15 几种组合下**全部逐字节一致**。
+  `tools/core_check.py` 则把 `DMRCore.cpp` 的发射状态机（含超帧计数、静音叠同步字）照抄一遍，
+  和它逐字节比对：语音头 / 6 个突发 / 第二轮首突发 / 结束符在 TG 46001、91、CC 0/1/15、
+  TS1/TS2 几种组合下**全部一致**，最后还做一次「突发 → 拆帧」往返。
 - **同步字必须用 MS（移动台）那一组**：热点是 simplex，MMDVM 里 `duplex = false`，
   DroidStar 的 `addDMRDataSync(..., 0)` 走的也是 MS 分支。用成基站那组（`0D FF 57 D7 …`）
   等于告诉对端「这是中继台发的」，对端按 BS 解调会拿到坏 LC，这次发射在别人耳朵里根本不存在。
@@ -339,7 +351,7 @@ App                          Master
 
 - **RPTK 必须做挑战应答**：密码不能直接发，要 `SHA256(RPTACK 里那 4 字节盐 ‖ 密码 UTF-8)`，共 40 字节。
   发明文 20 字节（旧版 28 字节帧）BrandMeister 一律回 `MSTNAK`——这是最容易踩的坑。
-  老 HBlink / 部分自建网关只认明文，所以标准鉴权被拒后客户端会自动用明文再试一次，日志里会写明「兼容模式」。
+  参考实现 DroidStar 也只走标准流程，核心同样只发 40 字节版本（明文版本只给老 HBlink 用，这里不再尝试）。
 - **RPTC 默认就发**，与参考实现 DroidStar 完全一致。它的 `DMR::process_udp` 是三段状态机：
   `CONNECTING → DMR_AUTH → DMR_CONF → setup_connection()`，只有收到**第三个** `RPTACK`
   （RPTC 的应答）才切到 `CONNECTED_RW`，在那之前收到的 `DMRD` 一律不处理。
@@ -349,24 +361,16 @@ App                          Master
   帧本身是定长 302 字节：`RPTC(4) + id(4, 二进制) + 294`，字段表见
   [BrandMeister Homebrew 规范](https://wiki.brandmeister.network/index.php/Homebrew_repeater_protocol/Spec)，
   数字字段要零补齐（`%02u` → `"01"`），尾部必须用空格 `0x20` 而不是 NUL 补齐。
-  万一服务器拒收（回 `MSTCL` 直接关会话），客户端会记下「本次不再发」，2 秒后按两段握手重连，
-  不需要用户自己去关开关。
-- `MSTNAK` 在这套协议里有两种含义，客户端靠「探针」区分：发一个 `RPTPING`，
-  回 `MSTPONG` 说明链路是活的（只是不收 RPTC），直接上线；回 `MSTNAK` 说明会话已被清，
-  按规范整轮重登（重发同一个包没用），最多两次。
-- 登录失败：`MSTNAK` 按阶段给出不同提示 —— RPTL 阶段被拒是「ID 不认」（没注册 / 被占用 / ESSID 算错），
-  RPTK 阶段被拒才是「密码不对」，RPTC 阶段被拒是配置包不被接受。
-- 在线后被 `MSTNAK` 清会话：自动重登，连续 3 次就停下并提示「该 ID 正被另一条连接占用」，
-  避免两台设备抢同一个 ID 时无限重连。
-- **`MSTCL`（master 主动关会话）按阶段处理**，不再是「判失败 + 6 秒重连」的死循环：
-  配置阶段被关 → 判定 RPTC 不被接受，本次自动改为不发配置包、2 秒后重连；
-  在线被关 → 3 秒后重登，连续 2 次就停下并提示「这个 ID 正被另一台设备使用」；
-  登录阶段被关 → 8 秒后重试（给服务器时间释放上一个会话），2 次后停下并提示核对 9 位 ID。
-  最常见的原因其实是**登录 ID 不存在**（例如别名填成了 `00`）：master 照样接受 `RPTK`，
+  设置里可以关掉这个包，关掉后只走 `RPTL → RPTK` 两段——**非标准流程**，只给那些压根不认
+  RPTC 的自建网关 / HBLink 用；BrandMeister 上请保持打开。
+- **`MSTNAK` / `MSTCL` 一律按「服务器拒绝或关闭了这个会话」处理**，不再猜阶段：
+  5 秒后重登，连续两次还不行就停下来说明原因（核对 9 位热点 ID、检查是否有别的设备用同一个 ID）。
+  最常见的原因其实是**登录 ID 不存在**（例如别名叫 `00`）：master 照样接受 `RPTK`，
   到配置阶段才把整个会话关掉，所以日志里会看到「已鉴权 → 立刻 MSTCL」。
 - **收帧只在 `online` 状态处理**（DroidStar 的 `status == CONNECTED_RW` 判断）：
   没走完握手时收到的 `DMRD` 只计数不播放，避免「界面显示未连接却在放音」。
-- 超时：15 秒收不到任何服务器数据包视为掉线，按设置里的开关决定是否 6 秒后自动重连。
+- 超时：15 秒收不到任何服务器数据包视为掉线，按设置里的开关决定是否 6 秒后自动重连；
+  配置阶段超时则提示去关掉「上报配置包 RPTC」再连一次。
 
 ### DMRD 帧布局
 
@@ -386,6 +390,9 @@ App                          Master
 - **53 字节版本只是省掉了 BER / RSSI 两个尾巴**，streamId 仍是 4 字节、载荷仍从 20 开始。
   以前按长度分「窄帧 / 宽帧」两套偏移是错的：HBlink3 读的是 `_data[16:20]` 与 `_data[20:53]`，
   参考实现（`BMClient.handleDMRD`）也是 `bytes[20..<53]`，两边都印证这一点。
+- 但**接收侧只认 55 字节**，和参考实现 DroidStar 一样硬判（`buf.size() == 55`）。
+  BrandMeister 的 master 出站固定 55 字节，53 字节的帧只可能来自另一套实现，
+  而且它在各家实现里的载荷偏移并不统一——与其猜，宁可丢。
 - MMDVMHost 出站固定发 55 字节，本 App 跟随它。
 
 标志位第 15 字节：
@@ -396,7 +403,7 @@ App                          Master
 - bit4 `0x10` → 语音同步帧
 - 否则低 4 位是语音突发序号 `0..5`
 
-`HomebrewFrames.parseDmr` 统一按 4 字节 streamId / 偏移 20 解析，53 与 55 字节都能吃下。
+`DMRCore` 的 `parse_dmr_head` 统一按 4 字节 streamId / 偏移 20 解析，并把 src / dst / peer / slot / 是否单呼 / 数据类型全部填进 `dmr_result_t` 交给 Swift。
 
 ### 色码（CC）要不要填
 
@@ -420,36 +427,34 @@ App                          Master
 - 参考实现 DroidStar 更能说明问题：它界面上有 CC 下拉，但那个值只喂给 MMDVM 硬件（`serialmodem.cpp`），
   网络路径里 `m_txcc` 从头到尾没被用过，`m_modeinfo.cc` 也没赋值——它对 BrandMeister 的 CC 完全不敏感。
 
-### 心跳两套
+### 心跳
 
-设置里「新版心跳 DMRP」：
+只走 **`RPTPING` + 4 字节 ID（11 字节帧）**，服务器回 `MSTPONG`。这是 BrandMeister 传统链路，
+也是参考实现 DroidStar 的做法。
 
-- **关（默认）**：`RPTPING` + 4 字节 ID（11 字节帧）—— BrandMeister 传统链路
-- **开**：`DMRP` + 4 字节 ID（55 字节帧）—— MMDVMHost 新版
-
-这里的 55 字节说的是**心跳帧**，和上面 DMRD 的长度没有关系。
-
-服务器不认哪个，日志里会连续超时，切一下就知道。
+以前设置里还有个「新版心跳 `DMRP`」开关（MMDVMHost 2024+ 的 55 字节心跳帧），
+现在**已删除**：DroidStar 自己从不发 `DMRP`，BrandMeister 也不需要，留着只会让人以为
+「连不上是因为心跳版本不对」。这里的 55 字节说的是心跳帧长度，和上面 DMRD 的长度没有关系。
 
 ---
 
 ## 常见问题
 
 **`MSTNAK` / 一直登录超时**
-1. 先看提示语分到哪一阶段：
-   - 「不认这个热点 ID」——`RPTL` 就被拒。ID 没在 SelfCare 注册，或 9 位 ID 填错
+1. 日志里那条 `← MSTNAK / MSTCL` 会带上**阶段**（`state.label`，如「发送登录请求…」「鉴权中…」「上报热点配置…」），
+   按阶段判断：
+   - 登录阶段就被拒 —— ID 不认。没在 SelfCare 注册、或 9 位 ID 填错
      （把设置页显示的「登录热点 ID」和 SelfCare 里的号逐位对一遍）。
-   - 「密码不对」——`RPTK` 被拒。密码是 SelfCare → Hotspot Security 里那个，不是网站登录密码；
+   - 鉴权阶段被拒 —— 密码不对。密码是 SelfCare → Hotspot Security 里那个，不是网站登录密码；
      粘贴时带进空格、或带 iOS 智能引号都会失败（客户端会去掉首尾空白、把弯引号换成 ASCII，但密码本身就错就没辙）。
-   - 「服务器主动断开连接（MSTCL）」——master 关掉了会话。看日志里括号中的**阶段**：
-     配置阶段就是 `RPTC` 不被接受（客户端会自动改成不发并重连，不用手动管）；
-     登录阶段多半是这个 9 位 ID 还被上一次会话占着，或它在 BM 上不存在 / 被停用——
-     等半分钟再连，并到 SelfCare → My Hotspots 核对号码；
-     在线期间则通常是同一个 ID 被另一台设备抢登。
+   - 上报配置阶段被关 —— master 主动关掉会话，多半是这个 9 位 ID 不存在 / 被停用，
+     或还被上一次会话占着。等半分钟再连，并到 SelfCare → My Hotspots 核对号码。
+   - 在线期间被关 —— 通常是同一个 ID 被另一台设备抢登。
 2. DMR ID 是不是被别的设备占用了？同一个 ID 同时只允许一条连接，先把手机端 MMDVM / 电脑上的 MMDVMHost 断掉。
 3. 网络封了 UDP：换 Wi-Fi / 蜂窝试；企业网、部分公共热点会拦非标准 UDP。
 4. 「服务器」别带 `https://`，只填域名。
-5. 日志里搜 `RPTK`：标准鉴权失败后客户端会自动用「兼容模式」明文再试一次，两次都 NAK 就确实是凭据问题。
+5. 日志里搜 `RPTK`：核心只发标准的 40 字节挑战应答版本，不会再发明文，所以看到 `RPTK` 后紧跟 `MSTNAK`
+   就是凭据问题（密码错 / ID 与密码不属于同一台设备）。
 
 **显示「已登录」，但 BrandMeister 后台 My Hotspots 里看不到设备**
 
@@ -458,7 +463,7 @@ App                          Master
 
 | 现象（看日志） | 原因 | 处理 |
 |---|---|---|
-| 有 `没填 ESSID：将以 7 位 DMR ID … 登录` | BrandMeister 的热点是 **9 位** ID | 设置 → 服务器 → ESSID 后缀填 `01` |
+| 日志里 `登录 ID 4601234（没填 ESSID，多数服务器不认）` | BrandMeister 的热点是 **9 位** ID | 设置 → 服务器 → ESSID 后缀填 `01` |
 | `登录 ID 460123400`，SelfCare 里是 `460123401` | 老版本照抄 DroidStar 的「后缀 − 1」 | 升级到修正版；仍对不上就把 9 位数字填进「自定义热点 ID」 |
 | 鉴权通过后立刻 `MSTCL` | 别名不存在 / 那台设备没在 SelfCare 注册 | 同上，用「自定义热点 ID」直接填 SelfCare 里显示的号码 |
 | `BM 设备库查不到 460123401` | 这个 ID 在 BM 上没有设备 | 核对 SelfCare → My Hotspots，或在 Hotspot Security 重设密码后再连 |
@@ -486,21 +491,24 @@ App                          Master
 ## 语音是怎么解出来的
 
 DMR 每 20 ms 传 33 bit 的 AMBE+2 参数（2450 bit/s 语音 + 1150 bit/s 前向纠错），
-还原成 PCM 需要半速率声码器。这个 App 里是**纯 Swift 移植**，整条链路分五层：
+还原成 PCM 需要半速率声码器。拆帧这一步在 C++ 核心里做（它本来就要解 LC），
+声码器本身是**纯 Swift 移植**：
 
 ```
-DMRD 53/55 字节
-   └─ 33 字节载荷
-        └─ DMRVoicePath.unpackFrames        重排成 3 × 9 字节空中帧
-             └─ HRFec.decodeAirFrame        解交织 → Golay(23,12) → 解扰
-                  └─ HRDecoder.decode       反量化 → 谐波合成 → 增强 → 限幅
-                       └─ 3 × 160 = 480 个 8 kHz PCM 采样
-                            └─ VoicePlayer  AVAudioEngine 升采样后播放
+DMRD 55 字节
+   └─ 33 字节载荷                    DMRCore.cpp（C++）
+        └─ result.codec[27]          重排成 3 × 9 字节空中帧
+             └─ DMRVoicePath.frames   27 字节 → 3 个字段数组
+                  └─ HRFec.decodeAirFrame        解交织 → Golay(23,12) → 解扰
+                       └─ HRDecoder.decode       反量化 → 谐波合成 → 增强 → 限幅
+                            └─ 3 × 160 = 480 个 8 kHz PCM 采样
+                                 └─ VoicePlayer  AVAudioEngine 升采样后播放
 ```
 
 | 层 | 文件 | 做什么 |
 |---|---|---|
-| 拆帧 | `DMRVoicePath` | 216 个语音比特散在载荷 `0..13` 与 `20..32`，第 13 字节低半字节是嵌入式信令，要用第 19 字节低半字节替换 |
+| 拆帧 | `DMRCore.cpp` | 216 个语音比特散在载荷 `0..13` 与 `20..32`，第 13 字节低半字节是嵌入式信令，要用第 19 字节低半字节替换；拆完的 27 字节随事件一起交给 Swift |
+| 重组 | `DMRVoicePath` | 27 字节按 9 字节切成 3 个空中帧 |
 | 纠错 | `HRFec` | `channelPosition(i) = 4i - 71·(i/18)` 的 DMR 交织、Golay(23,12) 纠 3 位、23 位伪随机解扰 |
 | 反量化 | `HRDequant` | 9 个参数字段（宽度 `{7,5,5,9,7,5,4,4,3}`），码本预测 ρ=0.65 |
 | 合成 | `HRSynth` | 相位跟踪的正弦谐波、128/512 点 FFT 噪声、脉冲串、160 采样重叠相加 |
@@ -520,10 +528,15 @@ DMRD 53/55 字节
 
 ### 授权说明（请务必读完）
 
+- `DMRPilot/Core/` 下的协议核心是 [DroidStar](https://github.com/nostar/DroidStar) 的
+  `dmr.cpp` 去 Qt 之后的直译，编码链的算法文件（`crs129` / `cbptc19696` / `cgolay2087` /
+  `chamming` / `CRCenc` / `SHA256`）是 MMDVMHost 的原文件，两者都以 **GPL-3.0-or-later** 发布。
+  因此 `Core/` 同样受 GPL-3.0 约束：**分发二进制时必须提供完整源码**。
 - 本目录 `Vocoder/` 下的解码器**移植自 [DroidStar](https://github.com/nostar/DroidStar) 的 `mbe/` 子系统**
   （原作者 David Rowe / N0MJS 等），该子系统以 **GPL-3.0-or-later** 发布。
-  因此 `Vocoder/` 下的这些 Swift 文件同样受 GPL-3.0 约束：**分发二进制时必须提供完整源码**。
-  若要放进 App Store，GPL-3.0 与 Apple 的分发条款存在已知冲突，需自行评估法务风险。
+  因此 `Vocoder/` 下的这些 Swift 文件同样受 GPL-3.0 约束。
+- 两处叠加的结果：**整个工程事实上是 GPL-3.0**。若要放进 App Store，GPL-3.0 与 Apple 的
+  分发条款存在已知冲突，需自行评估法务风险。
 - AMBE+2 本身是 DVSI 的**专利技术**。开源实现（mbelib / halfrate）的专利状态在法律上
   并没有被明确豁免，商业分发有风险。个人实验、自用、开源分发（遵守 GPL）风险相对可控。
 - App 只是「能听」，音质是软件声码器的水平：安静环境下可懂度不错，弱信号时会有金属声和
@@ -546,6 +559,12 @@ DMRD 53/55 字节
 ## 关于实测状态
 
 - REST 端点已实测：`/v2/talkgroup` 返回 `{"91":"World-wide", ...}`；`/v2/device/262301` 返回完整设备 JSON（字段见 `Models.swift` 注释）。v1.0 已下线，全部走 v2。
-- 协议层按 MMDVMHost / HBlink3 的公开实现对齐；声码器按 DroidStar 的 `mbe/` 逐函数移植，常量用十六进制浮点原样搬。
-- 但**本机没有 Swift 工具链，全部代码未经真机编译验证**。首次编译若有零星报错（多为 SDK 版本差异导致的 API 签名），按提示改一处即可，不影响整体结构。
-- 声码器正确性建议这样验：找一段已知内容的 DMR 录音，把 `DMRD` 载荷喂给 `DMRVoiceDecoder.decode(packet:)`，输出写进 WAV（8 kHz / 16 bit / 单声道）后与 DroidStar 的输出逐采样比对。
+- C++ 核心的**发射路径已做逐字节验证**：`tools/core_check.py` 把 `DMRCore.cpp` 的状态机照抄成 Python，
+  与 `tools/dmr_ref.py`（DroidStar TX 路径的复刻）在 TG 46001 / 91、CC 0/1/15、TS1/TS2 下比对
+  语音头 / 6 个突发 / 第二轮首突发 / 结束符，全部一致，并做了「突发 → 拆帧」往返。
+- 声码器按 DroidStar 的 `mbe/` 逐函数移植，常量用十六进制浮点原样搬。
+- 但**本机没有 Swift / Clang 工具链，全部代码未经真机编译验证**。首次编译若有零星报错
+  （多为 SDK 版本差异导致的 API 签名，或桥接头路径），按提示改一处即可，不影响整体结构。
+- 声码器正确性建议这样验：找一段已知内容的 DMR 录音，把 33 字节载荷喂给
+  `dmr_core_receive`（拿 `result.codec`）再交给 `DMRVoiceDecoder.decode(codec:)`，
+  输出写进 WAV（8 kHz / 16 bit / 单声道）后与 DroidStar 的输出逐采样比对。

@@ -11,7 +11,6 @@
 		C1C2C3D4E5F6A7B8C9D00202 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00102 /* AppState.swift */; };
 		C1C2C3D4E5F6A7B8C9D00203 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00103 /* Models.swift */; };
 		C1C2C3D4E5F6A7B8C9D00204 /* BrandMeisterAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00104 /* BrandMeisterAPI.swift */; };
-		C1C2C3D4E5F6A7B8C9D00205 /* HomebrewFrames.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00105 /* HomebrewFrames.swift */; };
 		C1C2C3D4E5F6A7B8C9D00206 /* HomebrewClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00106 /* HomebrewClient.swift */; };
 		C1C2C3D4E5F6A7B8C9D00207 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00107 /* RootView.swift */; };
 		C1C2C3D4E5F6A7B8C9D00208 /* HotspotView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00108 /* HotspotView.swift */; };
@@ -34,7 +33,13 @@
 		C1C2C3D4E5F6A7B8C9D00217 /* HostDirectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00118 /* HostDirectory.swift */; };
 		C1C2C3D4E5F6A7B8C9D00218 /* HostPickerField.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00119 /* HostPickerField.swift */; };
 		C1C2C3D4E5F6A7B8C9D00219 /* CallsignDirectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00120 /* CallsignDirectory.swift */; };
-		C1C2C3D4E5F6A7B8C9D00220 /* DMRCallFrames.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00121 /* DMRCallFrames.swift */; };
+		FA11C0DE0000000000000101 /* DMRCore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE0000000000000001 /* DMRCore.cpp */; };
+		FA11C0DE0000000000000102 /* crs129.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE0000000000000002 /* crs129.cpp */; };
+		FA11C0DE0000000000000103 /* cbptc19696.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE0000000000000003 /* cbptc19696.cpp */; };
+		FA11C0DE0000000000000104 /* cgolay2087.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE0000000000000004 /* cgolay2087.cpp */; };
+		FA11C0DE0000000000000105 /* chamming.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE0000000000000005 /* chamming.cpp */; };
+		FA11C0DE0000000000000106 /* CRCenc.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE0000000000000006 /* CRCenc.cpp */; };
+		FA11C0DE0000000000000107 /* SHA256.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE0000000000000007 /* SHA256.cpp */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -42,7 +47,6 @@
 		B1B2C3D4E5F6A7B8C9D00102 /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
 		B1B2C3D4E5F6A7B8C9D00103 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		B1B2C3D4E5F6A7B8C9D00104 /* BrandMeisterAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrandMeisterAPI.swift; sourceTree = "<group>"; };
-		B1B2C3D4E5F6A7B8C9D00105 /* HomebrewFrames.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomebrewFrames.swift; sourceTree = "<group>"; };
 		B1B2C3D4E5F6A7B8C9D00106 /* HomebrewClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomebrewClient.swift; sourceTree = "<group>"; };
 		B1B2C3D4E5F6A7B8C9D00107 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		B1B2C3D4E5F6A7B8C9D00108 /* HotspotView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotspotView.swift; sourceTree = "<group>"; };
@@ -65,8 +69,23 @@
 		B1B2C3D4E5F6A7B8C9D00118 /* HostDirectory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostDirectory.swift; sourceTree = "<group>"; };
 		B1B2C3D4E5F6A7B8C9D00119 /* HostPickerField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostPickerField.swift; sourceTree = "<group>"; };
 		B1B2C3D4E5F6A7B8C9D00120 /* CallsignDirectory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallsignDirectory.swift; sourceTree = "<group>"; };
-		B1B2C3D4E5F6A7B8C9D00121 /* DMRCallFrames.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DMRCallFrames.swift; sourceTree = "<group>"; };
 		B1B2C3D4E5F6A7B8C9D0010D /* DMRPilot.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DMRPilot.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		FA11C0DE0000000000000001 /* DMRCore.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = DMRCore.cpp; sourceTree = "<group>"; };
+		FA11C0DE0000000000000002 /* crs129.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = crs129.cpp; sourceTree = "<group>"; };
+		FA11C0DE0000000000000003 /* cbptc19696.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = cbptc19696.cpp; sourceTree = "<group>"; };
+		FA11C0DE0000000000000004 /* cgolay2087.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = cgolay2087.cpp; sourceTree = "<group>"; };
+		FA11C0DE0000000000000005 /* chamming.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = chamming.cpp; sourceTree = "<group>"; };
+		FA11C0DE0000000000000006 /* CRCenc.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = CRCenc.cpp; sourceTree = "<group>"; };
+		FA11C0DE0000000000000007 /* SHA256.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SHA256.cpp; sourceTree = "<group>"; };
+		FA11C0DE0000000000000008 /* DMRCore.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = DMRCore.h; sourceTree = "<group>"; };
+		FA11C0DE0000000000000009 /* DMRDefines.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = DMRDefines.h; sourceTree = "<group>"; };
+		FA11C0DE000000000000000A /* crs129.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = crs129.h; sourceTree = "<group>"; };
+		FA11C0DE000000000000000B /* cbptc19696.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = cbptc19696.h; sourceTree = "<group>"; };
+		FA11C0DE000000000000000C /* cgolay2087.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = cgolay2087.h; sourceTree = "<group>"; };
+		FA11C0DE000000000000000D /* chamming.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = chamming.h; sourceTree = "<group>"; };
+		FA11C0DE000000000000000E /* CRCenc.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CRCenc.h; sourceTree = "<group>"; };
+		FA11C0DE000000000000000F /* SHA256.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SHA256.h; sourceTree = "<group>"; };
+		FA11C0DE00000000000000FF /* DMRPilot-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = DMRPilot-Bridging-Header.h; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -103,7 +122,6 @@
 				B1B2C3D4E5F6A7B8C9D00102 /* AppState.swift */,
 				B1B2C3D4E5F6A7B8C9D00103 /* Models.swift */,
 				B1B2C3D4E5F6A7B8C9D00104 /* BrandMeisterAPI.swift */,
-				B1B2C3D4E5F6A7B8C9D00105 /* HomebrewFrames.swift */,
 				B1B2C3D4E5F6A7B8C9D00106 /* HomebrewClient.swift */,
 				B1B2C3D4E5F6A7B8C9D00107 /* RootView.swift */,
 				B1B2C3D4E5F6A7B8C9D00108 /* HotspotView.swift */,
@@ -113,7 +131,8 @@
 				B1B2C3D4E5F6A7B8C9D00118 /* HostDirectory.swift */,
 				B1B2C3D4E5F6A7B8C9D00119 /* HostPickerField.swift */,
 				B1B2C3D4E5F6A7B8C9D00120 /* CallsignDirectory.swift */,
-				B1B2C3D4E5F6A7B8C9D00121 /* DMRCallFrames.swift */,
+				FA11C0DE00000000000000FF /* DMRPilot-Bridging-Header.h */,
+				A1B2C3D4E5F6A7B8C9D00012 /* Core */,
 				A1B2C3D4E5F6A7B8C9D00010 /* Vocoder */,
 				A1B2C3D4E5F6A7B8C9D00011 /* Audio */,
 				B1B2C3D4E5F6A7B8C9D0010C /* Assets.xcassets */,
@@ -145,6 +164,28 @@
 				B1B2C3D4E5F6A7B8C9D00122 /* PttMicrophone.swift */,
 			);
 			path = Audio;
+			sourceTree = "<group>";
+		};
+		A1B2C3D4E5F6A7B8C9D00012 /* Core */ = {
+			isa = PBXGroup;
+			children = (
+				FA11C0DE0000000000000001 /* DMRCore.cpp */,
+				FA11C0DE0000000000000002 /* crs129.cpp */,
+				FA11C0DE0000000000000003 /* cbptc19696.cpp */,
+				FA11C0DE0000000000000004 /* cgolay2087.cpp */,
+				FA11C0DE0000000000000005 /* chamming.cpp */,
+				FA11C0DE0000000000000006 /* CRCenc.cpp */,
+				FA11C0DE0000000000000007 /* SHA256.cpp */,
+				FA11C0DE0000000000000008 /* DMRCore.h */,
+				FA11C0DE0000000000000009 /* DMRDefines.h */,
+				FA11C0DE000000000000000A /* crs129.h */,
+				FA11C0DE000000000000000B /* cbptc19696.h */,
+				FA11C0DE000000000000000C /* cgolay2087.h */,
+				FA11C0DE000000000000000D /* chamming.h */,
+				FA11C0DE000000000000000E /* CRCenc.h */,
+				FA11C0DE000000000000000F /* SHA256.h */,
+			);
+			path = Core;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -220,7 +261,6 @@
 				C1C2C3D4E5F6A7B8C9D00202 /* AppState.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D00203 /* Models.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D00204 /* BrandMeisterAPI.swift in Sources */,
-				C1C2C3D4E5F6A7B8C9D00205 /* HomebrewFrames.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D00206 /* HomebrewClient.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D00207 /* RootView.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D00208 /* HotspotView.swift in Sources */,
@@ -230,7 +270,6 @@
 				C1C2C3D4E5F6A7B8C9D00217 /* HostDirectory.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D00218 /* HostPickerField.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D00219 /* CallsignDirectory.swift in Sources */,
-				C1C2C3D4E5F6A7B8C9D00220 /* DMRCallFrames.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D0020D /* HalfrateTables.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D0020E /* HalfrateCore.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D0020F /* HalfrateFec.swift in Sources */,
@@ -243,6 +282,13 @@
 				C1C2C3D4E5F6A7B8C9D00216 /* VoicePipeline.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D00221 /* HalfrateEncoder.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D00222 /* PttMicrophone.swift in Sources */,
+				FA11C0DE0000000000000101 /* DMRCore.cpp in Sources */,
+				FA11C0DE0000000000000102 /* crs129.cpp in Sources */,
+				FA11C0DE0000000000000103 /* cbptc19696.cpp in Sources */,
+				FA11C0DE0000000000000104 /* cgolay2087.cpp in Sources */,
+				FA11C0DE0000000000000105 /* chamming.cpp in Sources */,
+				FA11C0DE0000000000000106 /* CRCenc.cpp in Sources */,
+				FA11C0DE0000000000000107 /* SHA256.cpp in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -255,6 +301,7 @@
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ENABLE_MODULES = YES;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
 				CLANG_ENABLE_OBJC_ARC = YES;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = dwarf;
@@ -284,6 +331,7 @@
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ENABLE_MODULES = YES;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
 				CLANG_ENABLE_OBJC_ARC = YES;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
@@ -326,6 +374,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.sjzcook.dmrpilot;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "DMRPilot/DMRPilot-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -357,6 +406,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.sjzcook.dmrpilot;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "DMRPilot/DMRPilot-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};

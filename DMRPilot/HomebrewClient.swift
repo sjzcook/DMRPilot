@@ -2,10 +2,22 @@
 //  HomebrewClient.swift
 //  DMRPilot
 //
-//  以 MMDVM / Homebrew 热点身份连上 BrandMeister：
-//  登录（RPTL）→ 鉴权（RPTK）→ 上报配置（RPTC）→ 心跳（RPTPING / DMRP），
-//  然后持续接收 DMRD 语音数据帧，把信令聚合成本地“通话列表”，
-//  同时把 33 字节语音载荷送进纯 Swift 的 AMBE+2 解码器播放出来。
+//  以 MMDVM / Homebrew 热点身份连上 BrandMeister。
+//
+//  ── 这一层现在只做「管道 + 界面状态」──────────────────────────────
+//
+//      UDP / WebSocket 收发       ← 这里
+//      定时器（心跳 / 发射节拍）  ← 这里
+//      音频采集与播放            ← Audio/ 目录
+//      握手 / 组帧 / 拆帧        ← Core/DMRCore.cpp（C++，移植自 DroidStar）
+//
+//  所有字节级的判断都在 C++ 核心里，这里不再自己拼帧、也不再猜「这个包是什么意思」。
+//  这一轮重写把以前那些补丁式的东西全删了：
+//
+//    - 不再有「RPTC 被拒 → 改成不发 → 重连」的自动降级，改成设置里的一个开关；
+//    - 不再有 MSTNAK 的三种阶段探测（RPTPING 探针那套），服务器说什么就按什么处理；
+//    - 不再用「3 秒没语音帧」猜通话是否结束，改用 DroidStar 的 2 秒收流看门狗；
+//    - 「订阅」和「PTT」走同一条发射路径，唯一的区别是语音帧来自静音表还是麦克风。
 //
 
 import Foundation
@@ -59,34 +71,33 @@ final class HomebrewClient: ObservableObject {
     @Published private(set) var lastProblem: String?
     @Published var isLoggingEnabled = true
 
-    /// 当前收听的 TG，0 = 全部。跟着设置走，但允许在热点页当场改。
+    /// 当前选中的通话组（0 = 不过滤）。它同时是「订阅目标」。
     @Published private(set) var activeTalkgroup = 0
-    /// 服务器**实际**在推的通话组。
-    ///
-    /// 它经常不等于设置里选的那个：BrandMeister 推的是「这台热点被订阅的组」，
-    /// 其中可能包含 SelfCare 里配的静态组。DroidStar 的接收侧根本不看目的地址
-    /// （`process_udp()` 只认「55 字节 + DMRD」），推什么就解什么；这里把实际
-    /// 那个组记下来，界面上能一眼看到「真正在听的是哪一路」。
+    /// 服务器**实际**在推的通话组。BrandMeister 推的是这台热点被订阅的组，
+    /// 常常不等于设置里选的那个（SelfCare 里可能还挂着静态组）。
     @Published private(set) var serverTalkgroup: Int?
-    /// 因为不属于当前 TG 而被跳过的帧数，用来判断「是没推下来还是被过滤了」。
+    /// 因为「只收听选定组」而被丢掉的帧数。
     @Published private(set) var filteredFrames = 0
-    /// 当前（或最近一次）说话的人。呼号由 `CallsignDirectory` 另查，这里只有 ID。
+    /// 当前（或最近一次）说话的人。呼号由 `CallsignDirectory` 另查。
     @Published private(set) var currentSpeaker: ActiveSpeaker?
 
-    // 语音解码状态（驱动 UI 的电平条与统计）
     @Published private(set) var isVoicePlaying = false
     @Published private(set) var voiceLevel: Float = 0
     @Published private(set) var voiceErrorCount = 0
     @Published private(set) var voicePackets = 0
+
     /// 正在按住 PTT 发射
     @Published private(set) var isTransmitting = false
-    /// PTT 期间的输入电平，0…1，给界面画抖动的环
     @Published private(set) var txLevel: Float = 0
-    /// 本次发射已经持续了多久（秒），松手后保留最后一次的值
     @Published private(set) var txSeconds: Double = 0
 
     var activeCalls: [LiveCall] { calls.filter { $0.isActive } }
     var recentCalls: [LiveCall] { calls.filter { !$0.isActive } }
+
+    // MARK: - 协议核心
+
+    /// C++ 核心：握手状态机 + 组帧 / 拆帧。
+    private let core = dmr_core_create()!
 
     // MARK: - 内部状态
 
@@ -94,36 +105,78 @@ final class HomebrewClient: ObservableObject {
     private var connection: NWConnection?
     private var webSocket: URLSessionWebSocketTask?
     private var webSocketSession: URLSession?
-    private var keepAliveTimer: Timer?
+
+    private var pingTimer: Timer?
+    private var tickTimer: Timer?
     private var loginTimer: DispatchWorkItem?
     private var loginToken = 0
     private var loginAttempt = 0
     private var retryWork: DispatchWorkItem?
     private var lastServerPacket: Date?
-    /// RPTC 被 MSTNAK 后重登的次数，只给两次机会，避免把真问题拖成「一直重连」。
-    private var configRetries = 0
-    private var configRetryWork: DispatchWorkItem?
-    /// 已经在用 RPTPING 探测「配置被拒」到底是内容问题还是会话已死。
-    private var configProbed = false
-    /// 在线后被 master 清会话的次数，用来防止两台设备抢同一个 ID 时无限重连。
-    private var sessionNaks = 0
-    /// 服务器以 `MSTCL` 关会话的次数：区分「偶发被踢」和「同一 ID 被别的设备抢走」。
-    private var masterCloses = 0
-    /// 本次会话里上报 RPTC 后被 MSTCL 关过：之后自动改成不上报，不再犯第二次。
-    private var configForcedOff = false
-    /// RPTL 之后 master 下发的 4 字节挑战盐，RPTK 靠它算 SHA256。
-    private var challenge: [UInt8] = []
-    /// 标准 SHA256 鉴权被拒后，是否已经用传统明文 RPTK 重试过。
-    private var usedLegacyAuth = false
+    /// 会话被拒 / 被关的次数，超过上限就不再自动重连，避免死循环刷屏。
+    private var refusals = 0
+
+    /// 只在第一次遇到某个陌生命令字时打日志，避免刷屏。
+    private var unknownTags: Set<String> = []
 
     /// AMBE+2 解码 + 播放
     private let voice = VoicePipeline()
 
+    // MARK: - 收流状态（对齐 DroidStar 的 stream_state）
+
+    private var streamKey: String?
+    private var streamLastFrameAt: Date?
+    /// DroidStar 的收流看门狗是 100 × 20 ms ≈ 2 秒。
+    private let streamTimeout: TimeInterval = 2.0
+
+    // MARK: - 发射状态
+
+    private enum TxKind {
+        /// 向某个通话组发一次「静音 PTT」，让服务器记成动态订阅
+        case subscribe
+        /// 用户按住 PTT
+        case ptt
+    }
+
+    private var txKind: TxKind = .subscribe
+    private var txTimer: Timer?
+    private var txBurstsLeft = 0
+    private var txStartedAt: Date?
+    private var lastSubscribeAt: Date?
+    private var lastSubscribeTalkgroup: Int?
+    /// 最近一次订阅的时间，用来做续订判断
+    private var talkgroupAliveAt: Date?
+
+    private let mic = PttMicrophone()
+    private let encoder = HREncoder()
+    private var pttFrames = [[Int16]]()
+
+    // MARK: - 流量统计
+
+    private var trafficStat: [String: Int] = [:]
+    private var trafficTotal = 0
+    private var lastTrafficReport = Date()
+    private var warnedNoTraffic = false
+
     private let pingInterval: TimeInterval = 5
     private let silenceTimeout: TimeInterval = 15
+    /// 一次订阅发射发多少个语音突发（60 ms 一个）。12 个 ≈ 0.75 秒，接近真人按一下话筒。
+    private let subscribeBursts = 12
+
+    // MARK: - 生命周期
 
     init() {
         voice.volume = Float(activeSettings.audioVolume)
+        // RPTC 里那几项资料字段，DroidStar 是写死的，这里给个正经值。
+        dmr_core_set_text(core, DMR_TEXT_LOCATION, "DMRPilot")
+        dmr_core_set_text(core, DMR_TEXT_DESCRIPTION, "DMRPilot iOS")
+        dmr_core_set_text(core, DMR_TEXT_URL, "https://brandmeister.network")
+        dmr_core_set_text(core, DMR_TEXT_SOFTWARE, "20260101")
+        dmr_core_set_text(core, DMR_TEXT_PACKAGE, "DMRPilot_iOS")
+    }
+
+    deinit {
+        dmr_core_destroy(core)
     }
 
     // MARK: - 通话组
@@ -132,289 +185,83 @@ final class HomebrewClient: ObservableObject {
     func adoptTalkgroup(_ talkgroup: Int) {
         activeTalkgroup = max(0, talkgroup)
         activeSettings.talkgroup = activeTalkgroup
+        dmr_core_set_talkgroup(core, UInt32(activeTalkgroup))
     }
 
-    /// 切换收听的 TG（0 = 全部）。不需要重连：Homebrew 的推送内容由服务器决定，
-    /// 这里改的是本地播放过滤，顺手把旧 TG 还挂着的通话收尾、解码器复位。
+    /// 切换收听的通话组。
+    ///
+    /// Homebrew 没有订阅指令，改这里只是**换目的地址 + 换本地过滤器**；
+    /// 真正让 master 认这个组的，是随后那一次发射（`call(talkgroup:)`）。
     func setTalkgroup(_ talkgroup: Int) {
         let value = max(0, talkgroup)
-        guard value != activeTalkgroup else { return }
-
         activeTalkgroup = value
         activeSettings.talkgroup = value
+        dmr_core_set_talkgroup(core, UInt32(value))
+
         filteredFrames = 0
-        currentSpeaker = nil
         serverTalkgroup = nil
-        pendingConfirmTalkgroup = nil
-        talkgroupAliveAt = nil
-        subRetries = 0
-        callWatchdog?.cancel()
-        callWatchdog = nil
         trafficStat.removeAll()
         trafficTotal = 0
-        trafficFiltered = 0
         warnedNoTraffic = false
         lastTrafficReport = Date()
 
-        // 旧组正在播的音频先掐掉；还标着「通话中」的旧组通话要手动收尾，
-        // 因为它之后的结束符会被过滤器挡掉，否则会一直挂在「正在通话」里。
-        voice.reset()
+        // 旧组还挂着的通话要手动收尾：它之后的结束符会被过滤器挡掉。
+        endStream(reason: nil)
         let now = Date()
         for index in calls.indices where calls[index].isActive {
             calls[index].isActive = false
             calls[index].updatedAt = now
         }
+        currentSpeaker?.endedAt = now
         syncVoiceUI()
 
         if value > 0 {
-            if activeSettings.followServerTalkgroups {
-                append(.info, "→ 目标 TG \(value)：会向它订阅一次，但服务器推什么就播什么")
-            } else {
-                append(.info, "→ 只收听 TG \(value)（本地过滤，其它组不再解码）")
-            }
-            if state != .online {
-                append(.info, "连上之后会自动向 TG \(value) 订阅一次，BrandMeister 才会把它标成动态订阅")
-            }
+            append(.info, "→ 目标 TG \(value)：会向它订阅一次；服务器推别的组时按设置决定播不播")
         } else {
             append(.info, "→ 收听全部通话组")
         }
     }
 
-    // MARK: - 订阅（激活动态 TG）
+    // MARK: - 订阅（发一次静音 PTT）
 
-    /// 最近一次订阅的时间与目标，只拦「同一组 3 秒内重复发射」，
-    /// 换成别的组立刻就能发。
-    private var lastCallAt: Date?
-    private var lastCallTalkgroup: Int?
-    private var callTask: Task<Void, Never>?
-    /// 一轮订阅发射（语音头 + 6 个突发 + 结束符，约 0.5 秒）还没发完。
-    /// 中途打断会留下一个没有结束符的语音头，服务器会把那个时隙占十几秒，
-    /// 所以宁可让这次请求落空。
-    private var isCalling = false
-    private var dmrSeq: UInt8 = 0
-    /// 等回音的看门狗：10 秒内一帧都没收到才补发一次订阅。
-    private var callWatchdog: Task<Void, Never>?
-    /// 刚订阅过、还在等第一帧回音的 TG。收到它的语音就说明动态订阅真的生效了，
-    /// 打一行确认日志——否则用户只能靠「有没有声音」猜。
-    private var pendingConfirmTalkgroup: Int?
-    /// 当前 TG 已经补发过几次订阅。DroidStar 不补发（人工按键），这里只留一次兜底。
-    private var subRetries = 0
-    /// 发出订阅那一刻的收帧计数，用来判断「是订阅没建立」还是「只是没人说话」。
-    private var rxAtCall = 0
-
-    // MARK: - 按住发射（PTT）
-
-    private let mic = PttMicrophone()
-    private let encoder = HREncoder()
-    private var pttTask: Task<Void, Never>?
-    /// 采集到、还没编码的 20 ms 帧
-    private var pttFrames = [[Int16]]()
-    private var pttStreamId: UInt32 = 0
-    private var pttBurstIndex = 0
-    private var pttTalkgroup = 0
-    private var pttSlotFlag: UInt8 = 0
-    private var pttColorCode = 1
-    private var pttStartedAt: Date?
-
-    /// 收到的帧按「dst@slot」汇总，每 15 秒报一次。
+    /// 向某个通话组发一次真实发射，让 BrandMeister 把它记成动态订阅。
     ///
-    /// 这是排查「收不到语音」最关键的一条信息：服务器到底在推什么。
-    /// 如果摘要里全是别的组，说明要的组没订阅上；如果摘要里就有它，
-    /// 说明订阅是好的，只是那一会儿没人讲话。
-    private var trafficStat: [String: Int] = [:]
-    private var trafficTotal = 0
-    private var trafficFiltered = 0
-    private var lastTrafficReport = Date()
-    /// 长时间一帧 DMRD 都没收到，只提醒一次，别每 15 秒重复。
-    private var warnedNoTraffic = false
-
-    /// 当前 TG 最近一次「有语音下来」或「我们主动续订」的时刻。
-    /// 它是续订计时器的基准：超过设置里的分钟数没有任何动静，就再呼叫一次。
-    private var talkgroupAliveAt: Date?
-
-    /// 有没有「真的在进行」的通话。
-    ///
-    /// 不能直接看 `activeCalls`：部分 master 不推语音结束符，那些通话会一直挂在
-    /// `isActive == true` 上，把呼叫和续订永久挡住。语音帧是持续刷新的，
-    /// 所以「10 秒内没有更新」就当作已经结束。
-    private var hasLiveCall: Bool {
-        let now = Date()
-        return calls.contains { $0.isActive && now.timeIntervalSince($0.updatedAt) < 10 }
-    }
-
-    /// 向某个通话组发一次极短的 PTT —— 这就是「订阅」。
-    ///
-    /// 对齐参考实现 DroidStar：它在 Homebrew 上也是**按一下话筒**来激活动态组
-    /// （`dmr_tgid_changed()` 只是把目的地址换成新 TG，真正让 master 认这个组的
-    /// 是随后 `encode_header(DT_VOICE_LC_HEADER)` 那一帧）。
-    ///
-    ///     语音头 → 一个完整超帧（6 个突发，带嵌入 LC）→ 结束符
-    ///
-    /// 一次完整超帧而不是「头发完就收」：嵌入 LC 让对端在我们丢了语音头时
-    /// 也能拼出「谁发给哪个组」，这是 DroidStar 每次发射都在做的事。
-    ///
-    /// Homebrew 没有任何「订阅」指令，服务器只推它认为已经订阅的 TG；
-    /// 光改本地过滤器是没用的（那只是「别的组不播」而已）。
+    /// 这就是参考实现里「按一下话筒」那件事：DroidStar 的 `dmr_tgid_changed()`
+    /// 只换了目的地址，真正让 master 认这个组的是随后那一帧语音头。
     func call(talkgroup: Int) {
         guard talkgroup > 0, talkgroup <= 0xFF_FFFF else { return }
         guard state == .online else {
-            // 断线时点「确定」照样会走到这里，给一句明确的交代，别让人以为已经发出去了。
             append(.info, "还没连上服务器：连上后会自动向 TG \(talkgroup) 订阅一次")
             return
         }
-
-        // 有人正在说话时别抢：插一个语音头进去会把这一句打断。
-        if hasLiveCall {
-            append(.warning, "TG \(talkgroup) 上还有通话在进行，这次先不订阅")
-            return
-        }
-
-        // 正按着 PTT 的时候不能再插一个语音头：两段 stream 会撞在一起，
-        // 对端听到的是断续的杂音，而且结束符会把正在说的那句一起结束掉。
-        if isTransmitting {
-            append(.info, "正在按住 PTT，松手之后再来订阅")
+        guard !isTransmitting, txTimer == nil else {
+            append(.info, "正在发射，等这次发完再订阅")
             return
         }
 
         let now = Date()
-        if let lastCallAt, lastCallTalkgroup == talkgroup,
-           now.timeIntervalSince(lastCallAt) < 3 { return }
-        // 换了组就从头计数：补发次数只针对「这一个组」。
-        if lastCallTalkgroup != talkgroup { subRetries = 0 }
-        lastCallAt = now
-        lastCallTalkgroup = talkgroup
-
-        // 上一轮还没发完（约 0.5 秒），别插队——中途打断会留下半截发射。
-        guard !isCalling else { return }
-        isCalling = true
-        talkgroupAliveAt = now
-
-        // 发射帧里的源地址必须是「本人 DMR ID」（7 位），不是 9 位热点 ID：
-        // DMRD 的 src 字段只有 3 字节（≤16777215），塞 hotspotId 会溢出，
-        // 变成一个别人的 DMR ID —— BrandMeister 会当冒用身份整帧丢弃，
-        // 表现就是「订阅发出去了，但这个组永远没有语音下来」。
-        let src = activeSettings.dmrId
-        let peer = activeSettings.hotspotId
-        guard src > 0, src <= 0xFF_FFFF else {
-            isCalling = false
-            append(.warning, "DMR ID \(src) 不是 7 位编号，不能作为发射的源地址")
+        if let last = lastSubscribeAt, lastSubscribeTalkgroup == talkgroup,
+           now.timeIntervalSince(last) < 3 {
             return
         }
+        lastSubscribeAt = now
+        lastSubscribeTalkgroup = talkgroup
+        talkgroupAliveAt = now
 
-        let slot = activeSettings.callSlot == 1 ? 1 : 2
-        let slotFlag: UInt8 = slot == 2 ? 0x80 : 0x00
-        let stream = UInt32.random(in: 1...0xFFFF_FFFE)
-        // 色码只写进语音载荷（slot type 与 DMREMB），握手和收帧都不用它。
-        let cc = min(15, max(0, activeSettings.colorCode))
-        let head = DMRCallCodec.voicePayload(dst: talkgroup, src: src, isTerminator: false,
-                                             colorCode: UInt8(cc))
-        let tail = DMRCallCodec.voicePayload(dst: talkgroup, src: src, isTerminator: true,
-                                             colorCode: UInt8(cc))
-        let bursts = DMRCallCodec.voiceBursts(talkgroup: talkgroup, src: src, colorCode: UInt8(cc))
+        let slot = UInt8(activeSettings.callSlot == 1 ? 1 : 2)
+        let cc = UInt8(min(15, max(0, activeSettings.colorCode)))
+        guard sendHeader(talkgroup: talkgroup, slot: slot, cc: cc) else { return }
 
-        append(.info, "→ 订阅 TG \(talkgroup)（TS\(slot)，CC\(cc)，DMR ID \(src) → 热点 \(peer)，一次完整发射）")
-        append(.info, "BrandMeister 收到这次发射后会把它记为动态订阅，之后该组的语音就会推下来")
-        pendingConfirmTalkgroup = talkgroup
-        rxAtCall = rxFrames
-        startCallWatchdog(talkgroup)
+        append(.info, "→ 订阅 TG \(talkgroup)（TS\(slot) CC\(cc)，\(subscribeBursts) 个语音突发 + 结束符，约 "
+            + String(format: "%.1f", Double(subscribeBursts) * 0.06) + " 秒）")
 
-        callTask?.cancel()
-        callTask = Task { [weak self] in
-            guard let self else { return }
-            defer { self.isCalling = false }
-
-            // 1. 语音头：master 认的就是这一帧，动态订阅在这一步建立
-            self.sendDmrFrame(src: src, dst: talkgroup, peer: peer,
-                              flags: slotFlag | 0x20 | 0x01,
-                              streamId: stream,
-                              payload: head,
-                              label: "DMRD 语音头 → TG \(talkgroup)")
-
-            // 2. 一个完整超帧：6 个突发，每 60ms 一个。
-            //    第 0 个带音频同步字（flags 低 4 位 0x10），第 1…4 个带嵌入 LC 分片，
-            //    第 5 个只有 EMB —— 与 DroidStar 的 `encode_data()` 逐字节一致。
-            //    以前这里发 12 个不带嵌入 LC 的静音：载波是有的，但对端拼不出
-            //    「这一段属于哪个组」，看着就像订阅没建立。
-            for index in 0..<bursts.count {
-                try? await Task.sleep(nanoseconds: 60_000_000)
-                if Task.isCancelled { return }
-                self.sendDmrFrame(src: src, dst: talkgroup, peer: peer,
-                                  flags: slotFlag | (index == 0 ? UInt8(0x10) : UInt8(index)),
-                                  streamId: stream,
-                                  payload: bursts[index],
-                                  label: "DMRD 语音突发 \(index + 1)/\(bursts.count)",
-                                  quiet: index > 0)
-            }
-            self.append(.tx, "→ 订阅发射完成：语音头 + \(bursts.count) 个突发（含嵌入 LC）+ 结束符")
-
-            // 3. 结束符：不收尾的话服务器会把这个时隙占十几秒
-            try? await Task.sleep(nanoseconds: 60_000_000)
-            if Task.isCancelled { return }
-            self.sendDmrFrame(src: src, dst: talkgroup, peer: peer,
-                              flags: slotFlag | 0x20 | 0x02,
-                              streamId: stream,
-                              payload: tail,
-                              label: "DMRD 结束符")
-        }
-    }
-
-    /// 订阅之后等回音的超时。
-    ///
-    /// DroidStar 是人工按键，天然没有「补发」这回事；我们连上就自动发，
-    /// 所以要自己兜一次。判断依据只看「这期间有没有收到**任何** DMRD 帧」：
-    ///
-    /// - 有帧 → 链路和订阅都活着（可能推的是别的组，见「跟随服务器下发的通话组」），
-    ///   不要再补发，否则只是在别人的通话里插噪音；
-    /// - 一帧都没有 → 大概率是刚上线时那一帧被 master 丢了，补一次就够了。
-    private func startCallWatchdog(_ talkgroup: Int) {
-        callWatchdog?.cancel()
-        callWatchdog = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 10_000_000_000)
-            guard let self, !Task.isCancelled else { return }
-            guard self.pendingConfirmTalkgroup == talkgroup else { return }
-
-            if self.rxFrames > self.rxAtCall {
-                self.pendingConfirmTalkgroup = nil
-                self.subRetries = 0
-                let pushed = self.serverTalkgroup.map { String($0) } ?? "其它"
-                self.append(.info, "订阅后已收到语音流量，链路正常（当前推的是 \(pushed)），不再补发")
-                return
-            }
-
-            if self.subRetries < 1 {
-                self.subRetries += 1
-                self.pendingConfirmTalkgroup = nil
-                self.append(.warning, "10 秒内一帧语音都没收到，补发一次订阅（共 2 次）")
-                self.lastCallAt = nil          // 绕开 3 秒节流
-                self.call(talkgroup: talkgroup)
-                return
-            }
-
-            self.pendingConfirmTalkgroup = nil
-            self.append(.warning, "连续 2 次订阅后仍没有任何语音：要么这个组此刻没人说话，要么订阅没落在这个热点上")
-            self.append(.info, "核对三件事：① DMR ID（7 位）与 9 位热点 ID 是否属于同一台设备；"
-                + "② 密码是不是 SelfCare → Hotspot Security 里那串；③ 这个 TG 在 SelfCare 里挂的时隙是否和「呼叫时隙」一致")
-        }
-    }
-
-    private func sendDmrFrame(src: Int, dst: Int, peer: Int, flags: UInt8,
-                              streamId: UInt32, payload: [UInt8], label: String,
-                              quiet: Bool = false) {
-        dmrSeq = dmrSeq &+ 1
-        let frame = HB.dmrFrame(seq: dmrSeq, src: src, dst: dst, peer: peer,
-                                flags: flags, streamId: streamId, payload: payload)
-        send(frame, label: label, quiet: quiet)
+        txKind = .subscribe
+        txBurstsLeft = subscribeBursts
+        startTxTimer()
     }
 
     // MARK: - 按住发射（PTT）
 
-    /// 按下 PTT：开麦克风、发语音头，然后每 60 ms 发一个携带真实语音的突发。
-    ///
-    /// 链路：
-    ///
-    ///     麦克风 48 kHz ──▶ 8 kHz / 160 采样 ──3 帧(60 ms)──▶ AMBE+2 编码 ──▶ 33 字节载荷
-    ///
-    /// 松手（`endPtt`）发结束符，服务器才会把这一句收进通话记录并释放时隙。
     func beginPtt(talkgroup: Int) {
         guard !isTransmitting else { return }
         guard state == .online else {
@@ -425,38 +272,22 @@ final class HomebrewClient: ObservableObject {
             append(.warning, "先在通话组里填一个号码，PTT 才有地方发")
             return
         }
-        guard !isCalling else {
-            append(.warning, "正在订阅发射（约半秒），等它发完再按住 PTT")
+        guard txTimer == nil else {
+            append(.warning, "正在订阅发射（约一秒），等它发完再按住 PTT")
+            return
+        }
+        guard activeSettings.dmrId > 0 else {
+            append(.warning, "DMR ID 还没设置，发射的源地址会是 0")
             return
         }
 
-        let src = activeSettings.dmrId
-        guard src > 0, src <= 0xFF_FFFF else {
-            append(.warning, "DMR ID \(src) 不是 7 位编号，不能作为发射的源地址")
-            return
-        }
-        let peer = activeSettings.hotspotId
-        guard peer > 0 else {
-            append(.warning, "热点 ID 还没设置，服务器无法确认发射者身份")
-            return
-        }
-
-        let slot = activeSettings.callSlot == 1 ? 1 : 2
-        pttSlotFlag = slot == 2 ? 0x80 : 0x00
-        pttColorCode = min(15, max(0, activeSettings.colorCode))
-        pttTalkgroup = talkgroup
-        pttStreamId = UInt32.random(in: 1...0xFFFF_FFFE)
-        pttBurstIndex = 0
         pttFrames.removeAll(keepingCapacity: true)
-        pttStartedAt = Date()
-        txSeconds = 0
         encoder.reset()
 
-        // 采集一帧就排队，编码放在发射循环里做——编码要 2～3 ms，塞进采集回调会丢帧
+        // 采集一帧就排队，编码放到发射循环里做——编码要 2～3 ms，塞进采集回调会丢帧
         mic.onFrame = { [weak self] frame in
             guard let self else { return }
             self.pttFrames.append(frame)
-            // 万一编码跟不上，只留最近 1 秒，别让延迟越滚越大
             if self.pttFrames.count > 50 {
                 self.pttFrames.removeFirst(self.pttFrames.count - 50)
             }
@@ -471,111 +302,130 @@ final class HomebrewClient: ObservableObject {
             return
         }
 
-        // 发射期间不播放收到的语音：半双工，而且麦克风会把扬声器的声音再收进去，
-        // 变成一路回声。松手后 `endPtt` 会按原来的开关恢复。
+        let slot = UInt8(activeSettings.callSlot == 1 ? 1 : 2)
+        let cc = UInt8(min(15, max(0, activeSettings.colorCode)))
+        guard sendHeader(talkgroup: talkgroup, slot: slot, cc: cc) else {
+            mic.onFrame = nil
+            mic.stop()
+            return
+        }
+
+        // 半双工：发射期间不播收到的语音，否则麦克风会把扬声器的声音再收进去。
         voice.isMuted = true
         isTransmitting = true
-        append(.tx, "🔴 按住发射 → TG \(talkgroup)（TS\(slot)，CC\(pttColorCode)，DMR ID \(src) → 热点 \(peer)）")
+        txSeconds = 0
+        txStartedAt = Date()
+        append(.tx, "🔴 按住发射 → TG \(talkgroup)（TS\(slot)，CC\(cc)，DMR ID \(activeSettings.dmrId)）")
 
-        let head = DMRCallCodec.voicePayload(dst: talkgroup, src: src,
-                                             isTerminator: false, colorCode: UInt8(pttColorCode))
-        sendDmrFrame(src: src, dst: talkgroup, peer: peer,
-                     flags: pttSlotFlag | 0x20 | 0x01,
-                     streamId: pttStreamId, payload: head,
-                     label: "DMRD 语音头（PTT）")
-
-        startPttLoop(src: src, dst: talkgroup, peer: peer)
+        txKind = .ptt
+        startTxTimer()
     }
 
-    /// 松手：停采集、发两个结束符（丢一个也不会让时隙一直占着）。
     func endPtt() {
         guard isTransmitting else { return }
         isTransmitting = false
         txLevel = 0
-        pttTask?.cancel()
-        pttTask = nil
         mic.onFrame = nil
         mic.stop()
 
-        if let started = pttStartedAt {
+        if let started = txStartedAt {
             txSeconds = Date().timeIntervalSince(started)
         }
-        pttStartedAt = nil
+        finishTransmission(label: "⬛ 停止发射")
         voice.isMuted = !activeSettings.audioEnabled
-
-        let src = activeSettings.dmrId
-        let peer = activeSettings.hotspotId
-        let cc = UInt8(min(15, max(0, activeSettings.colorCode)))
-        guard pttTalkgroup > 0, src > 0 else { return }
-
-        let tail = DMRCallCodec.voicePayload(dst: pttTalkgroup, src: src,
-                                             isTerminator: true, colorCode: cc)
-        sendDmrFrame(src: src, dst: pttTalkgroup, peer: peer,
-                     flags: pttSlotFlag | 0x20 | 0x02,
-                     streamId: pttStreamId, payload: tail,
-                     label: "DMRD 语音结束符（PTT）")
-        sendDmrFrame(src: src, dst: pttTalkgroup, peer: peer,
-                     flags: pttSlotFlag | 0x20 | 0x02,
-                     streamId: pttStreamId, payload: tail,
-                     label: "DMRD 语音结束符（重发）", quiet: true)
-
-        let seconds = String(format: "%.1f", txSeconds)
-        append(.tx, "⬛ 停止发射（\(seconds) 秒，共 \(pttBurstIndex) 个语音突发）")
-        pttTalkgroup = 0
-        pttBurstIndex = 0
+        txStartedAt = nil
     }
 
-    /// 发射循环：每 60 ms 取 3 帧（60 ms 音频）编码成一个突发发出去。
-    ///
-    /// DMR 一个突发正好装 3 个 20 ms 的 AMBE 帧，Homebrew 也是 60 ms 一个 DMRD，
-    /// 两边严格对齐；节奏乱了接收端会听到断续或变速。
-    private func startPttLoop(src: Int, dst: Int, peer: Int) {
-        pttTask?.cancel()
-        pttTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 60_000_000)
-                guard let self, !Task.isCancelled, self.isTransmitting else { return }
+    // MARK: - 发射（两条路径共用）
 
-                self.txLevel = self.mic.level
-                if let started = self.pttStartedAt {
-                    self.txSeconds = Date().timeIntervalSince(started)
-                }
+    /// 语音头。成功返回 true。
+    private func sendHeader(talkgroup: Int, slot: UInt8, cc: UInt8) -> Bool {
+        var buffer = [UInt8](repeating: 0, count: 64)
+        let n = dmr_core_tx_begin(core, UInt32(talkgroup), slot, cc, &buffer, Int32(buffer.count))
+        guard n == 55 else {
+            append(.error, "核心没能生成语音头（返回 \(n)）")
+            return false
+        }
+        send(Data(buffer[0..<55]), label: "DMRD 语音头 → TG \(talkgroup)")
+        return true
+    }
 
-                var frames = [[Int16]]()
-                if self.pttFrames.count >= 3 {
-                    frames = Array(self.pttFrames.prefix(3))
-                    self.pttFrames.removeFirst(3)
-                } else {
-                    frames = self.pttFrames
-                    self.pttFrames.removeAll(keepingCapacity: true)
-                }
-                // 采集还没跟上（刚按下那一刻）就补静音，别让突发序列断掉
-                while frames.count < 3 {
-                    frames.append([Int16](repeating: 0, count: PttMicrophone.frameSamples))
-                }
+    private func sendBurst(_ codec: [UInt8], quiet: Bool) {
+        var buffer = [UInt8](repeating: 0, count: 64)
+        let n = codec.withUnsafeBufferPointer { pointer in
+            dmr_core_tx_burst(core, pointer.baseAddress, &buffer, Int32(buffer.count))
+        }
+        guard n == 55 else { return }
+        send(Data(buffer[0..<55]), label: "DMRD 语音突发", quiet: quiet)
+    }
 
-                let packed = self.encoder.encodeBurst(frames)
-                let n = self.pttBurstIndex % 6
-                let payload = DMRCallCodec.voiceBurst(frames27: packed,
-                                                      index: n,
-                                                      talkgroup: dst,
-                                                      src: src,
-                                                      colorCode: UInt8(self.pttColorCode))
-                // 超帧第 0 个突发带音频同步字（0x10），其余是嵌入信令（低 4 位 = 序号）
-                let flags = self.pttSlotFlag | (n == 0 ? 0x10 : UInt8(n))
-                self.sendDmrFrame(src: src, dst: dst, peer: peer,
-                                  flags: flags,
-                                  streamId: self.pttStreamId,
-                                  payload: payload,
-                                  label: "DMRD 语音突发 \(self.pttBurstIndex + 1)",
-                                  quiet: true)
-                self.pttBurstIndex += 1
+    private func sendSilenceBurst() {
+        var codec = [UInt8](repeating: 0, count: 27)
+        dmr_core_silence_codec(&codec)
+        sendBurst(codec, quiet: true)
+    }
+
+    private func startTxTimer() {
+        txTimer?.invalidate()
+        let timer = Timer(timeInterval: 0.06, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.txTick() }
+        }
+        // .common：手指按在按钮上时主 runloop 处于 tracking 模式，默认模式不会触发。
+        RunLoop.main.add(timer, forMode: .common)
+        txTimer = timer
+    }
+
+    private func txTick() {
+        switch txKind {
+        case .subscribe:
+            guard txBurstsLeft > 0 else {
+                finishTransmission(label: "→ 订阅发射完成")
+                return
             }
+            txBurstsLeft -= 1
+            sendSilenceBurst()
+        case .ptt:
+            txLevel = mic.level
+            if let started = txStartedAt {
+                txSeconds = Date().timeIntervalSince(started)
+            }
+            var frames = [[Int16]]()
+            if pttFrames.count >= 3 {
+                frames = Array(pttFrames.prefix(3))
+                pttFrames.removeFirst(3)
+            } else {
+                frames = pttFrames
+                pttFrames.removeAll(keepingCapacity: true)
+            }
+            // 采集还没跟上（刚按下那一刻）就补静音，别让突发序列断掉
+            while frames.count < 3 {
+                frames.append([Int16](repeating: 0, count: PttMicrophone.frameSamples))
+            }
+            sendBurst(encoder.encodeBurst(frames), quiet: true)
         }
     }
 
-    // MARK: - 语音偏好
-    /// 用户在界面上改了开关/音量时调用，需要立刻生效而不必重连
+    /// 收尾：停节拍、发结束符。结束符不发的话服务器会占着这个时隙十几秒。
+    private func finishTransmission(label: String) {
+        txTimer?.invalidate()
+        txTimer = nil
+
+        if dmr_core_tx_active(core) == 1 {
+            var buffer = [UInt8](repeating: 0, count: 64)
+            let n = dmr_core_tx_end(core, &buffer, Int32(buffer.count))
+            if n == 55 {
+                send(Data(buffer[0..<55]), label: "DMRD 语音结束符")
+                // 再补一帧：丢一个也不会让时隙一直占着
+                send(Data(buffer[0..<55]), label: "DMRD 语音结束符（重发）", quiet: true)
+            }
+        }
+        append(.tx, label)
+        txKind = .subscribe
+        txBurstsLeft = 0
+    }
+
+    // MARK: - 语音偏好（界面实时改）
+
     func applyAudioPreference(_ settings: Settings) {
         activeSettings.audioEnabled = settings.audioEnabled
         activeSettings.audioVolume = settings.audioVolume
@@ -591,25 +441,28 @@ final class HomebrewClient: ObservableObject {
     func applyBehaviour(_ settings: Settings) {
         let slotChanged = activeSettings.callSlot != settings.callSlot
         let ccChanged = activeSettings.colorCode != settings.colorCode
+
         activeSettings.autoRenewTalkgroup = settings.autoRenewTalkgroup
         activeSettings.talkgroupRenewMinutes = settings.talkgroupRenewMinutes
         activeSettings.callSlot = settings.callSlot
         activeSettings.colorCode = settings.colorCode
         activeSettings.autoCallOnConnect = settings.autoCallOnConnect
         activeSettings.followServerTalkgroups = settings.followServerTalkgroups
+        activeSettings.sendConfig = settings.sendConfig
 
         // 时隙和色码都只体现在「发出去的那几帧」里，改完不重新订阅等于没改。
-        // 这里顺手补一次（并绕开 3 秒节流），用户改完就能直接看结果。
-        if (slotChanged || ccChanged), state == .online, activeTalkgroup > 0, !isCalling {
-            lastCallAt = nil
-            let cc = min(15, max(0, activeSettings.colorCode))
-            append(.info, "发射参数改为 TS\(activeSettings.callSlot == 1 ? 1 : 2) / CC\(cc)，重新向 TG \(activeTalkgroup) 订阅一次")
+        if slotChanged || ccChanged {
+            dmr_core_set_color_code(core, UInt8(min(15, max(0, settings.colorCode))))
+        }
+        if (slotChanged || ccChanged), state == .online, activeTalkgroup > 0, txTimer == nil {
+            lastSubscribeAt = nil
+            let cc = min(15, max(0, settings.colorCode))
+            let slot = settings.callSlot == 1 ? 1 : 2
+            append(.info, "发射参数改为 TS\(slot) / CC\(cc)，重新向 TG \(activeTalkgroup) 订阅一次")
             call(talkgroup: activeTalkgroup)
         }
     }
 
-    /// 每个语音包都会调用，所以只在值真的变了才写 @Published——
-    /// 否则 25 包/秒 × 4 个属性 = 每秒 100 次 objectWillChange，白白刷新整个界面。
     private func syncVoiceUI() {
         if isVoicePlaying != voice.isPlaying { isVoicePlaying = voice.isPlaying }
         if voiceLevel != voice.level { voiceLevel = voice.level }
@@ -620,12 +473,11 @@ final class HomebrewClient: ObservableObject {
     // MARK: - 连接 / 断开
 
     func connect(with settings: Settings) {
-        // 上一个会话可能还活着（在线、或卡在某个握手阶段）。不发 RPTCL 就直接重登，
-        // master 那边会同时看到同一个 ID 的两条连接，通常直接把新的那条关掉——MSTCL。
-        // 所以先主动登出、等 0.3 秒让 UDP 包真正出去，再走正常的连接流程。
-        if state != .offline, state != .connecting, (connection != nil || webSocket != nil) {
+        // 上一个会话可能还活着。不发 RPTCL 直接重登，master 会看到同一个 ID
+        // 的两条连接，通常把新的那条关掉（MSTCL）。
+        if state != .offline, connection != nil || webSocket != nil {
             append(.info, "先结束上一个会话（RPTCL），再重新登录")
-            send(HB.disconnect(id: activeSettings.hotspotId), label: "RPTCL 结束上一个会话")
+            sendLogout()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
                 self?.beginConnect(with: settings)
             }
@@ -637,22 +489,23 @@ final class HomebrewClient: ObservableObject {
     private func beginConnect(with settings: Settings) {
         teardown()
         activeSettings = settings
+
         loginAttempt = 0
-        configRetries = 0
-        configProbed = false
-        sessionNaks = 0
+        refusals = 0
+        unknownTags.removeAll()
         activeTalkgroup = settings.talkgroup
         filteredFrames = 0
         trafficStat.removeAll()
         trafficTotal = 0
-        trafficFiltered = 0
         warnedNoTraffic = false
         lastTrafficReport = Date()
-        challenge = []
-        usedLegacyAuth = false
         rxFrames = 0
         txFrames = 0
         lastProblem = nil
+        serverTalkgroup = nil
+        talkgroupAliveAt = nil
+        lastSubscribeAt = nil
+        lastSubscribeTalkgroup = nil
 
         voice.reset()
         voice.volume = Float(settings.audioVolume)
@@ -665,58 +518,54 @@ final class HomebrewClient: ObservableObject {
             return
         }
 
-        // 呼号是 302 字节配置块的前 8 字节。缺了它多数 master 会回 MSTNAK，
-        // 但不要因此把人挡在门外——先连上，被拒再降级上线，日志里会说清楚。
-        if settings.sendConfig && settings.normalizedCallsign.isEmpty {
-            append(.warning, "呼号为空：RPTC 的呼号字段会是空格，部分 master 会回 MSTNAK。"
-                + "建议在设置里填上与 SelfCare 一致的呼号")
-        }
-
         if settings.usesEssid && settings.dmrId > 42_949_672 {
-            // 再乘 100 就溢出 32 位，master 只会回 MSTNAK。参考实现同样在这一步挡住。
             state = .failed("DMR ID 过大：ESSID 需要 7 位 ID，不是 9 位热点 ID")
             append(.error, "ESSID 换算会溢出：DMR ID 应填 7 位编号")
             return
         }
 
+        applyCoreConfiguration(settings)
+
         state = .connecting
         append(.info, "开始连接 \(settings.host):\(settings.port)（\(settings.transport.short)）")
-        if settings.hotspotIdOverride > 0 {
-            append(.info, "登录 ID \(settings.hotspotId)（设置里直接指定，忽略 ESSID 换算）")
-        } else if settings.usesEssid {
-            let suffix = String(format: "%02d", settings.essidSuffix ?? 0)
-            append(.info, "登录 ID \(settings.hotspotId)（DMR ID \(settings.dmrId) + 两位别名 \(suffix)）")
+        append(.info, "登录 ID \(settings.hotspotId)"
+            + (settings.hotspotIdOverride >= 10_000_000 ? "（设置里直接指定）" : settings.usesEssid ? "（DMR ID + ESSID 后缀）" : "（没填 ESSID，多数服务器不认）"))
+        if settings.sendConfig {
+            append(.info, "握手：RPTL → RPTK → RPTC → RPTPING（与参考实现 DroidStar 一致）")
         } else {
-            append(.warning, "没填 ESSID：将以 7 位 DMR ID \(settings.dmrId) 登录。"
-                + "BrandMeister 的热点是 9 位 ID（DMR ID + SSID，如 460123401），"
-                + "建议填 01 并与 SelfCare → My Hotspots 核对")
+            append(.info, "握手：RPTL → RPTK（跳过 RPTC，只给不接受配置包的服务器用）")
         }
 
         switch settings.transport {
-        case .udp:
-            startUDP()
-        case .websocket:
-            startWebSocket()
+        case .udp: startUDP()
+        case .websocket: startWebSocket()
         }
+    }
+
+    /// 把设置灌进 C++ 核心。数值和字符串分开传，避免 Swift 侧嵌套 withCString。
+    private func applyCoreConfiguration(_ settings: Settings) {
+        var setup = dmr_setup_t()
+        setup.essid = UInt32(clamping: settings.hotspotId)
+        setup.dmr_id = UInt32(clamping: settings.dmrId)
+        setup.frequency = 438_800_000
+        setup.color_code = UInt8(min(15, max(0, settings.colorCode)))
+        setup.send_config = settings.sendConfig ? 1 : 0
+        dmr_core_set_params(core, &setup)
+
+        dmr_core_set_text(core, DMR_TEXT_PASSWORD, settings.sanitizedPassword)
+        dmr_core_set_text(core, DMR_TEXT_CALLSIGN, settings.normalizedCallsign.isEmpty ? "N0CALL" : settings.normalizedCallsign)
+        dmr_core_set_talkgroup(core, UInt32(max(0, settings.talkgroup)))
     }
 
     func disconnect() {
         let wasActive = (state != .offline)
-
-        // 先发 RPTCL（参考实现 DroidStar 的 send_disconnect）。不发的话 master 要等
-        // 会话超时才释放这个热点 ID，这段时间内立刻重连会被判「ID 被占用」。
         if wasActive {
-            send(HB.disconnect(id: activeSettings.hotspotId), label: "RPTCL 主动登出")
+            sendLogout()
+            append(.info, "已断开连接")
         }
-
         state = .offline
-        // 手动断开视为一次全新开始：把「不再上报 RPTC」和踢线计数都清掉。
-        configForcedOff = false
-        masterCloses = 0
-        if wasActive { append(.info, "已断开连接") }
 
-        // 给 UDP 一点时间把 RPTCL 真正发出去，再拆 socket；teardown 会立刻取消连接。
-        // 若这 0.25 秒里用户又点了连接（state 已不是 offline），就别把新连接拆掉。
+        // 给 UDP 一点时间把 RPTCL 真正发出去，再拆 socket。
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
             guard let self, self.state == .offline else { return }
             self.teardown()
@@ -727,7 +576,7 @@ final class HomebrewClient: ObservableObject {
         entries.removeAll()
     }
 
-    // MARK: - UDP 传输
+    // MARK: - 传输层
 
     private func startUDP() {
         let parameters = NWParameters.udp
@@ -779,8 +628,6 @@ final class HomebrewClient: ObservableObject {
             break
         }
     }
-
-    // MARK: - WebSocket 传输
 
     private func startWebSocket() {
         let path = activeSettings.wsPath.hasPrefix("/") ? activeSettings.wsPath : "/" + activeSettings.wsPath
@@ -834,170 +681,130 @@ final class HomebrewClient: ObservableObject {
         }
     }
 
-    // MARK: - 登录状态机
+    // MARK: - 建链
 
     private func sendLogin() {
         loginAttempt += 1
         guard loginAttempt <= 3 else {
-            fail("服务器连续 3 次未响应登录请求")
+            fail("服务器连续 3 次没有回应登录请求（RPTL）")
             return
         }
-
         state = .loggingIn
-        challenge = []
+        var buffer = [UInt8](repeating: 0, count: 16)
+        let n = dmr_core_login(core, &buffer, Int32(buffer.count))
+        guard n > 0 else {
+            fail("协议核心没能生成 RPTL（热点 ID \(activeSettings.hotspotId)）", allowRetry: false)
+            return
+        }
         append(.info, "→ RPTL 登录请求（第 \(loginAttempt) 次），热点 ID \(activeSettings.hotspotId)")
-        send(HB.login(id: activeSettings.hotspotId), label: "RPTL")
+        send(Data(buffer[0..<Int(n)]), label: "RPTL")
         armLoginTimeout()
     }
 
-    /// RPTK：默认走标准 SHA256(挑战盐 ‖ 密码)；被拒回退后用传统明文。
-    private func sendRPTK() {
-        let password = activeSettings.sanitizedPassword
-        if usedLegacyAuth {
-            append(.warning, "→ RPTK 传统明文鉴权（兼容模式）")
-            send(HB.authLegacy(id: activeSettings.hotspotId, password: password), label: "RPTK")
-        } else {
-            send(HB.auth(id: activeSettings.hotspotId, challenge: challenge, password: password), label: "RPTK")
-        }
+    private func sendPing() {
+        var buffer = [UInt8](repeating: 0, count: 16)
+        let n = dmr_core_ping(core, &buffer, Int32(buffer.count))
+        guard n > 0 else { return }
+        send(Data(buffer[0..<Int(n)]), label: "RPTPING", quiet: true)
     }
 
-    /// MSTNAK：按阶段给不同的解释，别把「ID 不认」和「密码不对」混成一句话。
-    private func handleNak() {
-        switch state {
-        case .loggingIn:
-            // RPTL 就被拒：要么这个 ID 不存在/没注册，要么已经有一条会话占着它。
-            append(.error, "本次上报热点 ID \(activeSettings.hotspotId)（DMR ID \(activeSettings.dmrId)，ESSID \(activeSettings.essid)）")
-            if configRetries > 0 {
-                fail("重新登录被拒（MSTNAK）：该热点 ID 已被另一条会话占用，先把其它设备断开（手机 MMDVM / 盒子 / 另一台手机）再连", allowRetry: false)
-            } else {
-                fail("服务器不认这个热点 ID（MSTNAK）：核对 DMR ID 与 ESSID 后缀是否和 SelfCare 里一致，或该 ID 正被其它设备占用", allowRetry: false)
-            }
+    private func sendLogout() {
+        var buffer = [UInt8](repeating: 0, count: 16)
+        let n = dmr_core_logout(core, &buffer, Int32(buffer.count))
+        guard n > 0 else { return }
+        send(Data(buffer[0..<Int(n)]), label: "RPTCL 主动登出")
+    }
 
-        case .authenticating where !usedLegacyAuth:
-            // 标准挑战应答被拒：先按老 HBlink 的明文格式再试一次，仍拒才算密码错。
-            usedLegacyAuth = true
-            append(.warning, "标准 SHA256 鉴权被拒（MSTNAK），改用传统明文 RPTK 重试一次")
-            sendRPTK()
+    // MARK: - 入站分发
+
+    private func handleInbound(_ data: Data) {
+        lastServerPacket = Date()
+
+        var result = dmr_result_t()
+        let event = data.withUnsafeBytes { raw -> Int32 in
+            let pointer = raw.baseAddress?.assumingMemoryBound(to: UInt8.self)
+            return dmr_core_receive(core, pointer, Int32(data.count), &result)
+        }
+
+        switch event {
+        case DMR_EVT_AUTH:
+            loginTimer?.cancel()
+            state = .authenticating
+            append(.info, "← RPTACK 收到挑战盐，→ RPTK 鉴权")
+            sendResult(result, label: "RPTK")
             armLoginTimeout()
 
-        case .authenticating:
-            append(.error, "热点 ID \(activeSettings.hotspotId) 的密码校验未通过；密码长度 \(activeSettings.sanitizedPassword.count)")
-            fail("密码不对（MSTNAK）：要填 SelfCare → Hotspot Security 里的 Hotspot 密码，不是 BrandMeister 网站的登录密码", allowRetry: false)
-
-        case .configuring where !configProbed:
-            // MSTNAK 在这套协议里有两种含义：① 配置内容被拒；② 这条链路已被 master 判死
-            // （官方规范：收不到心跳后，重复器发来的任何包都回 MSTNAK，客户端应重新登录）。
-            // 先发一个 RPTPING 当探针：回 MSTPONG 说明链路是好的，只是不接受配置包
-            // ——现在的 MMDVMHost 早就不发 RPTC 了，这个包对收发语音没有影响。
-            configProbed = true
-            append(.warning, "RPTC 被拒绝（MSTNAK）：先发 RPTPING 探测链路是否还活着")
-            append(.error, "本次上报：热点 ID \(activeSettings.hotspotId) · 呼号「\(activeSettings.normalizedCallsign)」· 302 字节")
-            send(HB.ping(id: activeSettings.hotspotId, modern: false), label: "RPTPING 探测")
+        case DMR_EVT_CONFIG:
+            loginTimer?.cancel()
+            state = .configuring
+            append(.info, "← RPTACK 鉴权通过，→ RPTC 上报配置（302 字节）")
+            sendResult(result, label: "RPTC")
             armLoginTimeout()
-        case .configuring where configRetries < 2:
-            // 探针也被 NAK：会话确实没了，按规范整轮重登（重发同一个 RPTC 是没用的）。
-            // 等 5 秒再登，给服务器把旧会话超时清掉的时间。
-            configRetries += 1
-            configProbed = false
-            append(.warning, "会话已被 master 清除，5 秒后重新登录（第 \(configRetries) 次）")
 
-            configRetryWork?.cancel()
-            let work = DispatchWorkItem { [weak self] in
-                Task { @MainActor in
-                    guard let self, self.state != .offline, self.state != .online else { return }
-                    self.challenge = []
-                    self.loginAttempt = 0
-                    self.usedLegacyAuth = false
-                    self.sendLogin()
-                }
-            }
-            configRetryWork = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: work)
+        case DMR_EVT_CONNECTED:
+            goOnline()
 
-        case .configuring:
-            let callsign = activeSettings.normalizedCallsign
-            let packet = HB.config(id: activeSettings.hotspotId,
-                                   callsign: callsign,
-                                   colorCode: min(15, max(0, activeSettings.colorCode)))
-            append(.error, "最后一次上报的 RPTC（\(packet.count) 字节），可对照官方字段表：")
-            append(.error, "RPTC 内容", hex: packet.hexDump)
-            append(.error, "排查顺序：① 同一个热点 ID 是否还被别的设备连着（手机 MMDVM、盒子、旧会话）② SelfCare 里这个 ID 是否启用 ③ 呼号是否与登记一致")
-            fail("服务器持续拒绝登录（MSTNAK）：该热点 ID 可能正被其它设备占用，或会话已被清除", allowRetry: false)
+        case DMR_EVT_NAK, DMR_EVT_CLOSED:
+            handleRefused(event == DMR_EVT_CLOSED ? "MSTCL" : "MSTNAK")
 
-        case .online:
-            // 在线后被清会话（别处用同一个 ID 登录过），按参考实现的做法重新登录。
-            // 但要设上限，否则两个设备抢同一个 ID 时会变成无限重连。
-            sessionNaks += 1
-            if sessionNaks > 2 {
-                fail("服务器反复清除会话（MSTNAK）：这个热点 ID 正被另一条连接占用，先把其它设备断开再连", allowRetry: false)
-                return
-            }
-            append(.warning, "会话被 master 清除（MSTNAK），重新登录（第 \(sessionNaks) 次）")
-            loginAttempt = 0
-            state = .connecting
-            sendLogin()
+        case DMR_EVT_PONG:
+            append(.rx, "← MSTPONG")
+
+        case DMR_EVT_RX_HEADER, DMR_EVT_RX_VOICE, DMR_EVT_RX_EOT, DMR_EVT_RX_OTHER:
+            handleDmrFrame(event: event, result: result)
 
         default:
-            append(.rx, "← MSTNAK（当前状态 \(state.label)）")
+            logUnknown(data)
         }
     }
 
-    /// `MSTCL`：master 主动关闭这条会话。
-    ///
-    /// HBlink / BrandMeister 发这一帧大体只有三种原因：
-    ///   ① 同一个热点 ID 在别处又登录了一次，旧会话被顶掉；
-    ///   ② 刚上报的 `RPTC` 配置包不合它的口味（格式 / 呼号 / 频率对不上）；
-    ///   ③ master 自己在重启。
-    ///
-    /// 以前这里直接 `fail()`，而 `fail()` 会顺手安排自动重连——于是「连上 → 被踢 →
-    /// 6 秒后再连上」变成死循环，用户只看到刷屏的 MSTCL。现在按阶段分流：
-    /// 配置阶段被关就退回两段握手，在线被关就快速重登，登录阶段被关先等旧会话超时，
-    /// 连续两次还不行就停下来把原因说清楚。
-    private func handleMasterClose() {
-        append(.warning, "← MSTCL：master 关闭了这条会话（阶段：\(state.label)）")
-
-        switch state {
-        case .configuring:
-            // 刚发完 RPTC 就被关：几乎可以确定是配置包被拒。参考实现 DroidStar
-            // 根本不发这个包，直接退回两段握手即可，不必让用户自己去关开关。
-            configForcedOff = true
-            retryLater(after: 2, message: "RPTC 之后立刻被关闭 → 本次改为不上报配置包，2 秒后重连")
-
-        case .online:
-            masterCloses += 1
-            guard masterCloses <= 2 else {
-                fail("会话被服务器反复关闭（MSTCL）：这个热点 ID 正被另一台设备使用"
-                    + "（手机 MMDVM、盒子或另一台手机），先把那边断开再连", allowRetry: false)
-                return
-            }
-            retryLater(after: 3, message: "在线会话被关闭，3 秒后重新登录（第 \(masterCloses) 次）")
-
-        default:
-            masterCloses += 1
-            guard masterCloses <= 2 else {
-                fail("登录过程中被服务器关闭（MSTCL）：这个热点 ID 可能仍被上一次会话占着，"
-                    + "或它在 BrandMeister 上根本不存在 / 已被停用。等半分钟再连，"
-                    + "并到 SelfCare → My Hotspots 核对这串 9 位号码", allowRetry: false)
-                return
-            }
-            retryLater(after: 8, message: "登录阶段被关闭，8 秒后再试（第 \(masterCloses) 次）—— 给服务器时间释放上一个会话")
-        }
+    private func sendResult(_ result: dmr_result_t, label: String) {
+        let count = Int(result.out_len)
+        guard count > 0 else { return }
+        let payload = withUnsafeBytes(of: result.out) { Data(bytes: $0.baseAddress!, count: count) }
+        send(payload, label: label)
     }
 
-    /// 不判失败、保持「连接中」的延迟重连，UI 不会闪一下红色的失败态。
-    private func retryLater(after seconds: Double, message: String) {
-        append(.info, message)
-        teardown()
-        state = .connecting
-        retryWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            Task { @MainActor in
-                guard let self, self.state != .online else { return }
-                self.connect(with: self.activeSettings)
-            }
+    /// 服务器拒绝 / 关闭会话。两种情况的处理一样：等几秒重登，超过次数就停下来说清楚。
+    private func handleRefused(_ name: String) {
+        append(.warning, "← \(name)：服务器拒绝或关闭了这个会话（阶段：\(state.label)）")
+
+        refusals += 1
+
+        guard refusals <= 2 else {
+            fail("会话被服务器反复关闭（\(name)）：核对 9 位热点 ID 与 SelfCare 里是否一致；"
+                + "如果另一台设备（手机 MMDVM / 盒子）也用这个 ID，先把它断开", allowRetry: false)
+            return
         }
-        retryWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
+        retryLater(after: 5, message: "5 秒后重新登录（第 \(refusals) 次）")
+    }
+
+    private func goOnline() {
+        loginTimer?.cancel()
+        loginTimer = nil
+        guard state != .online else { return }
+
+        state = .online
+        connectedSince = Date()
+        loginAttempt = 0
+        refusals = 0
+        append(.info, "✅ 已登录，进入在线状态，每 \(Int(pingInterval)) 秒发一次 RPTPING")
+        startTimers()
+        verifyHotspotRegistration()
+
+        // 连上就向当前 TG 订阅一次：不发的话服务器只会推 SelfCare 里的静态组。
+        if activeSettings.autoCallOnConnect, activeSettings.talkgroup > 0 {
+            let talkgroup = activeSettings.talkgroup
+            Task { [weak self] in
+                // 等 2 秒再发射：刚上线时 master 那边可能还没把这个 peer 登记完，
+                // 第一帧会被丢掉（DroidStar 是人工按键，天然避开这个窗口）。
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard let self, self.state == .online, self.txTimer == nil else { return }
+                self.call(talkgroup: talkgroup)
+            }
+        } else if activeSettings.autoCallOnConnect {
+            append(.info, "没有设置通话组，跳过自动订阅")
+        }
     }
 
     private func armLoginTimeout() {
@@ -1017,16 +824,6 @@ final class HomebrewClient: ObservableObject {
 
     private func loginTimedOut() {
         switch state {
-        case .configuring:
-            // 部分 master 不回第三个 RPTACK，只要还在收包就认为链路已通。
-            // 但探针发出去了还没回音，说明这个会话是死的，别再自欺欺人地判在线。
-            if !configProbed, let lastServerPacket, Date().timeIntervalSince(lastServerPacket) < silenceTimeout {
-                goOnline()
-            } else if configProbed {
-                fail("服务器既拒绝配置包、又不回应心跳：会话已失效，请稍等半分钟再连一次")
-            } else {
-                fail("配置阶段超时，服务器无响应")
-            }
         case .loggingIn, .authenticating:
             if loginAttempt < 3 {
                 append(.warning, "登录超时，重试")
@@ -1034,420 +831,183 @@ final class HomebrewClient: ObservableObject {
             } else {
                 fail("登录超时：检查服务器地址、端口与网络")
             }
+        case .configuring:
+            fail("服务器没有回应配置包（RPTC）：到「设置 → 服务器」关掉「上报配置包 RPTC」再连一次", allowRetry: false)
         default:
             break
         }
     }
 
-    private func goOnline() {
-        loginTimer?.cancel()
-        loginTimer = nil
-        guard state != .online else { return }
+    /// 不判失败、保持「连接中」的延迟重连，UI 不会闪一下红色的失败态。
+    private func retryLater(after seconds: Double, message: String) {
+        append(.info, message)
+        teardown()
+        state = .connecting
 
-        state = .online
-        connectedSince = Date()
-        loginAttempt = 0
-        configRetries = 0
-        configProbed = false
-        sessionNaks = 0
-        masterCloses = 0
-        append(.info, "✅ 已登录，进入在线状态，每 \(Int(pingInterval)) 秒心跳")
-        startKeepAlive()
-        verifyHotspotRegistration()
+        retryWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            Task { @MainActor in
+                guard let self, self.state != .online else { return }
+                self.connect(with: self.activeSettings)
+            }
+        }
+        retryWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
+    }
 
-        // 连上就向当前 TG 订阅一次：不发的话服务器不会主动推这个组的语音，
-        // 只能听到 SelfCare 里配成 Static TG 的内容。
-        if activeSettings.autoCallOnConnect, activeSettings.talkgroup > 0 {
-            let talkgroup = activeSettings.talkgroup
-            Task { [weak self] in
-                // 等 2 秒再发射。DroidStar 是人工按键，天然比上线晚几秒；
-                // 我们自动发，就得自己留出 master 把这个热点登记进时隙的时间，
-                // 否则第一帧会被丢掉，看起来就是「订阅没建立」。
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+    // MARK: - 定时器
+
+    private func startTimers() {
+        pingTimer?.invalidate()
+        let ping = Timer(timeInterval: pingInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor in
                 guard let self, self.state == .online else { return }
-                self.call(talkgroup: talkgroup)
-            }
-        } else if activeSettings.autoCallOnConnect {
-            append(.info, "没有设置通话组，跳过自动订阅")
-        }
-    }
-
-    // MARK: - 心跳
-
-    /// 上线后到 BrandMeister 设备库核对一次登录 ID。
-    ///
-    /// 「后台 My Hotspots 里看不到设备」几乎都是**登录 ID 和 SelfCare 里那台设备不一致**
-    /// （最常见的是 SSID 少 / 多了一位），而 master 并不会因此拒绝登录——
-    /// 表现就是「显示连接成功，但后台没有、语音也不来」。这里直接把核对结果写进日志。
-    private func verifyHotspotRegistration() {
-        let id = activeSettings.hotspotId
-        let host = activeSettings.host.lowercased()
-        let looksLikeBrandMeister = host.contains("brandmeister")
-
-        Task { [weak self] in
-            do {
-                let device = try await BrandMeisterAPI().device(id)
-                guard let self else { return }
-                let callsign = device.callsign ?? "未知呼号"
-                let master = device.lastKnownMaster.map { String($0) } ?? "未知"
-                self.append(.info, "BM 设备库核对：\(id) = \(callsign)，最后连过 master \(master)")
-            } catch {
-                guard let self else { return }
-                if looksLikeBrandMeister {
-                    self.append(.warning, "BM 设备库查不到 \(id)：这个 ID 不是已注册热点。"
-                        + "去 SelfCare → My Hotspots 看一眼真实的 9 位号码，"
-                        + "直接填进设置 → 服务器 →「自定义热点 ID」最稳（比调后缀少绕一圈）")
-                }
+                self.sendPing()
             }
         }
-    }
+        RunLoop.main.add(ping, forMode: .common)
+        pingTimer = ping
 
-    private func startKeepAlive() {
-        keepAliveTimer?.invalidate()
-        let timer = Timer.scheduledTimer(withTimeInterval: pingInterval, repeats: true) { [weak self] _ in
+        tickTimer?.invalidate()
+        let tick = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
         }
-        keepAliveTimer = timer
+        RunLoop.main.add(tick, forMode: .common)
+        tickTimer = tick
     }
 
     private func tick() {
         guard state == .online else { return }
 
+        // 心跳超时 = 链路断了（DroidStar 靠 rxwatchdog 判 STREAM_LOST，这里按整条链路判）
         if let lastServerPacket, Date().timeIntervalSince(lastServerPacket) > silenceTimeout {
-            fail("心跳超时：\(Int(silenceTimeout)) 秒未收到服务器数据")
+            fail("心跳超时：\(Int(silenceTimeout)) 秒没有收到服务器任何数据")
             return
         }
 
-        send(HB.ping(id: activeSettings.hotspotId, modern: activeSettings.modernPing),
-             label: activeSettings.modernPing ? "DMRP" : "RPTPING")
+        // 收流看门狗：语音头之后 2 秒没有新帧，就当作这一句结束了。
+        // 部分 master 不推结束符，没有这一步通话会永远挂在「讲话中」。
+        if let lastFrameAt = streamLastFrameAt, Date().timeIntervalSince(lastFrameAt) > streamTimeout {
+            endStream(reason: "语音中断（\(Int(streamTimeout)) 秒没有新帧）")
+        }
 
         reportTraffic()
         renewTalkgroupIfIdle()
     }
 
-    /// 每 15 秒把「刚收到的帧都是哪些组」汇总成一行。
-    ///
-    /// 这一行是给排查用的：能看到服务器实际在推什么，就不用在
-    /// 「订阅没生效」和「那个组没人说话」之间瞎猜。
-    private func reportTraffic() {
-        guard trafficTotal > 0 else {
-            // 链路是活的（心跳有回），但服务器一帧语音都没推 —— 这本身就是结论：
-            // 订阅没建立，或者这一小段时间里真的没人讲话。
-            let idle = Date().timeIntervalSince(lastTrafficReport)
-            guard idle >= 30, !warnedNoTraffic else { return }
-            warnedNoTraffic = true
-            lastTrafficReport = Date()
-            append(.warning, "30 秒内没收到任何 DMRD 帧：服务器没向这个热点推流量，"
-                + "要么订阅没建立，要么这个组在这个时隙上没有活动")
-            return
-        }
-        let elapsed = Date().timeIntervalSince(lastTrafficReport)
-        guard elapsed >= 15 else { return }
+    // MARK: - DMR 帧处理
 
-        // 当前组优先展示：有它没它，一眼就能判断订阅状态。
-        let target = activeTalkgroup
-        let sorted = trafficStat.sorted { $0.value > $1.value }
-        let mine = target > 0 ? sorted.filter { $0.key.hasPrefix("\(target)@") } : []
-        let rest = target > 0 ? sorted.filter { !$0.key.hasPrefix("\(target)@") } : sorted
-
-        let items = (mine + rest)
-            .prefix(4)
-            .map { entry -> String in
-                let parts = entry.key.split(separator: "@")
-                let dst = parts.first.map { String($0) } ?? entry.key
-                let slot = parts.count > 1 ? String(parts[1]) : "?"
-                let mark = (target > 0 && dst == String(target)) ? " ← 当前组" : ""
-                return "\(dst)(TS\(slot))×\(entry.value)\(mark)"
-            }
-            .joined(separator: "、")
-
-        let filtered = trafficFiltered > 0 ? "，其中 \(trafficFiltered) 帧不属于当前组已丢弃" : ""
-        append(.rx, "近期流量 \(Int(elapsed))s：\(items)，共 \(trafficTotal) 帧\(filtered)")
-
-        trafficStat.removeAll()
-        trafficTotal = 0
-        trafficFiltered = 0
-        warnedNoTraffic = false
-        lastTrafficReport = Date()
-    }
-
-    /// 动态 TG 的续订。
-    ///
-    /// BrandMeister 的动态订阅在静默一段时间后会被释放，释放之后服务器就不再推这个组，
-    /// 表现是「突然听不到了，但链路还在」。这里在静默超过设置值时补一次订阅发射，
-    /// 让订阅一直续上，不用用户自己去点「确定」。
-    private func renewTalkgroupIfIdle() {
-        // 续订的是「服务器实际在推的那个组」：它可能来自 SelfCare 的静态组，
-        // 跟设置里选的不一样，续错组等于白发。
-        let target = serverTalkgroup ?? activeTalkgroup
-        guard state == .online, !isCalling, target > 0 else { return }
-        // 别的组正在通话时先等，否则每 5 秒一条「续订」日志刷满，而 call() 又会自己跳过。
-        guard !hasLiveCall else { return }
-        // 关掉「连接后自动呼叫」的用户就是不想让 App 自己发射，续订也不该偷偷发。
-        guard activeSettings.autoCallOnConnect, activeSettings.autoRenewTalkgroup else { return }
-
-        // 还没有基准时间（刚连上、自动呼叫还没跑）就先记一个，别一上来就补发。
-        guard let aliveAt = talkgroupAliveAt else {
-            talkgroupAliveAt = Date()
-            return
-        }
-
-        let minutes = max(1, activeSettings.talkgroupRenewMinutes)
-        let idle = Date().timeIntervalSince(aliveAt)
-        guard idle >= Double(minutes) * 60 else { return }
-
-        append(.info, "TG \(target) 已静默 \(Int(idle / 60)) 分钟，自动续订动态订阅")
-        call(talkgroup: target)
-    }
-
-    // MARK: - 入站分发
-
-    private func handleInbound(_ data: Data) {
-        lastServerPacket = Date()
-        let bytes = [UInt8](data)
-
-        guard let tag = HB.tag(bytes) else {
-            append(.rx, "无法识别 \(bytes.count) 字节数据包", hex: data.hexDump)
-            return
-        }
-
-        switch tag {
-        case "RPTA": // RPTACK
-            loginTimer?.cancel()
-            loginTimer = nil
-            switch state {
-            case .loggingIn:
-                // RPTL 的应答里，第 6…9 字节是 4 字节挑战盐，RPTK 必须做 SHA256(盐 ‖ 密码)。
-                guard bytes.count >= 10 else {
-                    append(.warning, "RPTACK 只有 \(bytes.count) 字节，拿不到挑战盐")
-                    fail("服务器应答异常：RPTACK 长度不足（\(bytes.count) 字节）")
-                    return
-                }
-                challenge = Array(bytes[6..<10])
-                state = .authenticating
-                append(.info, "← RPTACK 收到挑战盐 \(Data(challenge).hexDump)，→ RPTK 鉴权")
-                sendRPTK()
-                armLoginTimeout()
-            case .authenticating:
-                // 默认不发 RPTC：参考实现 DroidStar 的握手只有两段，第二个 RPTACK
-                // 就是「可以收发了」。BrandMeister 对配置包很挑剔，格式稍合不上
-                // 就直接 MSTCL 关会话（现象就是连上的一瞬间被踢下线）。
-                guard activeSettings.sendConfig, !configForcedOff else {
-                    if configForcedOff {
-                        append(.info, "← RPTACK 鉴权通过，按要求不再上报 RPTC（上次上报后被 MSTCL 关闭），直接上线")
-                    } else {
-                        append(.info, "← RPTACK 鉴权通过，握手完成（未上报 RPTC，与 DroidStar / MMDVM 语音流程一致）")
-                    }
-                    goOnline()
-                    return
-                }
-                state = .configuring
-                configProbed = false
-                let callsign = activeSettings.normalizedCallsign
-                let packet = HB.config(id: activeSettings.hotspotId,
-                                       callsign: callsign,
-                                       colorCode: min(15, max(0, activeSettings.colorCode)))
-                append(.info, "← RPTACK 鉴权通过，→ RPTC 上报配置（\(packet.count) 字节，呼号「\(callsign)」）")
-                send(packet, label: "RPTC")
-                armLoginTimeout()
-            case .configuring:
-                goOnline()
-            default:
-                append(.rx, "← RPTACK")
-            }
-
-        case "MSTN": // MSTNAK
-            handleNak()
-
-        case "MSTC": // MSTCL
-            handleMasterClose()
-
-        case "MSTA": // MSTACK —— 老规范里 master 收到 RPTC 回的就是这一帧
-            if state == .configuring {
-                append(.info, "← MSTACK 配置已接受")
-                goOnline()
-            } else {
-                append(.rx, "← MSTACK")
-            }
-
-        case "MSTP", "DMRP":
-            if configProbed, state == .configuring {
-                // 探针回了 MSTPONG：会话是活的，只是不收 RPTC。先上线，别把用户挡在登录页，
-                // 但要把后果说清楚——配置没报上去，后台就没有这台设备，多半也收不到语音。
-                configProbed = false
-                append(.warning, "← MSTPONG 链路正常，但配置包被拒：先上线，后台可能仍看不到设备")
-                append(.info, "如果一直收不到语音，核对：① SelfCare 里这个 9 位 ID 是否存在 ② 呼号是否与登记一致 ③ 是否被别的设备占用")
-                goOnline()
-            } else {
-                append(.rx, "← 心跳应答")
-            }
-
-        case "DMRD":
-            handleDmrFrame(bytes)
-
-        default:
-            append(.rx, "← 未知命令 \(tag)（\(bytes.count) 字节）", hex: data.hexDump)
-        }
-    }
-
-    // MARK: - DMRD → 通话聚合
-
-    private func handleDmrFrame(_ bytes: [UInt8]) {
-        guard let frame = HB.parseDmr(bytes) else {
-            append(.warning, "DMRD 帧长度不足（\(bytes.count) 字节）")
-            return
-        }
-
+    private func handleDmrFrame(event: Int32, result: dmr_result_t) {
         rxFrames += 1
         lastHeard = Date()
 
-        // DroidStar 只在 `CONNECTED_RW` 之后才处理 DMRD（`m_modeinfo.status` 判断）。
-        // 这里同样要求「已在线」：还在握手、或已经掉线时收到的语音帧一律不计入、
-        // 不播放，避免出现「界面显示未连接却在放音」这种自相矛盾的状态。
-        if case .configuring = state {
-            // 反过来的兜底：能收到语音说明链路早通了，只是第三个 RPTACK 没等到。
-            append(.info, "← 收到语音时握手还没走完，按已连接处理")
-            goOnline()
-        }
-        guard state == .online else { return }
+        let src = Int(result.src)
+        let dst = Int(result.dst)
+        let slot = Int(result.slot)
+        let isPrivate = result.is_private != 0
+        let key = "\(src)-\(dst)-\(slot)"
 
-        // 不管属于哪个组，先记一笔「服务器推了什么」，供 `reportTraffic` 汇总。
-        trafficStat["\(frame.dst)@\(frame.slot)", default: 0] += 1
+        // 服务器实际在推哪个组 —— 这个值经常不等于界面上选的那个。
+        if !isPrivate, serverTalkgroup != dst { serverTalkgroup = dst }
+        trafficStat["\(dst)@\(slot)", default: 0] += 1
         trafficTotal += 1
         warnedNoTraffic = false
-        // 单呼（dst 是自己的 DMR ID / 热点 ID）不代表这个组被订阅，不记进 serverTalkgroup，
-        // 否则续订会拿着一个 DMR ID 去当 TG 发。
-        if !frame.isPrivate, serverTalkgroup != frame.dst { serverTalkgroup = frame.dst }
 
-        // 接收策略照 DroidStar：`process_udp()` 只判「55 字节 + DMRD + 已连接」，
-        // **不拿目的地址跟选中的 TG 比**，服务器推什么就解什么。
-        //
-        // 这一点很关键：BrandMeister 推的是「这台热点被订阅的组」，其中还包括
-        // SelfCare 里配的静态组。以前这里硬按选中的 TG 丢帧，只要静态组和选中的
-        // 不是同一个，就会表现成「订阅没建立、什么都不响」——其实语音一直在下来。
-        // 关掉「跟随服务器下发的通话组」才恢复严格过滤（只听选中的那个组）。
-        let belongs = frame.belongs(toTalkgroup: activeTalkgroup,
-                                    myId: activeSettings.dmrId,
-                                    hotspotId: activeSettings.hotspotId)
-        if !belongs, !activeSettings.followServerTalkgroups {
+        // 默认跟随服务器：推什么就播什么（DroidStar 的接收侧就是这么做的）。
+        // 只有显式关掉「跟随」时才按选中的 TG 过滤。
+        if !activeSettings.followServerTalkgroups, activeTalkgroup > 0, !isPrivate, dst != activeTalkgroup {
             filteredFrames += 1
-            trafficFiltered += 1
             return
         }
 
-        // 订阅之后的第一个回音才是「动态订阅建立」的证据；如果推来的是别的组，
-        // 说明链路没问题、只是订阅落在了另一个组上，也要明确说出来。
-        if let pending = pendingConfirmTalkgroup {
-            pendingConfirmTalkgroup = nil
-            subRetries = 0
-            if belongs {
-                append(.info, "✅ TG \(pending) 的语音已下发，动态订阅生效")
-            } else {
-                append(.info, "✅ 链路已收到语音，但服务器推的是 TG \(frame.dst)（TS\(frame.slot)），"
-                    + "不是 \(pending) —— 可能 SelfCare 里挂的是静态组，已跟随播放")
-            }
-        }
-        // 有语音下来就说明订阅还活着，续订计时器从这一刻重新算。
         talkgroupAliveAt = Date()
+        streamLastFrameAt = Date()
 
-        let key = "\(frame.src)-\(frame.dst)-\(frame.slot)"
-        let now = Date()
+        switch event {
+        case DMR_EVT_RX_HEADER:
+            beginStream(key: key, src: src, dst: dst, slot: slot, isPrivate: isPrivate, at: Date())
+            append(.rx, "通话开始 \(src) → \(dst)　\(isPrivate ? "单呼" : "组呼")　TS\(slot)")
 
-        if frame.isVoiceHeader {
-            closeCall(key: key, at: now)
-            calls.insert(makeCall(frame: frame, key: key, at: now), at: 0)
-            trimCalls()
-            voice.begin(key: key)
-            syncVoiceUI()
-            trackSpeaker(frame, at: now, isNewCall: true)
-            append(.rx, "通话开始 \(frame.src) → \(frame.dst)　\(frame.isPrivate ? "单呼" : "组呼")　TS\(frame.slot)")
-            return
-        }
-
-        if frame.isVoiceTerminator {
+        case DMR_EVT_RX_EOT:
             if let index = calls.firstIndex(where: { $0.id == key && $0.isActive }) {
-                calls[index].updatedAt = now
+                calls[index].updatedAt = Date()
                 calls[index].isActive = false
-                append(.rx, "通话结束 \(frame.src) → \(frame.dst)（\(Fmt.duration(calls[index].duration))，\(calls[index].frames) 帧）")
+                append(.rx, "通话结束 \(src) → \(dst)（\(Fmt.duration(calls[index].duration))，\(calls[index].frames) 帧）")
             }
-            voice.end(key: key)
-            syncVoiceUI()
-            closeSpeaker(frame, at: now)
-            return
-        }
+            endStream(reason: nil)
 
-        // 语音突发：33 字节 AMBE+2 载荷 → 3 帧 → 480 采样
-        if !frame.isDataSync {
-            voice.push(key: key, payload: frame.payload)
+        case DMR_EVT_RX_VOICE:
+            if streamKey != key {
+                // 没收到语音头（连上时对方已经在说，或头丢了）—— 直接接上。
+                beginStream(key: key, src: src, dst: dst, slot: slot, isPrivate: isPrivate, at: Date())
+            }
+            let codec = withUnsafeBytes(of: result.codec) { Array($0) }
+            voice.push(key: key, codec: codec)
             syncVoiceUI()
-            trackSpeaker(frame, at: now, isNewCall: false)
-        }
+            trackSpeaker(src: src, dst: dst, slot: slot, isPrivate: isPrivate, at: Date())
 
-        if let index = calls.firstIndex(where: { $0.id == key && $0.isActive }) {
-            calls[index].frames += 1
-            calls[index].updatedAt = now
-        } else {
-            calls.insert(makeCall(frame: frame, key: key, at: now), at: 0)
-            trimCalls()
+            if let index = calls.firstIndex(where: { $0.id == key && $0.isActive }) {
+                calls[index].frames += 1
+                calls[index].updatedAt = Date()
+            } else {
+                calls.insert(makeCall(src: src, dst: dst, slot: slot, isPrivate: isPrivate, key: key), at: 0)
+                trimCalls()
+            }
+
+        default:
+            append(.rx, "← DMRD 控制帧 类型 \(result.data_type)（\(src) → \(dst)）")
         }
     }
 
-    /// 维护「当前讲话人」。
-    ///
-    /// 语音头是明确的「换人说话」信号；语音帧只是延续，但如果中间隔了 3 秒以上
-    /// （换气、或者 master 没推结束符），也当成新的一句重新计时。
-    private func trackSpeaker(_ frame: HB.DmrFrame, at date: Date, isNewCall: Bool) {
-        if !isNewCall,
-           var speaker = currentSpeaker,
-           speaker.src == frame.src,
-           speaker.dst == frame.dst,
-           speaker.slot == frame.slot,
-           speaker.endedAt == nil,
+    private func beginStream(key: String, src: Int, dst: Int, slot: Int, isPrivate: Bool, at date: Date) {
+        if streamKey != key {
+            if let previous = streamKey {
+                voice.end(key: previous)
+            }
+            streamKey = key
+            // 旧的同 key 通话先收尾，避免同一个流号出现两条「通话中」
+            if let index = calls.firstIndex(where: { $0.id == key && $0.isActive }) {
+                calls[index].isActive = false
+                calls[index].updatedAt = date
+            }
+            calls.insert(makeCall(src: src, dst: dst, slot: slot, isPrivate: isPrivate, key: key), at: 0)
+            trimCalls()
+            voice.begin(key: key)
+        }
+        streamLastFrameAt = date
+        trackSpeaker(src: src, dst: dst, slot: slot, isPrivate: isPrivate, at: date)
+        syncVoiceUI()
+    }
+
+    private func endStream(reason: String?) {
+        if let key = streamKey {
+            voice.end(key: key)
+        }
+        streamKey = nil
+        streamLastFrameAt = nil
+        if let reason {
+            append(.rx, reason)
+        }
+        currentSpeaker?.endedAt = currentSpeaker?.endedAt ?? Date()
+        syncVoiceUI()
+    }
+
+    private func trackSpeaker(src: Int, dst: Int, slot: Int, isPrivate: Bool, at date: Date) {
+        if var speaker = currentSpeaker,
+           speaker.src == src, speaker.dst == dst, speaker.slot == slot, speaker.endedAt == nil,
            date.timeIntervalSince(speaker.lastVoiceAt) < 3 {
             speaker.lastVoiceAt = date
             currentSpeaker = speaker
             return
         }
-
-        currentSpeaker = ActiveSpeaker(
-            src: frame.src,
-            dst: frame.dst,
-            slot: frame.slot,
-            isPrivate: frame.isPrivate,
-            startedAt: date,
-            lastVoiceAt: date,
-            endedAt: nil
-        )
+        currentSpeaker = ActiveSpeaker(src: src, dst: dst, slot: slot, isPrivate: isPrivate,
+                                       startedAt: date, lastVoiceAt: date, endedAt: nil)
     }
 
-    /// 收到语音结束符：这一句说完了。名字不清掉——界面上还要显示「刚才谁在说」。
-    private func closeSpeaker(_ frame: HB.DmrFrame, at date: Date) {
-        guard var speaker = currentSpeaker,
-              speaker.src == frame.src,
-              speaker.slot == frame.slot else { return }
-        speaker.lastVoiceAt = max(speaker.lastVoiceAt, date)
-        speaker.endedAt = date
-        currentSpeaker = speaker
-    }
-
-    private func makeCall(frame: HB.DmrFrame, key: String, at date: Date) -> LiveCall {
-        LiveCall(
-            id: key,
-            src: frame.src,
-            dst: frame.dst,
-            slot: frame.slot,
-            isPrivate: frame.isPrivate,
-            frames: 1,
-            startedAt: date,
-            updatedAt: date,
-            isActive: true
-        )
-    }
-
-    private func closeCall(key: String, at date: Date) {
-        guard let index = calls.firstIndex(where: { $0.id == key && $0.isActive }) else { return }
-        calls[index].updatedAt = date
-        calls[index].isActive = false
+    private func makeCall(src: Int, dst: Int, slot: Int, isPrivate: Bool, key: String) -> LiveCall {
+        let now = Date()
+        return LiveCall(id: key, src: src, dst: dst, slot: slot, isPrivate: isPrivate,
+                        frames: 1, startedAt: now, updatedAt: now, isActive: true)
     }
 
     private func trimCalls() {
@@ -1456,13 +1016,96 @@ final class HomebrewClient: ObservableObject {
         }
     }
 
-    // MARK: - 发送
+    private func logUnknown(_ data: Data) {
+        guard data.count >= 4,
+              let tag = String(bytes: data.prefix(4), encoding: .ascii) else { return }
+        guard !unknownTags.contains(tag) else { return }
+        unknownTags.insert(tag)
+        append(.rx, "← 未处理的命令 \(tag)（\(data.count) 字节），后续同类不再提示", hex: data.hexDump)
+    }
 
-    /// `quiet` 用于一次呼叫里的连续突发：帧照发、只记一次日志，
-    /// 否则半秒内十行 hexDump 会把人眼能看的日志全冲掉。
+    // MARK: - 流量摘要 / 续订
+
+    /// 每 15 秒把「服务器在推哪些组」汇总一行。
+    ///
+    /// 这一行是排查「收不到语音」最关键的证据：摘要里就有选中的组 = 订阅是好的，
+    /// 只是刚才没人说话；全是别的组 = 订阅没落在这个热点上。
+    private func reportTraffic() {
+        guard trafficTotal > 0 else {
+            let idle = Date().timeIntervalSince(lastTrafficReport)
+            guard idle >= 30, !warnedNoTraffic else { return }
+            warnedNoTraffic = true
+            lastTrafficReport = Date()
+            append(.warning, "30 秒内没收到任何 DMRD：服务器没向这个热点推流量，"
+                + "要么订阅没建立，要么这个组这段时间没人讲话")
+            return
+        }
+
+        let elapsed = Date().timeIntervalSince(lastTrafficReport)
+        guard elapsed >= 15 else { return }
+
+        let target = activeTalkgroup
+        let sorted = trafficStat.sorted { $0.value > $1.value }
+        let mine = target > 0 ? sorted.filter { $0.key.hasPrefix("\(target)@") } : []
+        let rest = target > 0 ? sorted.filter { !$0.key.hasPrefix("\(target)@") } : sorted
+        let items = (mine + rest).prefix(4).map { entry -> String in
+            let parts = entry.key.split(separator: "@")
+            let dst = parts.first.map { String($0) } ?? entry.key
+            let slot = parts.count > 1 ? String(parts[1]) : "?"
+            let mark = (target > 0 && dst == String(target)) ? " ← 当前组" : ""
+            return "\(dst)(TS\(slot))×\(entry.value)\(mark)"
+        }.joined(separator: "、")
+
+        let filtered = filteredFrames > 0 ? "，其中累计 \(filteredFrames) 帧按设置丢弃" : ""
+        append(.rx, "近期流量 \(Int(elapsed))s：\(items)，共 \(trafficTotal) 帧\(filtered)")
+
+        trafficStat.removeAll()
+        trafficTotal = 0
+        warnedNoTraffic = false
+        lastTrafficReport = Date()
+    }
+
+    /// 动态 TG 静默太久会被 BrandMeister 释放，静默超时就再订一次。
+    private func renewTalkgroupIfIdle() {
+        let target = serverTalkgroup ?? activeTalkgroup
+        guard target > 0, state == .online, txTimer == nil else { return }
+        guard activeSettings.autoCallOnConnect, activeSettings.autoRenewTalkgroup else { return }
+
+        guard let aliveAt = talkgroupAliveAt else {
+            talkgroupAliveAt = Date()
+            return
+        }
+        let minutes = max(1, activeSettings.talkgroupRenewMinutes)
+        guard Date().timeIntervalSince(aliveAt) >= Double(minutes) * 60 else { return }
+
+        append(.info, "TG \(target) 已静默 \(Int(Date().timeIntervalSince(aliveAt) / 60)) 分钟，自动续订动态订阅")
+        call(talkgroup: target)
+    }
+
+    // MARK: - 上线后核对设备
+
+    private func verifyHotspotRegistration() {
+        let id = activeSettings.hotspotId
+        guard activeSettings.host.lowercased().contains("brandmeister") else { return }
+
+        Task { [weak self] in
+            do {
+                let device = try await BrandMeisterAPI().device(id)
+                guard let self else { return }
+                let callsign = device.callsign ?? "未知呼号"
+                self.append(.info, "BM 设备库核对：\(id) = \(callsign)")
+            } catch {
+                guard let self else { return }
+                self.append(.warning, "BM 设备库查不到 \(id)：这个 ID 不是已注册热点。"
+                    + "去 SelfCare → My Hotspots 看一眼真实的 9 位号码，直接填进「自定义热点 ID」最稳")
+            }
+        }
+    }
+
+    // MARK: - 发送 / 收尾
+
     private func send(_ data: Data, label: String, quiet: Bool = false) {
         guard state != .offline else { return }
-
         txFrames += 1
         if !quiet { append(.tx, "→ \(label)", hex: data.hexDump) }
 
@@ -1470,8 +1113,6 @@ final class HomebrewClient: ObservableObject {
         case .udp:
             connection?.send(content: data, completion: .contentProcessed { [weak self] error in
                 guard let error else { return }
-                // 主动拆 socket（RPTCL 之后）也会收到「已取消」，那不是故障。
-                // 只有在线状态下才把它当成真正的发送失败。
                 Task { @MainActor in
                     guard let self, self.state == .online else { return }
                     self.fail("发送失败：\(error.localizedDescription)")
@@ -1487,8 +1128,6 @@ final class HomebrewClient: ObservableObject {
             }
         }
     }
-
-    // MARK: - 收尾 / 重连
 
     private func fail(_ message: String, allowRetry: Bool = true) {
         append(.error, message)
@@ -1510,43 +1149,26 @@ final class HomebrewClient: ObservableObject {
     }
 
     private func teardown() {
-        keepAliveTimer?.invalidate()
-        keepAliveTimer = nil
+        pingTimer?.invalidate()
+        pingTimer = nil
+        tickTimer?.invalidate()
+        tickTimer = nil
         loginTimer?.cancel()
         loginTimer = nil
         loginToken += 1
         retryWork?.cancel()
         retryWork = nil
-        configRetryWork?.cancel()
-        configRetryWork = nil
-        callTask?.cancel()
-        callTask = nil
-        callWatchdog?.cancel()
-        callWatchdog = nil
-        lastCallAt = nil
-        lastCallTalkgroup = nil
-        isCalling = false
-        // 断开时如果还按着 PTT，必须把麦克风关掉：连接已经没了，
-        // 再采下去只是白耗电，而且松手时还会往一个死连接上写结束符。
-        pttTask?.cancel()
-        pttTask = nil
+
+        txTimer?.invalidate()
+        txTimer = nil
+        txBurstsLeft = 0
+        dmr_core_reset(core)
+
         mic.onFrame = nil
         mic.stop()
         isTransmitting = false
         txLevel = 0
         pttFrames.removeAll(keepingCapacity: false)
-        pttTalkgroup = 0
-        pttBurstIndex = 0
-        pttStartedAt = nil
-        voice.isMuted = !activeSettings.audioEnabled
-        pendingConfirmTalkgroup = nil
-        subRetries = 0
-        rxAtCall = 0
-        serverTalkgroup = nil
-        talkgroupAliveAt = nil
-        trafficStat.removeAll()
-        trafficTotal = 0
-        trafficFiltered = 0
 
         connection?.stateUpdateHandler = nil
         connection?.cancel()
@@ -1558,8 +1180,16 @@ final class HomebrewClient: ObservableObject {
         webSocketSession = nil
 
         voice.reset()
+        voice.isMuted = !activeSettings.audioEnabled
         syncVoiceUI()
+
+        streamKey = nil
+        streamLastFrameAt = nil
         currentSpeaker = nil
+        serverTalkgroup = nil
+        talkgroupAliveAt = nil
+        trafficStat.removeAll()
+        trafficTotal = 0
 
         connectedSince = nil
         lastServerPacket = nil

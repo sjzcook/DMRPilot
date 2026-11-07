@@ -52,7 +52,7 @@ struct SettingsView: View {
         } header: {
             Text("身份")
         } footer: {
-            Text("DMR ID 是热点自己的编号。密码在 BrandMeister 自助页 SelfCare → Hotspot Security 设置，不是登录 BrandMeister 网站用的账号密码。\n呼号只在「上报配置包 RPTC」打开时才会用到（写进配置块的前 8 字节），默认关闭时可以不填。")
+            Text("DMR ID 是热点自己的编号。密码在 BrandMeister 自助页 SelfCare → Hotspot Security 设置，不是登录 BrandMeister 网站用的账号密码。\n呼号只在「上报配置包 RPTC」打开时才会用到（写进配置块的前 8 字节）。这个开关默认打开，所以建议照实填写；关掉之后可以不填。")
         }
     }
 
@@ -117,12 +117,11 @@ struct SettingsView: View {
                 }
             }
 
-            Toggle("新版心跳 DMRP", isOn: $app.settings.modernPing)
-            Toggle("上报配置包 RPTC（实验性）", isOn: $app.settings.sendConfig)
+            Text("上报配置包 RPTC（实验性）", isOn: $app.settings.sendConfig)
         } header: {
             Text("服务器")
         } footer: {
-            Text("服务器表来自 ds.vu3lvo.com/DMRHosts.txt（Pi-Star 格式），选中后自动填好域名和端口，也可以切到「自定义服务器」手填。\nBrandMeister 的热点是 9 位：7 位 Radio ID 后面追加两位别名，所以登录 ID = DMR ID × 100 + 后缀（DMR ID 4601234 + 后缀 01 → 460123401）。上面那行「登录热点 ID」就是要发给服务器的号码，请和 SelfCare → My Hotspots 里显示的数字逐位对照。不想算就把那串 9 位数字直接填进「自定义热点 ID」，它优先于后缀换算。后缀留 0 表示用 7 位 DMR ID 直接登录（BrandMeister 不认，收不到任何语音）。\nBrandMeister 热点标准走 UDP 62031 + 传统心跳 RPTPING。\n「上报配置包 RPTC」默认打开，与参考实现 DroidStar 一致：它的握手是 RPTL → RPTK → RPTC → 第三个 RPTACK 才算进入收发状态。万一服务器不接受这个包（回 MSTCL 直接关会话），客户端会自动改成不发并重连一次，不用手动关。\n新版心跳 DMRP 对应 MMDVMHost 2024 之后的 55 字节帧，只有服务器明确要求时才打开。\nWebSocket 走 wss，仅部分自建 HBLink 或网关支持。")
+            Text("服务器表来自 ds.vu3lvo.com/DMRHosts.txt（Pi-Star 格式），选中后自动填好域名和端口，也可以切到「自定义服务器」手填。\nBrandMeister 的热点是 9 位：7 位 Radio ID 后面追加两位别名，所以登录 ID = DMR ID × 100 + 后缀（DMR ID 4601234 + 后缀 01 → 460123401）。上面那行「登录热点 ID」就是要发给服务器的号码，请和 SelfCare → My Hotspots 里显示的数字逐位对照。不想算就把那串 9 位数字直接填进「自定义热点 ID」，它优先于后缀换算。后缀留 0 表示用 7 位 DMR ID 直接登录（BrandMeister 不认，收不到任何语音）。\nBrandMeister 热点标准走 UDP 62031。\n「上报配置包 RPTC」默认打开，与参考实现 DroidStar 一致：它的握手是三段 RPTL → RPTK → RPTC，收到第三个 RPTACK 才算进入收发状态，那之前下来的 DMRD 一律不处理。只有自建网关 / HBLink 明确不收这个包时才关掉——关掉后就只剩两段，属于非标准流程。\nWebSocket 走 wss，仅部分自建 HBLink 或网关支持。")
         }
     }
 
@@ -205,6 +204,12 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
             HStack {
+                Text("协议核心")
+                Spacer()
+                Text("C++ 桥接")
+                    .foregroundStyle(.secondary)
+            }
+            HStack {
                 Text("数据来源")
                 Spacer()
                 Text("api.brandmeister.network/v2")
@@ -214,7 +219,7 @@ struct SettingsView: View {
         } header: {
             Text("关于")
         } footer: {
-            Text("语音由内置的纯 Swift AMBE+2 半速率解码器还原（移植自 DroidStar 的 halfrate，GPL-3.0），不依赖任何 C/C++ 代码。语音开关与音量在「热点」页。")
+            Text("握手、组帧、编码与拆帧由内置的 C++ 核心完成（Core/DMRCore.cpp，移植自 DroidStar 的 dmr.cpp，GPL-3.0），Swift 只负责网络收发与界面；语音由纯 Swift 的 AMBE+2 半速率解码器还原（同样移植自 DroidStar 的 halfrate，GPL-3.0）。语音开关与音量在「热点」页。")
         }
     }
 

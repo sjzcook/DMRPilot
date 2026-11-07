@@ -101,9 +101,6 @@ struct Settings: Codable, Equatable {
     var transport: HbTransport = .udp
     /// WebSocket 路径，仅在 transport == .websocket 时生效
     var wsPath: String = "/ws"
-    /// 使用新版心跳 `DMRP`（MMDVMHost 2024+ / 55 字节帧）。
-    /// 传统 BrandMeister 走 `RPTPING` / 53 字节帧，默认关闭。
-    var modernPing: Bool = false
     /// 登录成功后是否上报 `RPTC` 配置包（302 字节：呼号 / 频率 / 位置 / 软件名）。
     ///
     /// 默认**打开**，与参考实现 DroidStar 一致：它的 `DMR::process_udp` 是三段状态机
@@ -114,8 +111,8 @@ struct Settings: Codable, Equatable {
     /// 一律不处理。注意 DroidStar 的 RPTC 是逐字节拼的（`out.append('R')…`），
     /// 所以按字符串搜 "RPTC" 是搜不到的。
     ///
-    /// 万一服务器不接受这个包（回 `MSTCL` 关会话），客户端会自动改成不发并重连一次，
-    /// 不需要用户自己去关开关。
+    /// 关掉之后只剩两段（`RPTL → RPTK → CONNECTED`），属于**非标准流程**：
+    /// 只给那些压根不认 RPTC 的自建网关 / HBLink 用。BrandMeister 上请保持打开。
     var sendConfig: Bool = true
     var autoReconnect: Bool = true
 
@@ -255,7 +252,6 @@ extension Settings {
         port = try container.decodeIfPresent(Int.self, forKey: .port) ?? defaults.port
         transport = try container.decodeIfPresent(HbTransport.self, forKey: .transport) ?? defaults.transport
         wsPath = try container.decodeIfPresent(String.self, forKey: .wsPath) ?? defaults.wsPath
-        modernPing = try container.decodeIfPresent(Bool.self, forKey: .modernPing) ?? defaults.modernPing
         sendConfig = try container.decodeIfPresent(Bool.self, forKey: .sendConfig) ?? defaults.sendConfig
         autoReconnect = try container.decodeIfPresent(Bool.self, forKey: .autoReconnect) ?? defaults.autoReconnect
         talkgroup = try container.decodeIfPresent(Int.self, forKey: .talkgroup) ?? defaults.talkgroup

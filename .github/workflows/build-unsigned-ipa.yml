@@ -70,10 +70,28 @@ jobs:
                   print(f"::error file={swift}::{swift} 没有登记进 project.pbxproj")
                   bad = True
 
+          # 2b) C++ 与头文件也要登记。.cpp 还必须进 Sources——
+          #     漏了不会报编译错误，要到链接期才炸出一堆 undefined symbol。
+          for other in sorted(list(pathlib.Path("DMRPilot").rglob("*.cpp"))
+                              + list(pathlib.Path("DMRPilot").rglob("*.h"))):
+              if f"path = {other.name};" not in proj:
+                  print(f"::error file={other}::{other} 没有登记进 project.pbxproj")
+                  bad = True
+          for cpp in sorted(pathlib.Path("DMRPilot").rglob("*.cpp")):
+              if f"{cpp.name} in Sources" not in proj:
+                  print(f"::error file={cpp}::{cpp} 没有进 Sources 编译阶段")
+                  bad = True
+
           # 3) build file 指向的 fileRef 必须存在
           refs = set(re.findall(r"^\t\t([0-9A-F]{24}) .*PBXFileReference", proj, re.M))
           for oid in sorted(set(re.findall(r"fileRef = ([0-9A-F]{24})", proj)) - refs):
               print(f"::error file={proj_path}::fileRef {oid} 没有对应的 PBXFileReference")
+              bad = True
+
+          # 4) 桥接头必须挂在 target 与 project 两份配置上，
+          #    否则 Swift 看不到 C++ 接口（只在一边加会随构建方式时灵时不灵）。
+          if proj.count('SWIFT_OBJC_BRIDGING_HEADER = "DMRPilot/DMRPilot-Bridging-Header.h";') < 2:
+              print(f"::error file={proj_path}::SWIFT_OBJC_BRIDGING_HEADER 没有在 target 与 project 两处都设置")
               bad = True
 
           sys.exit(1 if bad else 0)

@@ -103,12 +103,12 @@ final class VoicePipeline {
 
     // MARK: - 解码
 
-    /// 送进一个 DMRD 语音突发。
+    /// 送进一个 DMRD 语音突发（27 字节 AMBE，已由 C++ 核心从 33 字节载荷里拆好）。
     ///
     /// 注意这里**不**重置解码器：两个时隙可能同时在通话，包会交错到达，
     /// 如果在“接管”时 reset，一路就会被每包重置、永远出不了声。
     /// 重置只发生在语音头（`begin`）和新建解码器的时候。
-    func push(key: String, payload: [UInt8]) {
+    func push(key: String, codec: [UInt8]) {
         // 没有当前通话时（比如刚连上就撞进通话中间），由第一个到达的流占位
         if currentKey == nil {
             currentKey = key
@@ -116,7 +116,7 @@ final class VoicePipeline {
         }
 
         let decoder = decoder(for: key)
-        let pcm = decoder.decode(packet: payload)
+        let pcm = decoder.decode(codec: codec)
         guard !pcm.isEmpty else { return }
 
         decodedPackets += 1
