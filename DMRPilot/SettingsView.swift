@@ -294,7 +294,7 @@ struct SettingsView: View {
             }
 
             dataRow("服务器列表",
-                    hostStore.hasSnapshot ? "\(hostStore.hosts.count) 台" : "未下载",
+                    hostListSummary,
                     updatedAt: hostStore.savedAt,
                     isBusy: hostStore.isLoading) {
                 Task { await app.refreshHostTable() }
@@ -310,6 +310,18 @@ struct SettingsView: View {
         } header: {
             Text("数据")
         }
+    }
+
+    /// 「服务器列表」行的主值：DMR 和 YSF 两张表分别多少台；
+    /// 都没下载就显示「未下载」。
+    private var hostListSummary: String {
+        let dmr = hostStore.hosts.count
+        let ysf = hostStore.ysfHosts.count
+        guard dmr > 0 || ysf > 0 else { return "未下载" }
+        var parts: [String] = []
+        if dmr > 0 { parts.append("DMR \(dmr) 台") }
+        if ysf > 0 { parts.append("YSF \(ysf) 台") }
+        return parts.joined(separator: " · ")
     }
 
     /// 数据行：标题 + 更新时间（左下角）、主值（+ 次要说明）在右侧，行尾是「更新」按钮。

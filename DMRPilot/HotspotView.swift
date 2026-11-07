@@ -178,9 +178,12 @@ struct HotspotView: View {
 
             // 服务器选择器（从设置页搬来）和通话组选择器并排，各占一半宽度；
             // 连接要用的两样东西都摆在按钮正上方，选完直接按。
-            // 左上角模式切到 YSF 时没有通话组概念，只显示服务器那一格。
+            // 右上角模式菜单切到 YSF 时没有通话组概念，只显示服务器那一格，
+            // 且服务器列表跟着切到 YSF 反射器那份。
             HStack(alignment: .top, spacing: 10) {
-                HostPickerField(store: hostStore, settings: $app.settings) {
+                HostPickerField(store: hostStore,
+                                kind: app.settings.homeMode == .ysf ? .ysf : .dmr,
+                                settings: $app.settings) {
                     // 换服务器后自动断开重连（没在线时只保存），和原先设置页同一套行为。
                     app.restartForServerChange()
                 }

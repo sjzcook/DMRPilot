@@ -3,19 +3,21 @@
 //  DMRPilot
 //
 //  首页连接按钮上方的「服务器」选择器：一行下拉触发器 + 自定义域名输入框。
-//  点开后是弹出式选择器（sheet），列表来自 DMRHosts.txt，
+//  点开后是弹出式选择器（sheet），列表来自 DMRHosts.txt / YSFHosts.txt，
 //  搜索框固定在列表上方，按 Hostname（顺带匹配表里的名字）过滤。
 //  选中一项就把 name / hostname / port 写回 Settings。
-//  （原先在设置页，后来搬到首页，方便选完直接按连接。）
+//  kind 决定加载哪份列表：首页右上角模式选 YSF 就看 YSF 反射器，DMR 看 DMR。
 //
 
 import SwiftUI
 
 struct HostPickerField: View {
     @ObservedObject var store: DMRHostStore
+    /// 挑哪一类服务器：首页按右上角模式菜单传 DMR / YSF。
+    var kind: HostKind = .dmr
     @Binding var settings: Settings
     /// 服务器变了（选中表里一台，或手填域名回车）之后的回调。
-    /// 设置页拿它做「自动断开重连」，所以这里只负责通知，不判断连接状态。
+    /// 首页拿它做「自动断开重连」，所以这里只负责通知，不判断连接状态。
     var onServerChange: () -> Void = {}
 
     @State private var isPicking = false
@@ -27,7 +29,7 @@ struct HostPickerField: View {
         }
         .task { await store.loadIfNeeded() }
         .sheet(isPresented: $isPicking) {
-            HostPickerSheet(store: store, settings: $settings, onServerChange: onServerChange)
+            HostPickerSheet(store: store, kind: kind, settings: $settings, onServerChange: onServerChange)
         }
     }
 
@@ -35,7 +37,12 @@ struct HostPickerField: View {
 
     private var selectedHost: DMRHost? {
         guard !settings.hostName.isEmpty else { return nil }
-        return store.hosts.first { $0.name == settings.hostName }
+        // 先在当前类型的列表里找；模式刚切过来、旧选择属于另一类时
+        // 退回两份一起找——名字至少还显示得出来，选新服务器时再覆盖。
+        if let hit = store.allHosts(of: kind).first(where: { $0.name == settings.hostName }) {
+            return hit
+        }
+        return (store.hosts + store.ysfHosts).first { $0.name == settings.hostName }
     }
 
     // MARK: - 下拉触发器
@@ -119,6 +126,8 @@ private enum HostScope: String, CaseIterable, Identifiable {
 
 private struct HostPickerSheet: View {
     @ObservedObject var store: DMRHostStore
+    /// 和触发器同一个类型：决定列表加载 DMR 还是 YSF。
+    var kind: HostKind = .dmr
     @Binding var settings: Settings
     var onServerChange: () -> Void = {}
 
@@ -132,10 +141,18 @@ private struct HostPickerSheet: View {
 
     // MARK: - 数据
 
+    /// 当前类型下的全量列表（范围过滤之前）。
+    private var kindList: [DMRHost] {
+        store.allHosts(of: kind)
+    }
+
     private var baseList: [DMRHost] {
+        // 范围切换只有 DMR 有意义（BrandMeister / 全部）；
+        // YSF 反射器表没有这个划分，直接列全部。
+        guard kind == .dmr else { return kindList }
         switch scope {
         case .brandMeister: return store.brandMeisterHosts
-        case .all: return store.hosts
+        case .all: return kindList
         }
     }
 
@@ -157,15 +174,17 @@ private struct HostPickerSheet: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                Picker("范围", selection: $scope) {
-                    ForEach(HostScope.allCases) { item in
-                        Text(item.title).tag(item)
+                if kind == .dmr {
+                    Picker("范围", selection: $scope) {
+                        ForEach(HostScope.allCases) { item in
+                            Text(item.title).tag(item)
+                        }
                     }
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+                    .padding(.bottom, 6)
                 }
-                .pickerStyle(.segmented)
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
-                .padding(.bottom, 6)
 
                 list
             }
@@ -173,7 +192,7 @@ private struct HostPickerSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $query,
                         placement: .navigationBarDrawer(displayMode: .always),
-                        prompt: "按 Hostname 搜索，如 4602 / china")
+                        prompt: kind == .ysf ? "按名称搜索，如 HUBNet" : "按 Hostname 搜索，如 4602 / china")
             .autocorrectionDisabled()
             .textInputAutocapitalization(.never)
             .toolbar {
@@ -234,9 +253,16 @@ private struct HostPickerSheet: View {
             settings.host = host.hostname
             // 主机表是 Pi-Star 的 Homebrew 列表（62031）；走 ODTP 时端口固定在 54006，
             // 不能把表里的端口照抄进来，否则会连到一个不认 Rewind 的端口上。
-            settings.port = settings.linkProtocol == .odtp ? settings.linkProtocol.defaultPort : Int(host.port)
+            // YSF 反射器（42000 等）不走这套协议，端口直接用表里的。
+            if kind == .ysf {
+                settings.port = Int(host.port)
+            } else {
+                settings.port = settings.linkProtocol == .odtp
+                    ? settings.linkProtocol.defaultPort
+                    : Int(host.port)
+            }
             dismiss()
-            // 选完立刻生效：设置页那边会断开重连（没在线就只是保存）。
+            // 选完立刻生效：首页那边会断开重连（没在线就只是保存）。
             if changed { onServerChange() }
         } label: {
             HStack(spacing: 8) {
@@ -273,9 +299,9 @@ private struct HostPickerSheet: View {
         VStack(alignment: .leading, spacing: 4) {
             if store.isLoading {
                 Text("正在下载服务器列表…")
-            } else if store.hosts.isEmpty {
+            } else if kindList.isEmpty {
                 Text("列表还没下载下来，点右上角刷新重试")
-            } else if !query.isEmpty && scope == .brandMeister {
+            } else if !query.isEmpty && kind == .dmr && scope == .brandMeister {
                 Text("BrandMeister 里没有匹配「\(query)」的服务器")
                 Text("切到「全部」再看看")
                     .foregroundStyle(.secondary)

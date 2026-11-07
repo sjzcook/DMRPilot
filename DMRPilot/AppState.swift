@@ -191,7 +191,8 @@ final class AppState: ObservableObject {
         await callsigns.updateDatabase()
     }
 
-    /// 设置页「服务器表」那一行的「更新」按钮：强制联网重下 DMRHosts.txt 并落盘。
+    /// 设置页「服务器列表」那一行的「更新」按钮：强制联网重下 DMRHosts.txt 和
+    /// YSFHosts.txt 两张表并落盘（哪张失败不影响另一张，错误拼在一起显示）。
     func refreshHostTable() async {
         await hostStore.load(force: true)
     }
