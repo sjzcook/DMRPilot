@@ -45,7 +45,7 @@ enum PTTIntentError: LocalizedError {
         case .noTalkgroup:
             return "还没选通话组：先在首页选一个组，PTT 才有地方发。"
         case .microphoneDenied:
-            return "麦克风没授权：到 设置 → DMRPilot → 麦克风 打开，再试一次。"
+            return "麦克风没授权：到 设置 → EasyDMR → 麦克风 打开，再试一次。"
         case .transmitFailed:
             return "发射没启动：可能是音频会话被别的 App 占着（比如正在通话），或者会话已经断了。"
         case .notTransmitting:

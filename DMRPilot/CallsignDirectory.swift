@@ -232,7 +232,7 @@ final class CallsignDirectory: ObservableObject {
     private func fetch(_ url: URL) async -> Data? {
         var request = URLRequest(url: url)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("DMRPilot/1.0 (iOS)", forHTTPHeaderField: "User-Agent")
+        request.setValue("EasyDMR/1.0 (iOS)", forHTTPHeaderField: "User-Agent")
 
         do {
             let (data, response) = try await session.data(for: request)

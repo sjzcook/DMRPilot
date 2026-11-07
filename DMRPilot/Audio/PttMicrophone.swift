@@ -23,8 +23,14 @@ final class PttMicrophone {
 
     /// 每凑够一帧就回调一次（主线程）
     var onFrame: (@MainActor ([Int16]) -> Void)?
-    /// 当前输入电平，0…1，给界面画抖动的环形
+    /// 当前输入电平，0…1（已含增益）。界面用它判断有没有声音进来。
     private(set) var level: Float = 0
+
+    /// 采集后的线性增益，1 = 原样。由 `Settings.micGainDb` 换算而来，发射中改也立刻生效。
+    ///
+    /// 放在采集这一段而不是编码后：DMR 的 AMBE 编码器吃的是固定 8 kHz 的 PCM，
+    /// 增益加在它前面才会真正改变编码出来的谱包络；放在后面就只能改数字，对端听不出差别。
+    var gain: Float = 1
 
     private let engine = AVAudioEngine()
     private var converter: AVAudioConverter?
@@ -51,6 +57,11 @@ final class PttMicrophone {
     }
 
     // MARK: - 开关
+
+    /// dB → 线性倍数（`pow(10, db/20)`）。0 dB 正好是 1，也就是完全不改采样。
+    nonisolated static func linearGain(db: Double) -> Float {
+        Float(pow(10, min(24, max(-12, db)) / 20))
+    }
 
     func start() throws {
         guard !running else { return }
@@ -104,11 +115,22 @@ final class PttMicrophone {
     // MARK: - 内部
 
     private func consume(_ samples: [Int16]) {
-        pending.append(contentsOf: samples)
+        // 先加增益再排队：电平表、编码器、`onFrame` 拿到的都是同一份放大后的采样，
+        // 表上看到的音量就和对端听到的一致。
+        let shaped: [Int16]
+        if gain == 1 {
+            shaped = samples
+        } else {
+            shaped = samples.map { sample -> Int16 in
+                let scaled = (Float(sample) * gain).rounded()
+                return Int16(max(-32768, min(32767, scaled)))
+            }
+        }
+        pending.append(contentsOf: shaped)
 
         var sum: Float = 0
-        for v in samples { sum += Float(v) * Float(v) }
-        let rms = Float(sqrt(Double(sum / Float(max(samples.count, 1)))))
+        for v in shaped { sum += Float(v) * Float(v) }
+        let rms = Float(sqrt(Double(sum / Float(max(shaped.count, 1)))))
         // 0…1 的近似显示刻度：满幅约 -6 dB 就打满
         level = min(1, rms / 6000)
 

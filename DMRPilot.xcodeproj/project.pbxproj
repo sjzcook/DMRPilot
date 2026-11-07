@@ -493,7 +493,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "DMR Pilot";
+				INFOPLIST_KEY_CFBundleDisplayName = EasyDMR;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "按住 PTT 时需要用麦克风采集语音，编码后发到 DMR 服务器。";
 				INFOPLIST_KEY_UIBackgroundModes = audio;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
@@ -526,7 +526,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "DMR Pilot";
+				INFOPLIST_KEY_CFBundleDisplayName = EasyDMR;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "按住 PTT 时需要用麦克风采集语音，编码后发到 DMR 服务器。";
 				INFOPLIST_KEY_UIBackgroundModes = audio;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";

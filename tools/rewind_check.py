@@ -35,7 +35,7 @@ SESSION_GROUP_VOICE = 7
 class Core:
     """RewindCore.cpp 的最小复刻：只关心拼出来的字节。"""
 
-    def __init__(self, dmr_id, password, version="DMRPilot 1.0"):
+    def __init__(self, dmr_id, password, version="EasyDMR 1.0"):
         self.dmr_id = dmr_id & 0xFFFFFF
         self.password = password
         self.version = version
@@ -180,8 +180,8 @@ def main():
     ok &= check("VersionData 里的 DMR ID 是小端 7 位",
                 data[:4] == struct.pack("<I", 4601234))
     ok &= check("服务类型 = 0x21（Open Terminal）", data[4] == SERVICE_OPEN_TERMINAL)
-    ok &= check("描述紧跟其后", data[5:] == b"DMRPilot 1.0")
-    ok &= check("长度字段 = 5 + 描述长度", len(data) == 5 + len("DMRPilot 1.0"))
+    ok &= check("描述紧跟其后", data[5:] == b"EasyDMR 1.0")
+    ok &= check("长度字段 = 5 + 描述长度", len(data) == 5 + len("EasyDMR 1.0"))
 
     print("序号：常规包与实时包分开计数")
     core2 = Core(dmr_id=4601234, password="x")
@@ -239,7 +239,7 @@ def main():
     print("接收侧（服务器 → 客户端）")
     salt = bytes(range(32))
     rx = Rx(password="secret")
-    rx.transmit(TYPE_KEEP_ALIVE, b"\x92\x35\x46\x00\x21DMRPilot 1.0")   # 登录包，占掉序号 0
+    rx.transmit(TYPE_KEEP_ALIVE, b"\x92\x35\x46\x00\x21EasyDMR 1.0")   # 登录包，占掉序号 0
     event, reply = rx.receive(packet(TYPE_CHALLENGE, salt))
     ok &= check("CHALLENGE 触发 AUTH", event == "AUTH")
     # 这一条是「卡在鉴权中」的命门：以前只回 32 字节裸摘要，服务器直接丢

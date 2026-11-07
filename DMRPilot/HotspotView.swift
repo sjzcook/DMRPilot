@@ -122,12 +122,12 @@ struct HotspotView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            HStack(spacing: 0) {
+            // 三格之间不再画竖分隔线（`Divider` 在分组列表里会渲染成两条灰线），
+            // 靠间距区分即可，每格仍然是等宽的。
+            HStack(spacing: 16) {
                 Metric(title: (app.settings.usesEssid || app.settings.hotspotIdOverride > 0) ? "热点 ID" : "DMR ID",
                        value: app.settings.dmrId > 0 ? "\(app.settings.hotspotId)" : "未设置")
-                Divider().frame(height: 30)
                 Metric(title: "传输", value: app.settings.transport.short)
-                Divider().frame(height: 30)
                 Metric(title: "收帧", value: "\(hotspot.rxFrames)")
             }
 
@@ -170,6 +170,9 @@ struct HotspotView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
+                // 连上之后按钮变成「断开连接」，底色改红——红色在这套界面里专门留给
+                // 「会中断当前动作」的操作；连着的过程中（connecting 等）仍是主题色。
+                .tint(hotspot.state == .online ? Color.red : Color.accentColor)
                 .controlSize(.large)
                 .frame(maxWidth: .infinity)
 
@@ -210,27 +213,27 @@ struct HotspotView: View {
 
     private var pttButton: some View {
         let active = hotspot.isTransmitting
-        let level = CGFloat(max(0, min(1, hotspot.txLevel)))
+        // 三档：发射中红、连着能发蓝、没连上灰。以前是「发射中红 / 其他灰」，
+        // 灰色在深色界面上和背景太接近，看不出能不能按，所以把「已连接」这一档改成蓝色。
+        let connected = hotspot.state == .online
+        let colors: [Color] = active
+            ? [Color(red: 0.94, green: 0.30, blue: 0.26),
+               Color(red: 0.70, green: 0.09, blue: 0.07)]
+            : (connected
+               ? [Color(red: 0.34, green: 0.60, blue: 0.98),
+                  Color(red: 0.08, green: 0.31, blue: 0.74)]
+               : [Color(red: 0.44, green: 0.47, blue: 0.54),
+                  Color(red: 0.27, green: 0.29, blue: 0.35)])
 
         return ZStack {
-            // 外圈随输入电平扩散：说话大声一点，环就大一点
             Circle()
-                .stroke(Color.red.opacity(active ? 0.30 : 0.10), lineWidth: 5)
-                .frame(width: 146 + level * 26, height: 146 + level * 26)
-                .animation(.easeOut(duration: 0.12), value: level)
-
-            Circle()
-                .fill(LinearGradient(colors: active
-                                     ? [Color(red: 0.94, green: 0.30, blue: 0.26),
-                                        Color(red: 0.70, green: 0.09, blue: 0.07)]
-                                     : [Color(red: 0.44, green: 0.47, blue: 0.54),
-                                        Color(red: 0.27, green: 0.29, blue: 0.35)],
-                                     startPoint: .top, endPoint: .bottom))
+                .fill(LinearGradient(colors: colors, startPoint: .top, endPoint: .bottom))
                 .frame(width: 124, height: 124)
                 .overlay(
                     Circle().stroke(Color.white.opacity(active ? 0.22 : 0.10), lineWidth: 1)
                 )
-                .shadow(color: active ? Color.red.opacity(0.45) : Color.black.opacity(0.16),
+                .shadow(color: active ? Color.red.opacity(0.45)
+                                     : (connected ? Color.blue.opacity(0.35) : Color.black.opacity(0.16)),
                         radius: active ? 16 : 6, x: 0, y: 4)
 
             Text("PTT")
@@ -238,7 +241,7 @@ struct HotspotView: View {
                 .kerning(1.5)
                 .foregroundStyle(.white)
         }
-        .frame(width: 178, height: 178)
+        .frame(width: 148, height: 148)
         .scaleEffect(pttPressed ? 0.94 : 1)
         .opacity(canTransmit ? 1 : 0.45)
         .contentShape(Circle())
@@ -262,7 +265,7 @@ struct HotspotView: View {
                 + " · TG \(app.settings.talkgroup)"
         }
         if pttDenied {
-            return "麦克风没授权：设置 → DMRPilot → 麦克风"
+            return "麦克风没授权：设置 → EasyDMR → 麦克风"
         }
         if hotspot.state != .online {
             return "连上服务器后才能发射"

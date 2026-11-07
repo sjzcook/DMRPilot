@@ -253,6 +253,14 @@ struct Settings: Codable, Equatable {
     var audioEnabled: Bool = true
     /// 播放音量 0…1
     var audioVolume: Double = 0.9
+    /// 麦克风增益（dB）。只影响发射，0 表示原样送编码器，正数放大、负数衰减。
+    ///
+    /// 存在这里而不是 `AVAudioSession`：iPhone 的输入增益没有公开接口，
+    /// 所以是在采集后的 8 kHz Int16 采样上做数字放大（见 `PttMicrophone`）。
+    var micGainDb: Double = 0
+
+    /// 麦克风增益滑杆的范围（dB）。24 dB 约 16 倍幅度，再往上削波只会更糊。
+    static let micGainRange: ClosedRange<Double> = -12...24
 
     var isIdentityReady: Bool { dmrId > 0 && !sanitizedPassword.isEmpty }
 
@@ -349,6 +357,11 @@ extension Settings {
         theme = (try? container.decodeIfPresent(AppTheme.self, forKey: .theme)) ?? defaults.theme
         audioEnabled = try container.decodeIfPresent(Bool.self, forKey: .audioEnabled) ?? defaults.audioEnabled
         audioVolume = try container.decodeIfPresent(Double.self, forKey: .audioVolume) ?? defaults.audioVolume
+        // 老存档没有这个键，退回 0 dB（和以前完全一样）；顺便把越界值夹回滑杆范围，
+        // 免得手改过 plist 之后一发射就爆音。
+        let gain = try container.decodeIfPresent(Double.self, forKey: .micGainDb) ?? defaults.micGainDb
+        micGainDb = min(Settings.micGainRange.upperBound,
+                        max(Settings.micGainRange.lowerBound, gain))
     }
 }
 

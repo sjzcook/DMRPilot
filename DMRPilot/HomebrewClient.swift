@@ -191,13 +191,13 @@ final class HomebrewClient: ObservableObject {
     init() {
         voice.volume = Float(activeSettings.audioVolume)
         // RPTC 里那几项资料字段，DroidStar 是写死的，这里给个正经值。
-        dmr_core_set_text(core, DMR_TEXT_LOCATION, "DMRPilot")
-        dmr_core_set_text(core, DMR_TEXT_DESCRIPTION, "DMRPilot iOS")
+        dmr_core_set_text(core, DMR_TEXT_LOCATION, "EasyDMR")
+        dmr_core_set_text(core, DMR_TEXT_DESCRIPTION, "EasyDMR iOS")
         dmr_core_set_text(core, DMR_TEXT_URL, "https://brandmeister.network")
         dmr_core_set_text(core, DMR_TEXT_SOFTWARE, "20260101")
-        dmr_core_set_text(core, DMR_TEXT_PACKAGE, "DMRPilot_iOS")
+        dmr_core_set_text(core, DMR_TEXT_PACKAGE, "EasyDMR_iOS")
 
-        rw_core_set_version(rw, "DMRPilot 1.0")
+        rw_core_set_version(rw, "EasyDMR 1.0")
     }
 
     deinit {
@@ -357,6 +357,8 @@ final class HomebrewClient: ObservableObject {
 
         pttFrames.removeAll(keepingCapacity: true)
         encoder.reset()
+        // 增益在采集端做（见 `PttMicrophone.consume`），这里只把设置里的 dB 换算过去。
+        mic.gain = PttMicrophone.linearGain(db: activeSettings.micGainDb)
 
         // 采集一帧就排队，编码放到发射循环里做——编码要 2～3 ms，塞进采集回调会丢帧
         mic.onFrame = { [weak self] frame in
@@ -372,7 +374,7 @@ final class HomebrewClient: ObservableObject {
         } catch {
             mic.onFrame = nil
             append(.error, "麦克风打不开：\(error.localizedDescription)")
-            append(.info, "去「设置 → DMRPilot → 麦克风」确认权限；模拟器没有麦克风，只能在真机上试")
+            append(.info, "去「设置 → EasyDMR → 麦克风」确认权限；模拟器没有麦克风，只能在真机上试")
             return
         }
 
@@ -567,6 +569,12 @@ final class HomebrewClient: ObservableObject {
             voiceLevel = 0
             isVoicePlaying = false
         }
+    }
+
+    /// 麦克风增益改了立刻生效：通话中调滑杆，下一次采集就按新系数放大，不必重连、不必松手。
+    func applyMicGain(_ settings: Settings) {
+        activeSettings.micGainDb = settings.micGainDb
+        mic.gain = PttMicrophone.linearGain(db: settings.micGainDb)
     }
 
     /// 续订、订阅相关的设置在连接期间改了也要立刻生效，不必重连。

@@ -200,20 +200,14 @@ struct SettingsView: View {
                 }
             }
 
-            HStack {
-                Text("已解码")
-                Spacer()
-                Text("\(hotspot.voicePackets) 包")
+            HStack(spacing: 12) {
+                Text("麦克风增益")
+                Slider(value: micGainBinding, in: Settings.micGainRange, step: 1)
+                Text(micGainText)
+                    .font(.caption)
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
-            }
-
-            HStack {
-                Text("纠错比特")
-                Spacer()
-                Text("\(hotspot.voiceErrorCount)")
-                    .monospacedDigit()
-                    .foregroundStyle(hotspot.voiceErrorCount > 12 ? Color.orange : Color.secondary)
+                    .frame(width: 52, alignment: .trailing)
             }
         } header: {
             Text("语音")
@@ -238,6 +232,22 @@ struct SettingsView: View {
                 hotspot.applyAudioPreference(app.settings)
             }
         )
+    }
+
+    /// 麦克风增益：只影响发射。改一下立刻推给采集端，正在发射时也生效。
+    private var micGainBinding: Binding<Double> {
+        Binding(
+            get: { app.settings.micGainDb },
+            set: { newValue in
+                app.settings.micGainDb = newValue
+                hotspot.applyMicGain(app.settings)
+            }
+        )
+    }
+
+    private var micGainText: String {
+        let db = Int(app.settings.micGainDb.rounded())
+        return db > 0 ? "+\(db) dB" : "\(db) dB"
     }
 
     // MARK: - 数据

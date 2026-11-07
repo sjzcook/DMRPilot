@@ -68,7 +68,7 @@ struct BrandMeisterAPI {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("DMRPilot/1.0 (iOS)", forHTTPHeaderField: "User-Agent")
+        request.setValue("EasyDMR/1.0 (iOS)", forHTTPHeaderField: "User-Agent")
 
         let (data, response) = try await session.data(for: request)
 

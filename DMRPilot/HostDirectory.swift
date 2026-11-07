@@ -161,7 +161,7 @@ final class DMRHostStore: ObservableObject {
                 var request = URLRequest(url: url)
                 request.timeoutInterval = 15
                 request.cachePolicy = .reloadIgnoringLocalCacheData
-                request.setValue("DMRPilot/1.0", forHTTPHeaderField: "User-Agent")
+                request.setValue("EasyDMR/1.0", forHTTPHeaderField: "User-Agent")
                 // URLSession 会自动处理 gzip，C++ 里那段手动 inflate 在这里不需要。
                 let (data, response) = try await URLSession.shared.data(for: request)
 
