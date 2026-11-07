@@ -30,6 +30,14 @@ final class AppState: ObservableObject {
     @Published private(set) var myDeviceError: String?
     @Published private(set) var isLoadingDevice = false
 
+    // MARK: - 本地数据
+
+    /// 「更新数据」正在跑（服务器表 + 本地 DMR ID 库）。
+    @Published private(set) var isRefreshingData = false
+    /// 最近一次完整成功的时间。
+    @Published private(set) var dataRefreshedAt: Date?
+    @Published private(set) var refreshError: String?
+
     // MARK: - 依赖
 
     let hotspot = HomebrewClient()
@@ -131,6 +139,34 @@ final class AppState: ObservableObject {
 
     func device(_ id: Int) async throws -> BmDevice {
         try await api.device(id)
+    }
+
+    // MARK: - 更新本地数据
+
+    /// 设置页「更新数据」：服务器表 + 本地 DMR ID 库一起刷新。
+    ///
+    /// 两件事互不依赖，并行跑：服务器表只有几百 KB，本地库有 17 MB 左右，
+    /// 串行等下来会让用户白等几十秒。
+    func refreshAllData() async {
+        guard !isRefreshingData else { return }
+
+        isRefreshingData = true
+        refreshError = nil
+
+        async let hosts: Void = hostStore.load(force: true)
+
+        await callsigns.updateDatabase()
+        await hosts
+
+        if let error = callsigns.databaseError {
+            refreshError = error
+        } else if hostStore.hosts.isEmpty, let error = hostStore.lastError {
+            refreshError = error
+        } else {
+            dataRefreshedAt = Date()
+        }
+
+        isRefreshingData = false
     }
 
     // MARK: - 持久化

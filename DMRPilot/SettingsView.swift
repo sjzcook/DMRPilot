@@ -8,6 +8,9 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject private var app: AppState
     @EnvironmentObject private var hotspot: HomebrewClient
+    /// 本地 DMR ID 库的下载进度由它发布，所以这里也要观察，
+    /// 只是从 `app.callsigns` 读的话进度条不会动。
+    @EnvironmentObject private var callsigns: CallsignDirectory
 
     var body: some View {
         NavigationStack {
@@ -16,6 +19,7 @@ struct SettingsView: View {
                 serverSection
                 behaviourSection
                 actionSection
+                dataSection
                 aboutSection
             }
             .navigationTitle("设置")
@@ -222,6 +226,105 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - 数据
+
+    /// 服务器表 + 本地 DMR ID 库。两者都存在本机，热点页查呼号完全不联网。
+    private var dataSection: some View {
+        Section {
+            Button {
+                Task { await app.refreshAllData() }
+            } label: {
+                HStack(spacing: 10) {
+                    Label("更新数据", systemImage: "arrow.triangle.2.circlepath")
+                    Spacer()
+                    if app.isRefreshingData {
+                        ProgressView()
+                    }
+                }
+            }
+            .disabled(app.isRefreshingData)
+
+            if app.isRefreshingData {
+                if let progress = callsigns.databaseProgress {
+                    ProgressView(value: progress)
+                        .progressViewStyle(.linear)
+                }
+                Text(updateStageText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            row("DMR ID 库", databaseCountText, detail: databaseSizeText)
+            row("服务器表", "\(app.hostStore.hosts.count) 台", detail: app.hostStore.loadedFrom)
+            row("最近更新", updateTimeText)
+
+            if let error = app.refreshError {
+                Text(error)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if !callsigns.hasDatabase {
+                Text("还没下载 DMR ID 库。热点页只能逐条联网查呼号，慢而且经常查不到。")
+                    .font(.footnote)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        } header: {
+            Text("数据")
+        } footer: {
+            Text("**服务器信息**：ds.vu3lvo.com 的 DMRHosts.txt（Pi-Star 格式），上面「服务器」里的下拉列表就是它，约 1500 台。\n**DMR ID 库**：RadioID.net 的整包用户表 user.csv（约 17 MB / 31 万条），下载后在本机建索引（2.5 MB），之后热点页的呼号、姓名、城市全部从本地查，不再逐条联网，换人说话也不会卡。库里查不到的 ID（中继台、网关、刚申请还没入库的）才会再走一次网络。\n建议一两周点一次；下载中旧库仍然可用，换到新库是一次性的原子替换，中途失败不会把已有的库弄坏。")
+        }
+    }
+
+    /// 两列信息的统一排版：标题 + 主值（+ 次要说明）。
+    private func row(_ title: String, _ value: String, detail: String = "") -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(title)
+            Spacer(minLength: 12)
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(value)
+                    .font(.callout)
+                    .monospacedDigit()
+                    .foregroundStyle(value == "未下载" ? Color.secondary : Color.primary)
+                if !detail.isEmpty {
+                    Text(detail)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+        }
+    }
+
+    private var updateStageText: String {
+        let stage = callsigns.databaseStage
+        return stage.isEmpty ? "正在更新服务器列表…" : stage
+    }
+
+    private var databaseCountText: String {
+        let count = callsigns.databaseCount
+        guard count > 0 else { return "未下载" }
+        return String(format: "%.1f 万条", Double(count) / 10000)
+    }
+
+    private var databaseSizeText: String {
+        let bytes = callsigns.databaseBytes
+        guard bytes > 0 else { return "" }
+        return ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+    }
+
+    private var updateTimeText: String {
+        if let date = callsigns.databaseUpdatedAt { return Self.stamp.string(from: date) }
+        if let date = app.dataRefreshedAt { return Self.stamp.string(from: date) }
+        return "—"
+    }
+
+    private static let stamp: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MM-dd HH:mm"
+        return formatter
+    }()
+
     // MARK: - 关于
 
     private var aboutSection: some View {
@@ -248,9 +351,11 @@ struct SettingsView: View {
             HStack {
                 Text("数据来源")
                 Spacer()
-                Text("api.brandmeister.network/v2")
-                    .font(.caption)
+                Text("RadioID.net · api.brandmeister.network")
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
             }
         } header: {
             Text("关于")

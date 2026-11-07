@@ -28,7 +28,7 @@ struct HotspotView: View {
                 if !hotspot.activeCalls.isEmpty {
                     Section("正在通话") {
                         ForEach(hotspot.activeCalls) { call in
-                            CallRow(call: call, label: app.label(for: call.dst))
+                            CallRow(call: call, label: app.label(for: call.dst), source: sourceText(call.src))
                         }
                     }
                 }
@@ -36,7 +36,7 @@ struct HotspotView: View {
                 if !hotspot.recentCalls.isEmpty {
                     Section("刚刚结束") {
                         ForEach(hotspot.recentCalls.prefix(8)) { call in
-                            CallRow(call: call, label: app.label(for: call.dst))
+                            CallRow(call: call, label: app.label(for: call.dst), source: sourceText(call.src))
                         }
                     }
                 }
@@ -393,7 +393,7 @@ struct HotspotView: View {
         } header: {
             Text("当前讲话人")
         } footer: {
-            Text("呼号按 ID 从 RadioID.net 的用户库实时查询，并缓存在本机；查不到就显示数字 ID（该 ID 可能尚未入库，或来自中继台 / 网关）。")
+            Text("呼号、姓名、城市都从本机的 DMR ID 库查（RadioID.net 整包用户表，设置 → 数据 → 更新数据 可刷新），不联网、不卡顿。库里没有的 ID（中继台、网关、刚申请还没入库的）才会联网补查一次；还是查不到就显示数字 ID。")
         }
     }
 
@@ -460,6 +460,11 @@ struct HotspotView: View {
         callsigns.callsign(for: id) ?? "\(id)"
     }
 
+    /// 通话列表左侧那一列的呼号（本地 DMR ID 库里查）。
+    private func sourceText(_ id: Int) -> String {
+        callsigns.callsign(for: id) ?? "\(id)"
+    }
+
     private func speakerSubtitle(_ speaker: ActiveSpeaker) -> String {
         var parts: [String] = []
 
@@ -476,10 +481,15 @@ struct HotspotView: View {
             parts.append("TS\(speaker.slot)")
         }
 
-        // 主行已经是呼号时才重复显示 ID；主行本来就是 ID 的话没必要再来一遍。
-        if callsigns.callsign(for: speaker.src) != nil {
-            parts.append("ID \(speaker.src)")
+        // 本地 DMR ID 库里有姓名和城市就带上，比一串数字 ID 有用得多。
+        // 换成呼号显示时，再把 ID 补在后面，方便对号。
+        let known = callsigns.callsign(for: speaker.src) != nil
+        if let user = callsigns.user(for: speaker.src) {
+            if !user.fullName.isEmpty { parts.append(user.fullName) }
+            let place = user.placeText
+            if !place.isEmpty { parts.append(place) }
         }
+        if known { parts.append("ID \(speaker.src)") }
 
         return parts.joined(separator: " · ")
     }
@@ -603,6 +613,8 @@ struct HotspotView: View {
 struct CallRow: View {
     let call: LiveCall
     let label: String
+    /// 源 ID 的显示文本：本地 DMR ID 库里有呼号就显示呼号，否则就是数字 ID。
+    var source: String = ""
 
     var body: some View {
         HStack(spacing: 12) {
@@ -615,9 +627,10 @@ struct CallRow: View {
 
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
-                    Text("\(call.src)")
+                    Text(source.isEmpty ? "\(call.src)" : source)
                         .font(.subheadline.weight(.semibold))
                         .monospacedDigit()
+                        .lineLimit(1)
                     Image(systemName: "arrow.right")
                         .font(.caption2)
                         .foregroundStyle(.secondary)

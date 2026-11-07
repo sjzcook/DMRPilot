@@ -61,10 +61,11 @@ DMRApp/
 │   ├── RootView.swift           # TabView
 │   ├── HotspotView.swift        # 状态卡 + 电平表 + 实时通话
 │   ├── DirectoryView.swift      # 设备查询 + 通话组搜索
-│   ├── SettingsView.swift       # 身份 / 服务器 / 行为
+│   ├── SettingsView.swift       # 身份 / 服务器 / 行为 / 数据
 │   ├── HostDirectory.swift      # DMRHosts.txt 下载 / 解析 / 缓存
 │   ├── HostPickerField.swift    # 服务器弹出选择器 + Hostname 搜索
-│   ├── CallsignDirectory.swift  # DMR ID → 呼号（RadioID.net 查询 + 本地缓存）
+│   ├── CallsignDirectory.swift  # DMR ID → 呼号（本地库优先，网络兜底 + Caches 缓存）
+│   ├── DMRUserDatabase.swift    # RadioID.net 整包用户库：下载 / 建索引 / 二分查询
 │   ├── LogConsoleView.swift     # 十六进制协议日志
 │   ├── Vocoder/                 # 只剩发送方向的 Swift 编码器（解码已改走 Core/Vocoder）
 │   │   ├── HalfrateEncoder.swift    # 分析 + 码本量化（PTT 用）
@@ -139,7 +140,8 @@ python tools/gen_icon.py
 设置页的服务器不再是手填文本框，而是从 Pi-Star 格式的服务器表里选：
 
 - 数据源 `https://ds.vu3lvo.com/DMRHosts.txt`（镜像 `https://ds.vu3lvo.com/backup/DMRHosts.txt`），
-  首次进入设置页自动下载并缓存到 `Caches/DMRHosts.txt`，之后启动直接读缓存，点「更新」才会重拉。
+  首次进入设置页自动下载并缓存到 `Caches/DMRHosts.txt`，之后启动直接读缓存；
+  点「设置 → 数据 → 更新数据」或选择器右上角的刷新按钮才会重拉。
 - 点服务器那一行会**弹出选择器**（半屏 / 全屏 sheet）：搜索框固定在列表上方，按域名（顺带匹配表里的名字）过滤；
   默认只列 BrandMeister 条目（42 台），切到「全部」能看到 XLX、DMR+、FreeDMR 等 1200 多条；
   右上角刷新按钮强制重下，选中即关闭并回填。
@@ -147,6 +149,32 @@ python tools/gen_icon.py
   自建 HBLink / 私服走这条路。
 - 解析规则与参考实现一致：跳过 `DMRGateway` / `DMR2YSF` / `DMR2NXDN` 三条本机网关记录，
   第 3 列域名、第 4 列表内密码（`none` 视为空）、第 5 列端口；下载到 HTML 错误页时直接丢弃，不会污染缓存。
+
+### 本地数据（更新数据）
+
+位置：**设置 → 数据**。一个按钮同时刷新两样东西，都落在本机，之后完全离线可用：
+
+| | 来源 | 体积 | 用在哪 |
+|---|---|---|---|
+| 服务器表 | `ds.vu3lvo.com/DMRHosts.txt`（Pi-Star 格式） | ~78 KB / 1490 条 | 「服务器」下拉列表 |
+| DMR ID 库 | `database.radioid.net/static/user.csv`（备用域名 `www.radioid.net`） | ~17 MB / 31.6 万条 | 热点页的呼号、姓名、城市 |
+
+- **为什么要整包下载**：Homebrew / ODTP 的帧头都只有数字 ID，没有呼号。以前是每换一个人就发一次
+  `database.radioid.net/api/dmr/user/?id=…`，串行 250 ms 起，还要防限流（见下面「当前讲话人」）。
+  整包下到本地之后，查一个 ID 是「二分 2.5 MB 索引 + 读一行 CSV」的微秒级操作，可以在 SwiftUI 的
+  `body` 里直接调，换人说话不会卡。
+- **怎么存的**：`Application Support/DMRPilot/` 下三个文件——`users.csv`（原样保存）、
+  `users.idx`（`"RIDX"` + 条数 + N × `(ID:UInt32, 偏移:UInt32)`，已按 ID 升序，2.4 MB）、
+  `meta.json`（条数 / 时间 / 来源，同时充当「这份库完整可用」的标记）。
+  索引是下载后一次性扫出来并排序的，运行时不再解析 CSV；`users.csv` 走内存映射，按页调入。
+  这个目录标了 `isExcludedFromBackup`，17 MB 的第三方数据不进 iCloud 备份。
+- **换库是原子的**：先写 `users.csv.tmp` / `users.idx.tmp`，再替换正式文件，最后写 `meta.json`。
+  中途失败或断电只会留下没有 meta 的孤儿文件，下次启动当成「没下载过」，不会把已有的库弄坏；
+  下载期间旧库照常可用。
+- **下载进度**：`URLSessionDownloadTask` + 每 256 KB 报一次，界面上是一条进度条；解析阶段进度条换成
+  「正在建立本地索引…」（约一两秒）。
+- 主站失败会自动换备用域名重试一次；超过 120 MB 直接中断（镜像挂掉时常回一个巨大 HTML 页面）。
+- 服务器表只有几百 KB、ID 库有 17 MB，两个下载是**并行**的，不会互相等。
 
 ### ESSID 后缀
 
@@ -352,13 +380,19 @@ $ python tools/enc_check.py
 右边是「讲话中 / 已结束」和一格实时电平。
 
 - 呼号不是协议里带的。Homebrew 的 `DMRD` 帧头只有 3 字节源 ID 和 3 字节目的 ID，
-  DMR 的 LC（呼号信息）不下发，所以只能外部补：
-  1. RadioID.net 的 DMR 用户库 `database.radioid.net/api/dmr/user/?id=4601234`
-  2. 查不到再退到 BrandMeister 设备库 `api.brandmeister.network/v2/device/{id}`（中继台、热点在这有呼号）
-- 第一次听到某个人时会先显示数字 ID，查到后自动换成呼号；结果缓存在
-  `Caches/callsigns.json`，之后完全离线也能显示。
-- 查询是串行的、间隔 250 ms（RadioID 会限流）；同一个 ID 查不到时 10 分钟内不再重试。
-- 查不到就一直显示数字 ID，这通常意味着该 ID 没在 RadioID 入库，或者它是网关 / 中继台。
+  DMR 的 LC（呼号信息）不下发，所以只能外部补。两级：
+  1. **本地 DMR ID 库**（`DMRUserDatabase.swift`）：RadioID.net 整包用户表，
+     在「设置 → 数据 → 更新数据」下载后离线可查，呼号 / 姓名 / 城市都有；热点页日常查询全走这条。
+  2. 本地库没有的 ID，才退到网络逐条查：RadioID.net 单条接口
+     `database.radioid.net/api/dmr/user/?id=4601234` → BrandMeister 设备库
+     `api.brandmeister.network/v2/device/{id}`（中继台、热点在这有呼号）。
+- 主行显示呼号（查不到就是数字 ID），副行是 `通话组 · 时隙 · 姓名 · 城市 · ID`。
+  城市显示城市 / 省两级，国名字段故意不显示——RadioID 的 `COUNTRY` 是志愿者手填的，一批数据里
+  有把中国地区写成别的名字的条目，展示只会误导。
+- 网络兜底的那一层是串行的、间隔 250 ms（RadioID 会限流）；同一个 ID 查不到时 10 分钟内不再重试，
+  结果缓存在 `Caches/callsigns.json`。
+- 一直显示数字 ID，说明该 ID 既不在本地库里、也没在网上查到——通常是网关 / 中继台，
+  或者刚申请还没入库。
 - 「讲话中」的判定是「3 秒内还有语音帧」，因为部分 master 不推语音结束符；
   收到结束符则立刻变成「已结束」，并固定显示这一句说了多久。
 

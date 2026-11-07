@@ -90,6 +90,25 @@ jobs:
               print(f"::error file={proj_path}::fileRef {oid} 没有对应的 PBXFileReference")
               bad = True
 
+          # 3b) Sources 阶段引用的 buildFile 必须有定义，且它指向的文件要真的在磁盘上。
+          #     删源文件时只清了 PBXFileReference、忘了清 Sources 条目，就会留下这种
+          #     悬空引用 —— xcodebuild 报的是「project is damaged」或干脆静默少编一个文件，
+          #     从日志里完全看不出是哪一步漏了。
+          builds = set(re.findall(r"^\t\t([0-9A-F]{24}) .*isa = PBXBuildFile", proj, re.M))
+          sources_block = proj.split("isa = PBXSourcesBuildPhase")[1].split(");")[0]
+          source_ids = re.findall(r"^\t\t\t\t([0-9A-F]{24}) ", sources_block, re.M)
+          for oid in source_ids:
+              if oid not in builds:
+                  print(f"::error file={proj_path}::Sources 阶段引用了不存在的 buildFile {oid}")
+                  bad = True
+
+          names = dict(re.findall(r"^\t\t([0-9A-F]{24}) /\* (.+?) \*/", proj, re.M))
+          for oid, ref in re.findall(r"^\t\t([0-9A-F]{24}) /\* .+? \*/ = \{isa = PBXBuildFile; fileRef = ([0-9A-F]{24})", proj, re.M):
+              name = names.get(ref, "")
+              if name.endswith((".swift", ".cpp", ".cc")) and not list(pathlib.Path("DMRPilot").rglob(name)):
+                  print(f"::error file={proj_path}::{name} 在 Sources 里，但磁盘上找不到这个文件")
+                  bad = True
+
           # 4) 桥接头必须挂在 target 与 project 两份配置上，
           #    否则 Swift 看不到 C++ 接口（只在一边加会随构建方式时灵时不灵）。
           if proj.count('SWIFT_OBJC_BRIDGING_HEADER = "DMRPilot/DMRPilot-Bridging-Header.h";') < 2:

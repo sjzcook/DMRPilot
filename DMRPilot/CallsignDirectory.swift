@@ -5,14 +5,15 @@
 //  DMR ID → 呼号。
 //
 //  Homebrew 的 DMRD 帧头只有 3 字节源 ID 和 3 字节目的 ID，**没有呼号**——
-//  呼号是 DMR 的 LC（link control）信息，Homebrew 不下发，所以只能外部补：
+//  呼号是 DMR 的 LC（link control）信息，Homebrew 不下发，所以只能外部补。两级：
 //
-//    1. RadioID.net 的 DMR 用户库：database.radioid.net/api/dmr/user/?id=4601234
-//       返回 callsign / fname / city / country
-//    2. 查不到再退到 BrandMeister 自己的设备库：api.brandmeister.network/v2/device/{id}
-//       中继台与热点在这里有呼号（比如 262301 → DB0OBO）
+//    1. 本地 DMR ID 库（`DMRUserDatabase`）：RadioID.net 的整包用户表，
+//       用户在「设置 → 数据 → 更新数据」下载后完全离线可查。热点页每次换人说话
+//       都要把源 ID 翻成呼号，只有走本地库才来得及、也不会被限流。
+//    2. 本地库里没有的 ID（中继台、网关、刚申请还没入库的），再退到网络逐条查：
+//       RadioID.net 的单条接口 → BrandMeister 设备库（中继台在这里有呼号）。
 //
-//  查询是串行的、间隔 250ms —— RadioID 对突发请求会限流；同一个 ID 查不到时
+//  网络查询是串行的、间隔 250ms —— RadioID 对突发请求会限流；同一个 ID 查不到时
 //  10 分钟内不再重试，避免每来一帧语音就往服务器打一次。结果写进 Caches，
 //  之后完全离线也能显示。
 //
@@ -25,6 +26,21 @@ final class CallsignDirectory: ObservableObject {
 
     /// id → 呼号。视图直接读这个字典，变化会自动刷新。
     @Published private(set) var callsigns: [Int: String] = [:]
+
+    // MARK: - 本地库状态（设置页「数据」一栏显示）
+
+    @Published private(set) var databaseCount = 0
+    @Published private(set) var databaseBytes = 0
+    @Published private(set) var databaseUpdatedAt: Date?
+    @Published private(set) var databaseSource = ""
+    @Published private(set) var isUpdatingDatabase = false
+    /// 0…1；nil 表示进度未知（服务器没给 Content-Length）。
+    @Published private(set) var databaseProgress: Double?
+    @Published private(set) var databaseStage = ""
+    @Published private(set) var databaseError: String?
+
+    /// RadioID.net 的整包用户表。查询全部走它，网络只做兜底。
+    private let database = RadioIDDatabase()
 
     /// 正在查询的 id，防止排队期间重复入队。
     private var inFlight: Set<Int> = []
@@ -48,15 +64,28 @@ final class CallsignDirectory: ObservableObject {
         configuration.timeoutIntervalForResource = 20
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         session = URLSession(configuration: configuration)
+
+        applyDatabaseSnapshot()
+        loadCacheIfNeeded()
     }
 
     // MARK: - 对外
 
-    func callsign(for id: Int) -> String? {
-        callsigns[id]
+    /// 本地库里的完整记录（姓名、城市）。热点页用它做副标题。
+    func user(for id: Int) -> DMRUser? {
+        database.lookup(id)
     }
 
-    /// 把 id 交给查询队列。已知的、正在查的、刚查过没结果的都会直接跳过。
+    /// 已知的呼号。本地库优先，其次才是以前联网查到的结果。
+    func callsign(for id: Int) -> String? {
+        if let user = database.lookup(id) { return user.callsign }
+        return callsigns[id]
+    }
+
+    /// 本地库里有没有整包数据。
+    var hasDatabase: Bool { databaseCount > 0 }
+
+    /// 把 id 交给查询队列。本地库有的、已知的、正在查的、刚查过没结果的都会直接跳过。
     /// 可以放心在「每帧语音」这种高频位置调用。
     func request(_ id: Int) {
         request([id])
@@ -68,6 +97,8 @@ final class CallsignDirectory: ObservableObject {
         let now = Date()
         for id in ids where id > 0 {
             if callsigns[id] != nil || inFlight.contains(id) || queue.contains(id) { continue }
+            // 本地库能答的，一次网络请求都不发
+            if database.lookup(id) != nil { continue }
             if let missed = misses[id], now.timeIntervalSince(missed) < missLifetime { continue }
             queue.append(id)
         }
@@ -77,7 +108,64 @@ final class CallsignDirectory: ObservableObject {
         Task { await drain() }
     }
 
-    // MARK: - 队列
+    // MARK: - 更新本地库
+
+    /// 下载整包用户表并重建索引。界面上的「更新数据」按钮调这个。
+    func updateDatabase() async {
+        guard !isUpdatingDatabase else { return }
+
+        isUpdatingDatabase = true
+        databaseError = nil
+        databaseProgress = 0
+        databaseStage = "正在连接 RadioID.net…"
+
+        defer {
+            isUpdatingDatabase = false
+            databaseProgress = nil
+            databaseStage = ""
+        }
+
+        do {
+            let snapshot = try await database.update { [weak self] phase in
+                Task { @MainActor in
+                    guard let self else { return }
+                    switch phase {
+                    case .downloading(let fraction):
+                        self.databaseProgress = fraction
+                        if let fraction {
+                            self.databaseStage = "正在下载 DMR ID 库 \(Int(fraction * 100))%"
+                        } else {
+                            self.databaseStage = "正在下载 DMR ID 库…"
+                        }
+                    case .indexing:
+                        self.databaseProgress = nil
+                        self.databaseStage = "正在建立本地索引…"
+                    }
+                }
+            }
+
+            apply(snapshot)
+            // 新库把以前「查不到」的 ID 也覆盖了一遍，清掉这份黑名单重新判断
+            misses.removeAll()
+            databaseError = nil
+        } catch {
+            databaseError = error.localizedDescription
+        }
+    }
+
+    private func apply(_ snapshot: RadioIDDatabase.Snapshot) {
+        databaseCount = snapshot.count
+        databaseBytes = snapshot.bytes
+        databaseUpdatedAt = snapshot.updatedAt
+        databaseSource = snapshot.source
+    }
+
+    private func applyDatabaseSnapshot() {
+        guard let snapshot = database.currentSnapshot() else { return }
+        apply(snapshot)
+    }
+
+    // MARK: - 网络兜底队列
 
     private func drain() async {
         defer { isDraining = false }

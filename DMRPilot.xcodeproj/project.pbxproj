@@ -30,6 +30,7 @@
 		C1C2C3D4E5F6A7B8C9D00217 /* HostDirectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00118 /* HostDirectory.swift */; };
 		C1C2C3D4E5F6A7B8C9D00218 /* HostPickerField.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00119 /* HostPickerField.swift */; };
 		C1C2C3D4E5F6A7B8C9D00219 /* CallsignDirectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00120 /* CallsignDirectory.swift */; };
+		C1C2C3D4E5F6A7B8C9D00240 /* DMRUserDatabase.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00140 /* DMRUserDatabase.swift */; };
 		FA11C0DE0000000000000101 /* DMRCore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE0000000000000001 /* DMRCore.cpp */; };
 		FA11C0DE0000000000000102 /* crs129.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE0000000000000002 /* crs129.cpp */; };
 		FA11C0DE0000000000000103 /* cbptc19696.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE0000000000000003 /* cbptc19696.cpp */; };
@@ -82,6 +83,7 @@
 		B1B2C3D4E5F6A7B8C9D00118 /* HostDirectory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostDirectory.swift; sourceTree = "<group>"; };
 		B1B2C3D4E5F6A7B8C9D00119 /* HostPickerField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostPickerField.swift; sourceTree = "<group>"; };
 		B1B2C3D4E5F6A7B8C9D00120 /* CallsignDirectory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallsignDirectory.swift; sourceTree = "<group>"; };
+		B1B2C3D4E5F6A7B8C9D00140 /* DMRUserDatabase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DMRUserDatabase.swift; sourceTree = "<group>"; };
 		B1B2C3D4E5F6A7B8C9D0010D /* DMRPilot.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DMRPilot.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		FA11C0DE0000000000000001 /* DMRCore.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = DMRCore.cpp; sourceTree = "<group>"; };
 		FA11C0DE0000000000000002 /* crs129.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = crs129.cpp; sourceTree = "<group>"; };
@@ -179,6 +181,7 @@
 				B1B2C3D4E5F6A7B8C9D00118 /* HostDirectory.swift */,
 				B1B2C3D4E5F6A7B8C9D00119 /* HostPickerField.swift */,
 				B1B2C3D4E5F6A7B8C9D00120 /* CallsignDirectory.swift */,
+				B1B2C3D4E5F6A7B8C9D00140 /* DMRUserDatabase.swift */,
 				FA11C0DE00000000000000FF /* DMRPilot-Bridging-Header.h */,
 				A1B2C3D4E5F6A7B8C9D00012 /* Core */,
 				A1B2C3D4E5F6A7B8C9D00010 /* Vocoder */,
@@ -358,13 +361,11 @@
 				C1C2C3D4E5F6A7B8C9D00217 /* HostDirectory.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D00218 /* HostPickerField.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D00219 /* CallsignDirectory.swift in Sources */,
+				C1C2C3D4E5F6A7B8C9D00240 /* DMRUserDatabase.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D0020D /* HalfrateTables.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D0020E /* HalfrateCore.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D0020F /* HalfrateFec.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D00210 /* HalfrateDequant.swift in Sources */,
-				C1C2C3D4E5F6A7B8C9D00211 /* HalfrateSynth.swift in Sources */,
-				C1C2C3D4E5F6A7B8C9D00212 /* HalfrateOptions.swift in Sources */,
-				C1C2C3D4E5F6A7B8C9D00213 /* HalfrateDecoder.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D00214 /* DMRVoicePath.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D00215 /* VoicePlayer.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D00216 /* VoicePipeline.swift in Sources */,
