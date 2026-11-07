@@ -215,7 +215,7 @@ final class DMRHostStore: ObservableObject {
             let parsed = DMRHostTable.parse(snapshot.text)
             if !parsed.isEmpty {
                 hosts = parsed
-                savedAt = newer(savedAt, snapshot.savedAt)
+                savedAt = Self.newer(savedAt, snapshot.savedAt)
                 dmrReady = true
             }
         }
@@ -224,7 +224,7 @@ final class DMRHostStore: ObservableObject {
             let parsed = YSFHostTable.parse(snapshot.text)
             if !parsed.isEmpty {
                 ysfHosts = parsed
-                savedAt = newer(savedAt, snapshot.savedAt)
+                savedAt = Self.newer(savedAt, snapshot.savedAt)
                 ysfReady = true
             }
         }
@@ -248,7 +248,7 @@ final class DMRHostStore: ObservableObject {
                 writeSnapshot(kind: .dmr, text: result.text, savedAt: now, count: parsed.count)
                 hosts = parsed
                 loadedFrom = result.source
-                savedAt = newer(savedAt, now)
+                savedAt = Self.newer(savedAt, now)
                 dmrReady = true
             }
         }
@@ -262,7 +262,7 @@ final class DMRHostStore: ObservableObject {
                 let now = Date()
                 writeSnapshot(kind: .ysf, text: result.text, savedAt: now, count: parsed.count)
                 ysfHosts = parsed
-                savedAt = newer(savedAt, now)
+                savedAt = Self.newer(savedAt, now)
                 ysfReady = true
             }
         }
