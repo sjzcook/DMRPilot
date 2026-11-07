@@ -87,6 +87,18 @@ int32_t hrd_decode_packet(hrd_decoder_t* decoder,
                           int16_t* pcm480,
                           int32_t* out_errors);
 
+// MARK: - 解码（YSF 用）
+
+/// 一个**没有 FEC** 的 7 字节帧 → 160 采样（YSF 的 VD 模式 2）。
+///
+/// YSF 把 49 bit 参数放在 13 字节 VCH 里，纠错（Golay / 卷积 / 重复码）在
+/// `YSFCore` 里已经做完，到这儿就是干净的 7 字节，不需要再过 DMR 的 (23,12)。
+/// `frame7` 为 NULL 表示这一帧丢了，按擦除隐藏处理。
+int32_t hrd_decode_plain(hrd_decoder_t* decoder,
+                         const uint8_t* frame7,
+                         int16_t* pcm160,
+                         int32_t* out_errors);
+
 // MARK: - 调音
 
 /// 按名字改一个参数（`output_gain`、`enhance_strength` 等，见 DroidStar 的

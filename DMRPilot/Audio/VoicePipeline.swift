@@ -169,6 +169,51 @@ final class VoicePipeline {
 
     // MARK: - 辅助
 
+    /// 送进一包 YSF 语音（5 个 7 字节帧 = 100 ms = 800 采样）。
+    ///
+    /// 和 DMR 的 `push` 差别只在「帧更小、一包更多」：YSF 每帧 49 bit 且没有
+    /// DMR 那层空口 FEC，所以逐帧走 `decode(frame7:)`，攒够一包再入队。
+    func pushYsf(key: String, codec: [UInt8]) {
+        if currentKey == nil {
+            currentKey = key
+            activeKey = key
+        }
+
+        let decoder = decoder(for: key)
+        var pcm = [Int16]()
+        pcm.reserveCapacity(Self.samplesPerYsfPacket)
+
+        var index = 0
+        while index + 7 <= codec.count {
+            let frame = Array(codec[index..<(index + 7)])
+            let chunk = decoder.decode(frame7: frame)
+            if !chunk.isEmpty {
+                pcm.append(contentsOf: chunk)
+            }
+            index += 7
+        }
+        guard !pcm.isEmpty else { return }
+
+        decodedPackets += 1
+        lastErrorCount = decoder.lastErrorCount
+
+        if isMuted {
+            level = 0
+            isPlaying = false
+            return
+        }
+
+        guard key == currentKey else { return }
+
+        player.start()
+        player.enqueue(pcm)
+        level = Self.peakLevel(pcm)
+        isPlaying = player.isActive
+    }
+
+    /// 一包 YSF 语音的采样数：5 × 160
+    private static let samplesPerYsfPacket = 800
+
     private func decoder(for key: String) -> DMRVoiceDecoder {
         if let existing = decoders[key] { return existing }
 

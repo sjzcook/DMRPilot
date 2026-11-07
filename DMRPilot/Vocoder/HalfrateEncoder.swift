@@ -73,6 +73,15 @@ final class HREncoder {
         return HRFec.encodeAirFrame(bits)
     }
 
+    /// 一帧 PCM（160 采样）→ **7 字节标准帧**（49 bit，MSB 优先，没有 DMR 的 FEC 与旋转）。
+    ///
+    /// YSF 要的就是这个：它自己把 49 bit 塞进 13 字节 VCH 里做重复码 + 扰码 + 交织，
+    /// 不需要 DMR 那套 Golay(23,12) 空口帧，也不能带 DMR 的比特旋转（bit 40…43）。
+    func encodeStandardFrame(_ pcm: [Int16]) -> [UInt8] {
+        let fields = analyze(pcm)
+        return HRFrame.bytesFromBits(HRFrame.bitsFromFields(fields))
+    }
+
     /// 连续三帧（60 ms）→ 27 字节，正好喂给 `DMRCallCodec.voiceBurst`
     func encodeBurst(_ frames: [[Int16]]) -> [UInt8] {
         var packed = [UInt8]()

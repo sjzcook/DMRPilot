@@ -121,14 +121,10 @@ final class AppState: ObservableObject {
     /// `host / hostName / port`，界面上的选择器就自动回显了。
     /// 新类型还没选过（槽是空的）就保持现状，等用户在列表里挑一台。
     ///
-    /// 类型换了等于换了服务器：真的换了 host / port 且当前在线就断开，
-    /// 不自动拿新服务器重连——YSF 的协议还没接，替用户重连只会连错。
+    /// 类型换了等于换了协议（DMR 的 RPTL/ODTP 与 YSF 的 YSFP 完全不通用），
+    /// 所以只要在线就断开，不替用户自动重连——用户按连接按钮时才用新协议上线。
     func setHomeMode(_ mode: HomeMode) {
         guard mode != settings.homeMode else { return }
-
-        let previous = HostSelection(name: settings.hostName,
-                                     host: settings.host,
-                                     port: settings.port)
 
         // 存旧类型的选择
         settings.rememberCurrentHost(as: settings.homeMode.hostKind)
@@ -140,8 +136,9 @@ final class AppState: ObservableObject {
             settings.applyHost(remembered)
         }
 
-        let hostChanged = settings.host != previous.host || settings.port != previous.port
-        if hostChanged, hotspot.state != .offline {
+        // 模式一换就是换协议（RPTL / ODTP ↔ YSFP 完全不通用），在线就断开，
+        // 不替用户自动重连——连接按钮按下去时才用新协议上线。
+        if hotspot.state != .offline {
             disconnect()
         }
     }

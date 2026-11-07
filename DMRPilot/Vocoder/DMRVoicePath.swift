@@ -96,4 +96,25 @@ final class DMRVoiceDecoder {
         lastErrorCount = Int(max(0, errors))
         return pcm
     }
+
+    /// 一个 **7 字节**帧（49 bit，无 FEC）→ 160 个采样。
+    ///
+    /// YSF 的 VD 模式 2：纠错在 `Core/YSFCore.cpp` 解 VCH 时已经做完了
+    /// （Golay / 卷积码 / 重复码），到这儿只剩干净的参数，直接进解码器。
+    func decode(frame7: [UInt8]) -> [Int16] {
+        guard frame7.count >= 7, let core = core else { return [] }
+
+        var pcm = [Int16](repeating: 0, count: DMRVoicePath.samplesPerFrame)
+        var errors: Int32 = 0
+
+        let kind = frame7.withUnsafeBufferPointer { raw in
+            hrd_decode_plain(core, raw.baseAddress, &pcm, &errors)
+        }
+
+        guard kind != HRD_ERROR else { return [] }
+
+        lastKind = kind
+        lastErrorCount = Int(max(0, errors))
+        return pcm
+    }
 }

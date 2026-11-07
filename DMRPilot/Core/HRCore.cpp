@@ -132,6 +132,22 @@ int32_t hrd_decode_packet(hrd_decoder_t* decoder, const uint8_t* codec27, int16_
     return worst;
 }
 
+int32_t hrd_decode_plain(hrd_decoder_t* decoder, const uint8_t* frame7, int16_t* pcm160,
+                         int32_t* out_errors) {
+    if (out_errors != NULL) {
+        *out_errors = 0;
+    }
+    if (decoder == NULL || decoder->core == NULL || pcm160 == NULL) {
+        return HRD_ERROR;
+    }
+    // YSF 的 VD 模式 2 就是这样：FEC 已经在 13 字节 VCH 里解掉了（Golay/卷积/重复码），
+    // 到这一步只剩干净的 49 bit 参数，直接进解码器，不用再过 DMR 那套 (23,12)。
+    if (frame7 == NULL) {
+        return int32_t(hr_decode(decoder->core, NULL, pcm160));
+    }
+    return int32_t(hr_decode(decoder->core, frame7, pcm160));
+}
+
 int32_t hrd_set_option(hrd_decoder_t* decoder, const char* name, double value) {
     if (decoder == NULL || decoder->core == NULL || name == NULL) {
         return -1;

@@ -45,6 +45,10 @@
 		FA11C0DE0000000000000107 /* SHA256.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE0000000000000007 /* SHA256.cpp */; };
 		FA11C0DE0000000000000110 /* RewindCore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE0000000000000010 /* RewindCore.cpp */; };
 		FA11C0DE0000000000000121 /* HRCore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE0000000000000021 /* HRCore.cpp */; };
+		FA11C0DE0000000000000131 /* YSFCore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE0000000000000031 /* YSFCore.cpp */; };
+		FA11C0DE0000000000000132 /* YSFFICH.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE0000000000000032 /* YSFFICH.cpp */; };
+		FA11C0DE0000000000000133 /* YSFConvolution.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE0000000000000033 /* YSFConvolution.cpp */; };
+		FA11C0DE0000000000000134 /* Golay24128.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE0000000000000034 /* Golay24128.cpp */; };
 		FA11C0DE0000000000000301 /* codebook.cc in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE0000000000000201 /* codebook.cc */; };
 		FA11C0DE0000000000000302 /* codebook_set.cc in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE0000000000000202 /* codebook_set.cc */; };
 		FA11C0DE0000000000000303 /* cosine.cc in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE0000000000000203 /* cosine.cc */; };
@@ -150,6 +154,14 @@
 		FA11C0DE000000000000000F /* SHA256.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SHA256.h; sourceTree = "<group>"; };
 		FA11C0DE0000000000000010 /* RewindCore.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = RewindCore.cpp; sourceTree = "<group>"; };
 		FA11C0DE0000000000000011 /* RewindCore.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RewindCore.h; sourceTree = "<group>"; };
+		FA11C0DE0000000000000031 /* YSFCore.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = YSFCore.cpp; sourceTree = "<group>"; };
+		FA11C0DE0000000000000032 /* YSFFICH.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = YSFFICH.cpp; sourceTree = "<group>"; };
+		FA11C0DE0000000000000033 /* YSFConvolution.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = YSFConvolution.cpp; sourceTree = "<group>"; };
+		FA11C0DE0000000000000034 /* Golay24128.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = Golay24128.cpp; sourceTree = "<group>"; };
+		FA11C0DE0000000000000035 /* YSFCore.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = YSFCore.h; sourceTree = "<group>"; };
+		FA11C0DE0000000000000036 /* YSFFICH.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = YSFFICH.h; sourceTree = "<group>"; };
+		FA11C0DE0000000000000037 /* YSFConvolution.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = YSFConvolution.h; sourceTree = "<group>"; };
+		FA11C0DE0000000000000038 /* Golay24128.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = Golay24128.h; sourceTree = "<group>"; };
 		FA11C0DE00000000000000FF /* DMRPilot-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = DMRPilot-Bridging-Header.h; sourceTree = "<group>"; };
 		FA11C0DE0000000000000021 /* HRCore.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = HRCore.cpp; sourceTree = "<group>"; };
 		FA11C0DE0000000000000022 /* HRCore.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = HRCore.h; sourceTree = "<group>"; };
@@ -299,6 +311,14 @@
 				FA11C0DE0000000000000021 /* HRCore.cpp */,
 				FA11C0DE0000000000000022 /* HRCore.h */,
 				FA11C0DE0000000000000020 /* Vocoder */,
+				FA11C0DE0000000000000031 /* YSFCore.cpp */,
+				FA11C0DE0000000000000032 /* YSFFICH.cpp */,
+				FA11C0DE0000000000000033 /* YSFConvolution.cpp */,
+				FA11C0DE0000000000000034 /* Golay24128.cpp */,
+				FA11C0DE0000000000000035 /* YSFCore.h */,
+				FA11C0DE0000000000000036 /* YSFFICH.h */,
+				FA11C0DE0000000000000037 /* YSFConvolution.h */,
+				FA11C0DE0000000000000038 /* Golay24128.h */,
 				FA11C0DE0000000000000010 /* RewindCore.cpp */,
 				FA11C0DE0000000000000002 /* crs129.cpp */,
 				FA11C0DE0000000000000003 /* cbptc19696.cpp */,
@@ -505,6 +525,10 @@
 				FA11C0DE0000000000000107 /* SHA256.cpp in Sources */,
 				FA11C0DE0000000000000110 /* RewindCore.cpp in Sources */,
 				FA11C0DE0000000000000121 /* HRCore.cpp in Sources */,
+				FA11C0DE0000000000000131 /* YSFCore.cpp in Sources */,
+				FA11C0DE0000000000000132 /* YSFFICH.cpp in Sources */,
+				FA11C0DE0000000000000133 /* YSFConvolution.cpp in Sources */,
+				FA11C0DE0000000000000134 /* Golay24128.cpp in Sources */,
 				FA11C0DE0000000000000301 /* codebook.cc in Sources */,
 				FA11C0DE0000000000000302 /* codebook_set.cc in Sources */,
 				FA11C0DE0000000000000303 /* cosine.cc in Sources */,

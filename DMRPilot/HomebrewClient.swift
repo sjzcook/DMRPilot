@@ -114,14 +114,22 @@ final class HomebrewClient: ObservableObject {
     /// BrandMeister 的 ODTP / Rewind 核心。和 `core` 是两套互不相通的协议，
     /// 同一时刻只用其中一个，由 `settings.linkProtocol` 决定。
     private let rw = rw_core_create()!
+    /// YSF（System Fusion）反射器核心。首页右上角模式切到 YSF 时走这一条，
+    /// 和 DMR 的 `core` / `rw` 也是互斥的。
+    private let ysf = ysf_core_create()!
 
     // MARK: - 内部状态
 
     private var activeSettings = Settings()
 
     /// 当前是否走 BrandMeister 的 ODTP（Rewind）而不是 Homebrew。
-    /// ODTP 没有时隙、没有色码、订阅是显式命令；Homebrew 三者都要自己凑。
-    private var isOdtp: Bool { activeSettings.linkProtocol == .odtp }
+    /// ODTP 没有时隙、没有色码，订阅是显式命令；Homebrew 三者都要自己凑。
+    ///
+    /// YSF 模式下这两个分支都必须让位：YSF 既没有 DMR ID 鉴权，也没有订阅概念，
+    /// 一旦被当成 ODTP 处理就会去发 KEEP_ALIVE，把状态机搅乱。
+    private var isYsf: Bool { activeSettings.homeMode == .ysf }
+    private var isOdtp: Bool { !isYsf && activeSettings.linkProtocol == .odtp }
+    private var isHomebrew: Bool { !isYsf && activeSettings.linkProtocol != .odtp }
     private var connection: NWConnection?
     private var webSocket: URLSessionWebSocketTask?
     private var webSocketSession: URLSession?
@@ -200,11 +208,14 @@ final class HomebrewClient: ObservableObject {
         dmr_core_set_text(core, DMR_TEXT_PACKAGE, "EasyDMR_iOS")
 
         rw_core_set_version(rw, "EasyDMR 1.0")
+        // YSF 的组呼目的地址就是 "ALL"（反射器按它分发到所有接入的电台）
+        ysf_core_set_destination(ysf, "ALL")
     }
 
     deinit {
         dmr_core_destroy(core)
         rw_core_destroy(rw)
+        ysf_core_destroy(ysf)
     }
 
     // MARK: - 通话组
@@ -225,6 +236,13 @@ final class HomebrewClient: ObservableObject {
     /// 真正让 master 认这个组的，是随后那一次发射（`call(talkgroup:)`）。
     func setTalkgroup(_ talkgroup: Int) {
         let value = max(0, talkgroup)
+
+        // YSF 没有通话组：界面已经隐藏了选择器，这里只更新一下记录，不发任何东西。
+        if isYsf {
+            activeTalkgroup = value
+            activeSettings.talkgroup = value
+            return
+        }
         let previous = activeTalkgroup
         let changed = previous != value
 
@@ -295,6 +313,8 @@ final class HomebrewClient: ObservableObject {
     /// 这就是参考实现里「按一下话筒」那件事：DroidStar 的 `dmr_tgid_changed()`
     /// 只换了目的地址，真正让 master 认这个组的是随后那一帧语音头。
     func call(talkgroup: Int) {
+        // YSF 是「连上就收全部」的反射器，没有组可以订阅，也不该白发一次静音发射。
+        guard !isYsf else { return }
         guard talkgroup > 0, talkgroup <= 0xFF_FFFF else { return }
         guard state == .online else {
             append(.info, "还没连上服务器：连上后会自动向 TG \(talkgroup) 订阅一次")
@@ -340,6 +360,13 @@ final class HomebrewClient: ObservableObject {
 
     func beginPtt(talkgroup: Int) {
         guard !isTransmitting else { return }
+
+        // YSF 没有通话组、没有时隙色码：走另一条更短的发射路径。
+        if isYsf {
+            beginYsfPtt()
+            return
+        }
+
         guard state == .online else {
             append(.warning, "还没连上服务器，现在按 PTT 发不出去")
             return
@@ -418,6 +445,94 @@ final class HomebrewClient: ObservableObject {
 
     // MARK: - 发射（两条路径共用）
 
+    // MARK: - YSF 发射
+
+    /// YSF 的按住发射：语音头 → 每 100 ms 一包（5 帧）→ 结束符。
+    ///
+    /// 和 DMR 的 60 ms / 3 帧不同，YSF 的包本来就是 5 帧 100 ms，
+    /// 所以节拍也要跟着改（见 `startTxTimer(interval:)`）。
+    private func beginYsfPtt() {
+        guard state == .online else {
+            append(.warning, "还没连上反射器，现在按 PTT 发不出去")
+            return
+        }
+        guard txTimer == nil else {
+            append(.warning, "上一次发射还没收尾，等它发完再按")
+            return
+        }
+        guard !activeSettings.ysfCallsign.isEmpty else {
+            append(.warning, "呼号还没填，YSF 发不出呼号")
+            return
+        }
+
+        pttFrames.removeAll(keepingCapacity: true)
+        encoder.reset()
+        mic.gain = PttMicrophone.linearGain(db: activeSettings.micGainDb)
+
+        mic.onFrame = { [weak self] frame in
+            guard let self else { return }
+            self.pttFrames.append(frame)
+            if self.pttFrames.count > 50 {
+                self.pttFrames.removeFirst(self.pttFrames.count - 50)
+            }
+        }
+
+        do {
+            try mic.start()
+        } catch {
+            mic.onFrame = nil
+            append(.error, "麦克风打不开：\(error.localizedDescription)")
+            append(.info, "去「设置 → EasyDMR → 麦克风」确认权限；模拟器没有麦克风，只能在真机上试")
+            return
+        }
+
+        guard sendYsfHeader() else {
+            mic.onFrame = nil
+            mic.stop()
+            return
+        }
+
+        voice.isMuted = true
+        isTransmitting = true
+        txSeconds = 0
+        txStartedAt = Date()
+
+        txKind = .ptt
+        append(.tx, "🔴 按住发射 → YSF（呼号 \(activeSettings.ysfCallsign)，目的 ALL）")
+        startTxTimer(interval: 0.10)
+    }
+
+    /// YSF 语音头（155 字节）。
+    private func sendYsfHeader() -> Bool {
+        var buffer = [UInt8](repeating: 0, count: Int(YSF_PACKET_BYTES))
+        let n = ysf_core_tx_begin(ysf, &buffer, Int32(buffer.count))
+        guard n == Int(YSF_PACKET_BYTES) else {
+            append(.error, "核心没能生成 YSF 语音头（返回 \(n)）")
+            return false
+        }
+        send(Data(buffer[0..<Int(n)]), label: "YSF 语音头")
+        return true
+    }
+
+    /// 一包 YSF 语音：5 帧 PCM → 5 × 7 字节 AMBE → 155 字节。
+    private func sendYsfPacket(_ frames: [[Int16]]) {
+        var codec = [UInt8]()
+        codec.reserveCapacity(Int(YSF_CODEC_BYTES))
+        for index in 0..<Int(YSF_CODEC_FRAMES) {
+            let pcm = index < frames.count
+                ? frames[index]
+                : [Int16](repeating: 0, count: PttMicrophone.frameSamples)
+            codec.append(contentsOf: encoder.encodeStandardFrame(pcm))
+        }
+
+        var buffer = [UInt8](repeating: 0, count: Int(YSF_PACKET_BYTES))
+        let n = codec.withUnsafeBufferPointer { pointer in
+            ysf_core_tx_voice(ysf, pointer.baseAddress, &buffer, Int32(buffer.count))
+        }
+        guard n == Int(YSF_PACKET_BYTES) else { return }
+        send(Data(buffer[0..<Int(n)]), label: "YSF 语音包", quiet: true)
+    }
+
     /// 语音头。成功返回 true。
     private func sendHeader(talkgroup: Int, slot: UInt8, cc: UInt8) -> Bool {
         if isOdtp {
@@ -477,9 +592,9 @@ final class HomebrewClient: ObservableObject {
         sendBurst(codec, quiet: true)
     }
 
-    private func startTxTimer() {
+    private func startTxTimer(interval: TimeInterval = 0.06) {
         txTimer?.invalidate()
-        let timer = Timer(timeInterval: 0.06, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.txTick() }
         }
         // .common：手指按在按钮上时主 runloop 处于 tracking 模式，默认模式不会触发。
@@ -501,6 +616,22 @@ final class HomebrewClient: ObservableObject {
             if let started = txStartedAt {
                 txSeconds = Date().timeIntervalSince(started)
             }
+
+            if isYsf {
+                // 一包 5 帧；采集还没跟上就补静音，别让包序列断掉。
+                let need = Int(YSF_CODEC_FRAMES)
+                var frames = [[Int16]]()
+                if pttFrames.count >= need {
+                    frames = Array(pttFrames.prefix(need))
+                    pttFrames.removeFirst(need)
+                } else {
+                    frames = pttFrames
+                    pttFrames.removeAll(keepingCapacity: true)
+                }
+                sendYsfPacket(frames)
+                return
+            }
+
             var frames = [[Int16]]()
             if pttFrames.count >= 3 {
                 frames = Array(pttFrames.prefix(3))
@@ -521,6 +652,18 @@ final class HomebrewClient: ObservableObject {
     private func finishTransmission(label: String) {
         txTimer?.invalidate()
         txTimer = nil
+
+        if isYsf {
+            var buffer = [UInt8](repeating: 0, count: Int(YSF_PACKET_BYTES))
+            let n = ysf_core_tx_end(ysf, &buffer, Int32(buffer.count))
+            if n == Int(YSF_PACKET_BYTES) {
+                send(Data(buffer[0..<Int(n)]), label: "YSF 语音结束符")
+            }
+            append(.tx, label)
+            txKind = .subscribe
+            txBurstsLeft = 0
+            return
+        }
 
         if isOdtp {
             var buffer = [UInt8](repeating: 0, count: 32)
@@ -607,7 +750,7 @@ final class HomebrewClient: ObservableObject {
         if slotChanged || ccChanged {
             dmr_core_set_color_code(core, UInt8(min(15, max(0, settings.colorCode))))
         }
-        if !isOdtp, (slotChanged || ccChanged), state == .online, activeTalkgroup > 0, txTimer == nil {
+        if isHomebrew, (slotChanged || ccChanged), state == .online, activeTalkgroup > 0, txTimer == nil {
             lastSubscribeAt = nil
             let cc = min(15, max(0, settings.colorCode))
             let slot = settings.callSlot == 1 ? 1 : 2
@@ -664,6 +807,12 @@ final class HomebrewClient: ObservableObject {
         voice.volume = Float(settings.audioVolume)
         voice.isMuted = !settings.audioEnabled
         syncVoiceUI()
+
+        // YSF 是另一套协议：呼号登录、没有鉴权 / 配置包 / 订阅，校验项也完全不同。
+        if settings.homeMode == .ysf {
+            beginYsfConnect(settings)
+            return
+        }
 
         guard settings.dmrId > 0, !settings.sanitizedPassword.isEmpty else {
             state = .failed("请先在设置里填写 DMR ID 与密码")
@@ -725,6 +874,43 @@ final class HomebrewClient: ObservableObject {
         }
     }
 
+    // MARK: - YSF 连接
+
+    /// YSF 反射器的连接准备。和 DMR 那套比少了「ID + 密码 + 配置包 + 订阅」四件事，
+    /// 只要求一个呼号：登录包就是 "YSFP" + 呼号，服务器回一个 14 字节的包就算上线。
+    private func beginYsfConnect(_ settings: Settings) {
+        let callsign = settings.ysfCallsign
+        guard !callsign.isEmpty else {
+            state = .failed("YSF 需要呼号")
+            append(.error, "YSF 用呼号登录（最长 10 个字符），去「设置 → 身份」把呼号填上")
+            return
+        }
+
+        let host = settings.host.trimmingCharacters(in: .whitespaces)
+        guard !host.isEmpty else {
+            state = .failed("服务器地址是空的")
+            append(.error, "回首页点「服务器」挑一个 YSF 反射器，或手填域名（不要带 https:// 和端口）")
+            return
+        }
+        guard settings.port > 0, settings.port < 65_536 else {
+            state = .failed("端口无效：\(settings.port)")
+            append(.error, "YSF 反射器的端口就是服务器列表里那个数字（常见 42000）")
+            return
+        }
+
+        ysf_core_set_callsign(ysf, callsign)
+        ysf_core_set_destination(ysf, "ALL")
+        ysf_core_reset(ysf)
+
+        state = .connecting
+        append(.info, "开始连接 \(host):\(settings.port)（YSF 反射器）")
+        append(.info, "登录呼号 \(callsign)（YSF 用呼号，不是 DMR ID）")
+        append(.info, "握手：YSFP → 服务器回 14 字节（YSF 没有鉴权、没有配置包、也没有订阅）")
+
+        // YSF 只有 UDP，没有 WebSocket 网关那回事。
+        startUDP()
+    }
+
     /// 把设置灌进 C++ 核心。数值和字符串分开传，避免 Swift 侧嵌套 withCString。
     private func applyCoreConfiguration(_ settings: Settings) {
         var setup = dmr_setup_t()
@@ -741,6 +927,9 @@ final class HomebrewClient: ObservableObject {
 
         // ODTP 的身份是「7 位 DMR ID + SelfCare 密码」，没有热点后缀的概念
         rw_core_set_identity(rw, UInt32(clamping: settings.dmrId), settings.sanitizedPassword)
+
+        // YSF 的身份只有一个呼号（心跳、登出、每个发包的源字段都用它）
+        ysf_core_set_callsign(ysf, settings.ysfCallsign)
     }
 
     func disconnect() {
@@ -872,10 +1061,25 @@ final class HomebrewClient: ObservableObject {
     private func sendLogin() {
         loginAttempt += 1
         guard loginAttempt <= 3 else {
-            fail(isOdtp ? "服务器连续 3 次没有回应 KEEP_ALIVE（ODTP）" : "服务器连续 3 次没有回应登录请求（RPTL）")
+            fail(isYsf ? "YSF 反射器连续 3 次没有回应 YSFP"
+                       : isOdtp ? "服务器连续 3 次没有回应 KEEP_ALIVE（ODTP）"
+                                : "服务器连续 3 次没有回应登录请求（RPTL）")
             return
         }
         state = .loggingIn
+
+        if isYsf {
+            var buffer = [UInt8](repeating: 0, count: 16)
+            let n = ysf_core_login(ysf, &buffer, Int32(buffer.count))
+            guard n == 14 else {
+                fail("协议核心没能生成 YSFP 登录包（呼号 \(activeSettings.ysfCallsign)）", allowRetry: false)
+                return
+            }
+            append(.info, "→ YSFP 登录（第 \(loginAttempt) 次），呼号 \(activeSettings.ysfCallsign)")
+            send(Data(buffer[0..<14]), label: "YSFP")
+            armLoginTimeout()
+            return
+        }
 
         if isOdtp {
             var buffer = [UInt8](repeating: 0, count: 128)
@@ -902,6 +1106,15 @@ final class HomebrewClient: ObservableObject {
     }
 
     private func sendPing() {
+        if isYsf {
+            var buffer = [UInt8](repeating: 0, count: 16)
+            let n = ysf_core_ping(ysf, &buffer, Int32(buffer.count))
+            guard n == 14 else { return }
+            // YSF 的心跳就是再发一次 YSFP，和登录包一模一样；每 5 秒一条会把日志刷满，静默发。
+            send(Data(buffer[0..<14]), label: "YSFP", quiet: true)
+            return
+        }
+
         if isOdtp {
             var buffer = [UInt8](repeating: 0, count: 128)
             let n = rw_core_keepalive(rw, &buffer, Int32(buffer.count))
@@ -917,6 +1130,16 @@ final class HomebrewClient: ObservableObject {
     }
 
     private func sendLogout() {
+        if isYsf {
+            // 不发 YSFU 的话，反射器要等心跳超时才把呼号从在列表里摘掉，
+            // 这段时间别人看到你还是「在线」。
+            var buffer = [UInt8](repeating: 0, count: 16)
+            let n = ysf_core_logout(ysf, &buffer, Int32(buffer.count))
+            guard n > 0 else { return }
+            send(Data(buffer[0..<Int(n)]), label: "YSFU 登出")
+            return
+        }
+
         if isOdtp {
             var buffer = [UInt8](repeating: 0, count: 32)
             let n = rw_core_close(rw, &buffer, Int32(buffer.count))
@@ -935,6 +1158,11 @@ final class HomebrewClient: ObservableObject {
 
     private func handleInbound(_ data: Data) {
         lastServerPacket = Date()
+
+        if isYsf {
+            handleYsfInbound(data)
+            return
+        }
 
         if isOdtp {
             handleRewindInbound(data)
@@ -976,6 +1204,103 @@ final class HomebrewClient: ObservableObject {
 
         default:
             logUnknown(data)
+        }
+    }
+
+    // MARK: - YSF 入站
+
+    /// 把 C 结构体里的定长呼号字段转成字符串（去掉尾部空格与 0）。
+    private static func ysfText<T>(_ field: T) -> String {
+        var value = field
+        return withUnsafeBytes(of: &value) { raw in
+            let bytes = raw.prefix(10).prefix { $0 != 0 }
+            return String(decoding: bytes, as: UTF8.self)
+                .trimmingCharacters(in: .whitespaces)
+        }
+    }
+
+    private func handleYsfInbound(_ data: Data) {
+        var result = ysf_result_t()
+        let event = data.withUnsafeBytes { raw -> Int32 in
+            let pointer = raw.baseAddress?.assumingMemoryBound(to: UInt8.self)
+            return ysf_core_receive(ysf, pointer, Int32(data.count), &result)
+        }
+
+        switch event {
+        case YSF_EVT_CONNECTED:
+            append(.info, "← 收到反射器回应，YSF 链路已建立")
+            goOnline()
+
+        case YSF_EVT_PONG:
+            // 反射器的心跳回应，每 5 秒一次，不刷日志。
+            break
+
+        case YSF_EVT_RX_HEADER, YSF_EVT_RX_VOICE, YSF_EVT_RX_END, YSF_EVT_RX_OTHER:
+            handleYsfFrame(event: event, result: result)
+
+        default:
+            logUnknown(data)
+        }
+    }
+
+    // MARK: - YSF 帧处理
+
+    /// YSF 的一包 = 5 个 20 ms 帧（100 ms）。语音头 / 结束符由 FICH 的 FI 字段区分，
+    /// 源 / 目的呼号在语音头的 DCH 里（后续帧的 DCH 只在 FN=0/1 时带目的 / 源）。
+    ///
+    /// 和 DMR 的差别：没有时隙、没有数字 ID，所以 `src / dst` 一律填 0，
+    /// 呼号放在 `name`，目的呼号放在 `channel`（界面优先显示这两个）。
+    private func handleYsfFrame(event: Int32, result: ysf_result_t) {
+        rxFrames += 1
+        lastHeard = Date()
+        streamLastFrameAt = Date()
+        talkgroupAliveAt = Date()
+
+        let source = Self.ysfText(result.src)
+        let dest = Self.ysfText(result.dst)
+        let gateway = Self.ysfText(result.gw)
+        let key = "ysf-\(source)-\(dest)"
+
+        switch event {
+        case YSF_EVT_RX_HEADER:
+            beginStream(key: key, src: 0, dst: 0, slot: 1, isPrivate: false, at: Date(),
+                        name: source, channel: dest)
+            append(.rx, "YSF 通话开始 \(source) → \(dest)（网关 \(gateway)）")
+
+        case YSF_EVT_RX_END:
+            if let index = calls.firstIndex(where: { $0.id == key && $0.isActive }) {
+                closeCall(index, at: Date())
+                append(.rx, "YSF 通话结束 \(source)（\(Fmt.duration(calls[index].duration))，\(calls[index].frames) 包）")
+            }
+            endStream(reason: nil)
+
+        case YSF_EVT_RX_VOICE:
+            if streamKey != key {
+                // 连上时对方已经在说，或者语音头丢了：直接用这一包接上。
+                beginStream(key: key, src: 0, dst: 0, slot: 1, isPrivate: false, at: Date(),
+                            name: source, channel: dest)
+            }
+            let codec = withUnsafeBytes(of: result.codec) { raw in
+                Array(raw.prefix(Int(YSF_CODEC_BYTES)))
+            }
+            voice.pushYsf(key: key, codec: codec)
+            reportAudioErrorOnce()
+            syncVoiceUI()
+            trackSpeaker(src: 0, dst: 0, slot: 1, isPrivate: false, at: Date(),
+                         name: source, channel: dest)
+
+            if let index = calls.firstIndex(where: { $0.id == key && $0.isActive }) {
+                calls[index].frames += 1
+                calls[index].updatedAt = Date()
+            } else {
+                calls.insert(makeCall(src: 0, dst: 0, slot: 1, isPrivate: false, key: key,
+                                      name: source, channel: dest), at: 0)
+                trimCalls()
+            }
+
+        default:
+            // 数据帧（DT=1）与全速率语音（DT=3）不处理：后者要另一套 4400 bps 声码器。
+            append(.rx, "← YSF 控制帧 FI=\(result.fi) DT=\(result.dt)，不解码")
         }
     }
 
@@ -1162,13 +1487,16 @@ final class HomebrewClient: ObservableObject {
         loginAttempt = 0
         refusals = 0
         append(.info, "✅ 已登录，进入在线状态，每 \(Int(pingInterval)) 秒发一次"
-            + (isOdtp ? " KEEP_ALIVE" : " RPTPING"))
+            + (isYsf ? " YSFP" : isOdtp ? " KEEP_ALIVE" : " RPTPING"))
         startTimers()
 
         // 连上就把音频栈点起来（含循环静音保活），不要等第一帧语音。
         // 否则「刚连上还没人说话就切后台」这段里引擎没渲染过音频，系统会把 App 挂起，
         // 之后别人再说话就收不到了——这就是以前「后台听不到」的根因。
         voice.startListening()
+
+        // YSF 没有订阅、没有设备库可核对（那套是 BrandMeister 的 REST 接口）。
+        guard !isYsf else { return }
 
         verifyHotspotRegistration()
 
@@ -1388,7 +1716,8 @@ final class HomebrewClient: ObservableObject {
         append(.warning, "有语音包进来但放不出声：先看手机侧边静音键 / 音量，再确认没有别的 App 占用麦克风或通话通道")
     }
 
-    private func beginStream(key: String, src: Int, dst: Int, slot: Int, isPrivate: Bool, at date: Date) {
+    private func beginStream(key: String, src: Int, dst: Int, slot: Int, isPrivate: Bool, at date: Date,
+                             name: String? = nil, channel: String? = nil) {
         if streamKey != key {
             if let previous = streamKey {
                 voice.end(key: previous)
@@ -1398,12 +1727,14 @@ final class HomebrewClient: ObservableObject {
             if let index = calls.firstIndex(where: { $0.id == key && $0.isActive }) {
                 closeCall(index, at: date)
             }
-            calls.insert(makeCall(src: src, dst: dst, slot: slot, isPrivate: isPrivate, key: key), at: 0)
+            calls.insert(makeCall(src: src, dst: dst, slot: slot, isPrivate: isPrivate, key: key,
+                                  name: name, channel: channel), at: 0)
             trimCalls()
             voice.begin(key: key)
         }
         streamLastFrameAt = date
-        trackSpeaker(src: src, dst: dst, slot: slot, isPrivate: isPrivate, at: date)
+        trackSpeaker(src: src, dst: dst, slot: slot, isPrivate: isPrivate, at: date,
+                     name: name, channel: channel)
         syncVoiceUI()
     }
 
@@ -1425,22 +1756,29 @@ final class HomebrewClient: ObservableObject {
         syncVoiceUI()
     }
 
-    private func trackSpeaker(src: Int, dst: Int, slot: Int, isPrivate: Bool, at date: Date) {
+    private func trackSpeaker(src: Int, dst: Int, slot: Int, isPrivate: Bool, at date: Date,
+                              name: String? = nil, channel: String? = nil) {
         if var speaker = currentSpeaker,
            speaker.src == src, speaker.dst == dst, speaker.slot == slot, speaker.endedAt == nil,
+           speaker.name == name,
            date.timeIntervalSince(speaker.lastVoiceAt) < 3 {
             speaker.lastVoiceAt = date
+            speaker.name = name
+            speaker.channel = channel
             currentSpeaker = speaker
             return
         }
         currentSpeaker = ActiveSpeaker(src: src, dst: dst, slot: slot, isPrivate: isPrivate,
-                                       startedAt: date, lastVoiceAt: date, endedAt: nil)
+                                       startedAt: date, lastVoiceAt: date, endedAt: nil,
+                                       name: name, channel: channel)
     }
 
-    private func makeCall(src: Int, dst: Int, slot: Int, isPrivate: Bool, key: String) -> LiveCall {
+    private func makeCall(src: Int, dst: Int, slot: Int, isPrivate: Bool, key: String,
+                          name: String? = nil, channel: String? = nil) -> LiveCall {
         let now = Date()
         return LiveCall(id: key, src: src, dst: dst, slot: slot, isPrivate: isPrivate,
-                        frames: 1, startedAt: now, updatedAt: now, isActive: true)
+                        frames: 1, startedAt: now, updatedAt: now, isActive: true,
+                        name: name, channel: channel)
     }
 
     /// 把一条通话从「进行中」收掉，并落进本地日志库。
@@ -1478,6 +1816,10 @@ final class HomebrewClient: ObservableObject {
     /// 这一行是排查「收不到语音」最关键的证据：摘要里就有选中的组 = 订阅是好的，
     /// 只是刚才没人说话；全是别的组 = 订阅没落在这个热点上。
     private func reportTraffic() {
+        // YSF 的流量统计不是按「组@时隙」记的（没有时隙、没有组号），这里不报，
+        // 否则安静下来 30 秒就会冒出一条「没收到任何 DMRD」的误导性提醒。
+        guard !isYsf else { return }
+
         guard trafficTotal > 0 else {
             let idle = Date().timeIntervalSince(lastTrafficReport)
             guard idle >= 30, !warnedNoTraffic else { return }
@@ -1515,7 +1857,7 @@ final class HomebrewClient: ObservableObject {
     /// 动态 TG 静默太久会被 BrandMeister 释放，静默超时就再订一次。
     /// ODTP 的订阅是账号级的，登着就一直有效，不需要这套续订。
     private func renewTalkgroupIfIdle() {
-        guard !isOdtp else { return }
+        guard !isOdtp, !isYsf else { return }
         let target = serverTalkgroup ?? activeTalkgroup
         guard target > 0, state == .online, txTimer == nil else { return }
         guard activeSettings.autoCallOnConnect, activeSettings.autoRenewTalkgroup else { return }
@@ -1535,8 +1877,8 @@ final class HomebrewClient: ObservableObject {
 
     private func verifyHotspotRegistration() {
         // ODTP 用的是 7 位 DMR ID，BM 设备库里那条 9 位热点记录跟它对不上，
-        // 查了只会误导，直接跳过。
-        guard !isOdtp else { return }
+        // 查了只会误导，直接跳过。YSF 连的是反射器，跟 BM 更没关系。
+        guard !isOdtp, !isYsf else { return }
 
         let id = activeSettings.hotspotId
         guard activeSettings.host.lowercased().contains("brandmeister") else { return }
@@ -1622,6 +1964,7 @@ final class HomebrewClient: ObservableObject {
         txBurstsLeft = 0
         dmr_core_reset(core)
         rw_core_reset(rw)
+        ysf_core_reset(ysf)
 
         mic.onFrame = nil
         mic.stop()

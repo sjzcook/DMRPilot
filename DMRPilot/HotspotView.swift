@@ -283,10 +283,31 @@ struct HotspotView: View {
     }
 
     private var canTransmit: Bool {
-        hotspot.state == .online && app.settings.talkgroup > 0
+        // YSF 不需要通话组，只要有呼号就能发。
+        if app.settings.homeMode == .ysf {
+            return hotspot.state == .online && !app.settings.ysfCallsign.isEmpty
+        }
+        return hotspot.state == .online && app.settings.talkgroup > 0
     }
 
     private var pttStatusText: String {
+        // YSF 没有通话组：目的固定是 ALL，提示里也不该出现 TG 号。
+        if app.settings.homeMode == .ysf {
+            if hotspot.isTransmitting {
+                return String(format: "正在发射 %.1f 秒", hotspot.txSeconds) + " · YSF"
+            }
+            if pttDenied {
+                return "麦克风没授权：设置 → EasyDMR → 麦克风"
+            }
+            if hotspot.state != .online {
+                return "连上反射器后才能发射"
+            }
+            if app.settings.ysfCallsign.isEmpty {
+                return "先在设置里填呼号，YSF 才能发射"
+            }
+            return "按住说话 · YSF（\(app.settings.ysfCallsign)）"
+        }
+
         if hotspot.isTransmitting {
             return String(format: "正在发射 %.1f 秒", hotspot.txSeconds)
                 + " · TG \(app.settings.talkgroup)"
@@ -359,14 +380,16 @@ struct HotspotView: View {
     private func speakerRow(_ item: SpeakerItem, at now: Date) -> some View {
         let speaker = item.speaker
         let speaking = item.isSpeaking(at: now)
-        let name = speakerName(speaker.src)
-        let place = speakerPlace(speaker.src)
+        // YSF 的源是呼号（协议里没有数字 ID），本地库里查不到，直接用协议带下来的那个。
+        let isYsfSpeaker = !(speaker.name ?? "").isEmpty
+        let name = isYsfSpeaker ? nil : speakerName(speaker.src)
+        let place = isYsfSpeaker ? nil : speakerPlace(speaker.src)
 
         return HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 // 第一行：呼号 + 姓名
                 HStack(spacing: 6) {
-                    Text(speakerCallsign(speaker.src))
+                    Text(isYsfSpeaker ? (speaker.name ?? "") : speakerCallsign(speaker.src))
                         .font(.subheadline.weight(.semibold))
                         .lineLimit(1)
 
@@ -476,6 +499,11 @@ struct HotspotView: View {
     /// `通话组名 · TG 46001 · TS2`；单呼另说。和日志页的 `channelText` 同一套写法。
     private func speakerChannel(_ speaker: ActiveSpeaker) -> String {
         var parts: [String] = []
+
+        // YSF：目的就是呼号（组呼固定是 ALL），没有通话组号也没有时隙。
+        if let channel = speaker.channel, !channel.isEmpty {
+            return "YSF · \(channel)"
+        }
 
         if speaker.isPrivate {
             parts.append("单呼 \(speaker.src) → \(speaker.dst)")

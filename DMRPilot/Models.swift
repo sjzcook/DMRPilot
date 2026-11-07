@@ -318,6 +318,15 @@ struct Settings: Codable, Equatable {
         return String(allowed.prefix(8))
     }
 
+    /// YSF 用的呼号：10 个字符宽（YSF 包头里的呼号字段就是 10 字节），
+    /// 比 RPTC 的 8 字节宽松，并允许 `-`（有些反射器用 BG7ABC-7 这种 SSID 写法）。
+    var ysfCallsign: String {
+        let allowed = callsign
+            .uppercased()
+            .filter { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "/") }
+        return String(allowed.prefix(10))
+    }
+
     /// 真正参与 SHA256 的密码。
     /// 去掉粘贴带进来的首尾空白，并把 iOS 智能标点换成 ASCII——
     /// 弯引号（’ “ ”）和 ASCII 引号是两个不同字节，差一个就 MSTNAK。
@@ -454,6 +463,11 @@ struct LiveCall: Identifiable, Equatable {
     var startedAt: Date
     var updatedAt: Date
     var isActive: Bool
+    /// YSF 这类「身份是字符串」的协议用：源呼号直接带下来，不用再查库。
+    /// DMR 的记录这里是 nil，仍按 `src` 走呼号库。
+    var name: String? = nil
+    /// 频道那一行的显示文本（YSF 是目的呼号，比如 "ALL" 或某人的呼号）。
+    var channel: String? = nil
 
     var duration: TimeInterval { max(0, updatedAt.timeIntervalSince(startedAt)) }
     var callTypeText: String { isPrivate ? "单呼" : "组呼" }
@@ -474,6 +488,10 @@ struct ActiveSpeaker: Equatable {
     var lastVoiceAt: Date
     /// 收到语音结束符的时间；nil 表示还没收到。
     var endedAt: Date?
+    /// YSF 的源呼号（协议里本来就没有数字 ID）。DMR 下是 nil。
+    var name: String? = nil
+    /// 频道那一行的显示文本；nil 时按 DMR 的「通话组 + 时隙」拼。
+    var channel: String? = nil
 
     /// 3 秒内还有语音帧才算正在说话。
     ///

@@ -452,10 +452,11 @@ final class CallLogStore: ObservableObject {
                                 startedAt: call.startedAt,
                                 endedAt: call.updatedAt,
                                 frames: call.frames,
-                                callsign: user?.callsign,
+                                // YSF 的呼号是协议直接带下来的（`name`），本地库查不到
+                                callsign: call.name ?? user?.callsign,
                                 name: Self.clean(user?.fullName),
                                 city: Self.clean(user?.placeText),
-                                dstName: app?.name(for: call.dst))
+                                dstName: call.channel ?? app?.name(for: call.dst))
 
         db.insert(record) { [weak self] in
             Task { @MainActor [weak self] in

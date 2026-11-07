@@ -157,7 +157,7 @@ final class LiveActivityController {
             // 用「现在 - 已发射秒数」反推起点，交给 `Text(timerInterval:)` 自己走秒，
             // 这样发射中的计时不需要我们每秒推一次内容。
             txStartedAt: hotspot.isTransmitting ? Date().addingTimeInterval(-hotspot.txSeconds) : nil,
-            speakerLabel: speakerId.flatMap { nameResolver?($0) },
+            speakerLabel: hotspot.currentSpeaker?.name ?? speakerId.flatMap { nameResolver?($0) },
             speakerId: speakerId,
             rxFrames: hotspot.rxFrames
         )
