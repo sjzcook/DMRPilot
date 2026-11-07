@@ -310,8 +310,9 @@ struct HotspotView: View {
     /// 组呼 / 单呼切换。外形和导航栏的 DMR / YSF 完全一致（同一个 `selectorLabel`），
     /// 只是字号跟着这一块缩小一号。
     ///
-    /// 绑定走 `AppState.setCallMode` 而不是直接写设置：它还要负责「切换后断开连接」
-    /// 和收尾正在发射的那一句。
+    /// 绑定走 `AppState.setCallMode` 而不是直接写设置：切回组呼时它要顺手向当前
+    /// 通话组补一次订阅（单呼期间动态 TG 可能已经被服务器释放了）。
+    /// 切换不断开连接——组呼 / 单呼只差一个 FLCO，会话照旧用着。
     private var callModePicker: some View {
         Menu {
             ForEach(CallMode.allCases) { mode in

@@ -154,28 +154,21 @@ final class AppState: ObservableObject {
 
     /// 切换首页 PTT 的呼叫类型（组呼 ↔ 单呼）。
     ///
-    /// 只改「发到哪」，不碰接收：接收侧仍然是服务器推什么就播什么。
+    /// 只改「发到哪」，不碰接收、也不碰连接：接收侧仍然是服务器推什么就播什么，
+    /// 会话照旧连着——组呼 / 单呼只差一个 FLCO，换个目的地址而已，断线重连纯属多余。
     ///
-    /// 切换之后**直接断开**，既不替用户重连，也不再自动补订阅：
-    /// 组订阅是服务器那边记着的，单呼期间留着组订阅，服务器会继续把这台热点订阅的
-    /// 组语音推下来；而切回组呼时补一次订阅（`hotspot.call`）本质上是一整个超帧的
-    /// **真实发射**，用户看到的是「只换了个模式，电台自己发了一次」。
-    ///
-    /// 断开之后由用户按「连接」，用新模式的干净会话重新上线；组呼模式连上后
-    /// `autoCallOnConnect` 会照旧补订阅，所以断开不会让组呼失去订阅。
+    /// 切回组呼时主动向当前通话组再订阅一次 —— 单呼期间服务器的动态订阅可能已经
+    /// 静默超时被释放（BM 大约 10 分钟），不重发一次的话切回来会「什么都没有」，
+    /// 看上去像切坏了。走的是和选择器完全相同的 `call(talkgroup:)` 入口，
+    /// 没在线时它只记一条日志，交给连上后的 `autoCallOnConnect` 补。
     func setCallMode(_ mode: CallMode) {
         guard settings.callMode != mode else { return }
-
-        // 正在发射就先收尾：带着「正在发射」的状态断开，PTT 圆会卡在按下态。
-        if hotspot.isTransmitting {
-            hotspot.endPtt()
-        }
-
         settings.callMode = mode
 
-        if hotspot.hasSession {
-            disconnect()
-        }
+        guard mode == .group else { return }
+        let talkgroup = settings.talkgroup
+        guard talkgroup > 0 else { return }
+        hotspot.call(talkgroup: talkgroup)
     }
 
     // MARK: - 通话组
