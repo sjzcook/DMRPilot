@@ -37,6 +37,15 @@ final class VoicePipeline {
     /// 音频会话/引擎起不来的原因，正常时为 nil。
     var audioError: String? { player.audioSessionError }
 
+    /// 播放链路的实时状态，给日志用（一行）。
+    var diagnostics: String { player.diagnostics }
+
+    /// 播放链路自己报告的事件（重建 / 自愈），由上层转写进日志。
+    var onEvent: (@MainActor (String) -> Void)? {
+        get { player.onEvent }
+        set { player.onEvent = newValue }
+    }
+
     /// 0…1
     var volume: Float = 1.0 {
         didSet { player.volume = volume }
@@ -63,6 +72,12 @@ final class VoicePipeline {
     private let player = VoicePlayer()
     private var decoders: [String: DMRVoiceDecoder] = [:]
     private var currentKey: String?
+    /// 当前这一路最后一次有语音包的时刻。
+    ///
+    /// 用来判断「占着播放位的那一路是不是已经死了」。以前别的流进来只会被丢掉，
+    /// 万一 currentKey 指向一条再也不会来包的流（发射打断、流号换了、看门狗没触发），
+    /// 后面所有语音都会被静默丢掉——听着就是「服务器在推、却一直没有声音」。
+    private var lastVoiceAt: Date?
 
     /// 同时保留的解码器上限。BrandMeister 上一般是单流，给 4 路已经很宽裕。
     private static let maxStreams = 4
@@ -84,6 +99,19 @@ final class VoicePipeline {
         player.stop()
     }
 
+    /// 发射收尾：解除静音，并把播放链路**整条重建**一次。
+    ///
+    /// 不能只把 `isMuted` 翻回 false 就完了。发射期间会话被重新激活过、第二个引擎
+    /// （麦克风）起停过，播放引擎在系统那边已经被停掉过一次；而 `engine.isRunning`
+    /// 在这个场景下经常还写着 true —— 它一旦骗人，后面的缓冲就只会堆在队列里不出声。
+    /// 所以松手后不做试探，直接重建：一次 PTT 一趟，代价可以忽略。
+    func endTransmission(audioEnabled: Bool) {
+        isMuted = !audioEnabled
+        guard audioEnabled else { return }
+        player.resumeAfterPtt()
+        isPlaying = player.isActive
+    }
+
     /// 通话开始（收到语音头）
     func begin(key: String) {
         // 换了一路：把上一路还没播完的尾巴丢掉，否则新通话要等旧音频播完才出声
@@ -93,6 +121,7 @@ final class VoicePipeline {
 
         currentKey = key
         activeKey = key
+        lastVoiceAt = Date()
         decoder(for: key).reset()
         level = 0
         if !isMuted {
@@ -107,6 +136,7 @@ final class VoicePipeline {
         guard currentKey == key else { return }
         currentKey = nil
         activeKey = nil
+        lastVoiceAt = nil
         level = 0
         isPlaying = false
         player.flush()
@@ -127,6 +157,7 @@ final class VoicePipeline {
         decoders.removeAll()
         currentKey = nil
         activeKey = nil
+        lastVoiceAt = nil
         level = 0
         isPlaying = false
         decodedPackets = 0
@@ -142,10 +173,13 @@ final class VoicePipeline {
     /// 如果在“接管”时 reset，一路就会被每包重置、永远出不了声。
     /// 重置只发生在语音头（`begin`）和新建解码器的时候。
     func push(key: String, codec: [UInt8]) {
-        // 没有当前通话时（比如刚连上就撞进通话中间），由第一个到达的流占位
-        if currentKey == nil {
+        let now = Date()
+        // 播放位的占位规则见 `shouldTakeOver`：没占位、就是自己、或者占位那一路
+        // 已经半秒没来包了，都算「该你出声」。
+        if currentKey != key, shouldTakeOver(key, at: now) {
             currentKey = key
             activeKey = key
+            level = 0
         }
 
         let decoder = decoder(for: key)
@@ -166,6 +200,7 @@ final class VoicePipeline {
         // 否则两路交错到达时电平会在真值和 0 之间来回跳。
         guard key == currentKey else { return }
 
+        lastVoiceAt = now
         player.start()
         player.enqueue(pcm)
         level = Self.peakLevel(pcm)
@@ -179,9 +214,11 @@ final class VoicePipeline {
     /// 和 DMR 的 `push` 差别只在「帧更小、一包更多」：YSF 每帧 49 bit 且没有
     /// DMR 那层空口 FEC，所以逐帧走 `decode(frame7:)`，攒够一包再入队。
     func pushYsf(key: String, codec: [UInt8]) {
-        if currentKey == nil {
+        let now = Date()
+        if currentKey != key, shouldTakeOver(key, at: now) {
             currentKey = key
             activeKey = key
+            level = 0
         }
 
         let decoder = decoder(for: key)
@@ -210,6 +247,7 @@ final class VoicePipeline {
 
         guard key == currentKey else { return }
 
+        lastVoiceAt = now
         player.start()
         player.enqueue(pcm)
         level = Self.peakLevel(pcm)
@@ -218,6 +256,24 @@ final class VoicePipeline {
 
     /// 一包 YSF 语音的采样数：5 × 160
     private static let samplesPerYsfPacket = 800
+
+    /// 当前占着播放位的那一路多久没来包，就允许别的流接手（秒）。
+    ///
+    /// DMR 一个通话组同时只有一路语音，两路交错只可能是「上一路还没收尾」。
+    /// 半秒（12 个包）足够判死，又不至于把正常的时隙交错误当成换台。
+    private static let staleStreamTimeout: TimeInterval = 0.5
+
+    /// 这个流现在能不能出声。
+    ///
+    /// 以前只判 `currentKey == key`：一旦占位的那一路再也不会来包（发射把它打断、
+    /// 服务器换了流号、看门狗没来得及触发），后面所有语音都会被静默丢掉，
+    /// 现场看起来就是「服务器还在推，但一直没有声音」，只有断开重连才能恢复。
+    private func shouldTakeOver(_ key: String, at now: Date) -> Bool {
+        guard let current = currentKey else { return true }
+        if current == key { return true }
+        guard let last = lastVoiceAt else { return true }
+        return now.timeIntervalSince(last) > Self.staleStreamTimeout
+    }
 
     private func decoder(for key: String) -> DMRVoiceDecoder {
         if let existing = decoders[key] { return existing }

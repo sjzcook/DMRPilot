@@ -225,6 +225,11 @@ final class HomebrewClient: ObservableObject {
 
     init() {
         voice.volume = Float(activeSettings.audioVolume)
+        // 播放链路自己做的自愈（重建 / 队列卡死）都写进日志：现场复现「没声音」时，
+        // 这几行能直接分辨是引擎被系统停了、还是根本没走到解码。
+        voice.onEvent = { [weak self] text in
+            self?.append(.info, text)
+        }
         // RPTC 里那几项资料字段，DroidStar 是写死的，这里给个正经值。
         dmr_core_set_text(core, DMR_TEXT_LOCATION, "EasyDMR")
         dmr_core_set_text(core, DMR_TEXT_DESCRIPTION, "EasyDMR iOS")
@@ -486,7 +491,11 @@ final class HomebrewClient: ObservableObject {
         // 发射把对方的呼叫打断了，服务器那边这条连接可能就不再推语音了 —— 收尾时
         // 把收听重新挂回去（只在「按之前确实在收」的时候做）。
         restoreReceptionAfterPtt()
-        voice.isMuted = !activeSettings.audioEnabled
+        // 解静音 + 把播放链路整条重建。只翻 `isMuted` 是不够的：发射期间播放引擎
+        // 被系统停过一次，`engine.isRunning` 常常还写着 true（僵尸态），
+        // 缓冲排进去既不出声也不回调，队列堆满之后每个包都被静默丢掉。
+        voice.endTransmission(audioEnabled: activeSettings.audioEnabled)
+        append(.info, "🎧 收尾检查：\(voice.diagnostics)")
         txStartedAt = nil
     }
 

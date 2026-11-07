@@ -6,10 +6,26 @@
 //  AVAudioEngine 负责把 8 kHz 升采样到硬件采样率，再送扬声器。
 //
 //  设计要点：
-//  - 引擎只在第一次 start() 时 attach/connect 一次，之后反复 start/stop 不会重复连接；
+//  - 引擎只在重建时 attach/connect 一次，之后反复 start/stop 不会重复连接；
 //  - 每个 buffer 排进去时 pendingFrames 加、播完回调时减，积压超过 1 秒就丢新包，
-//    否则网络抖动之后延迟会一路累积，听起来越来越“慢半拍”；
+//    否则网络抖动之后延迟会一路累积，听起来越来越「慢半拍」；
 //  - flush() 用于通话结束，直接丢掉还没播的尾巴，不做淡出。
+//
+//  ── 为什么这里有一大段「自愈」逻辑 ──────────────────────────────────
+//
+//  按下 PTT 时 `PttMicrophone` 会起第二个 AVAudioEngine 去要输入 IO，系统的音频硬件
+//  配置随之改变，**第一个（播放）引擎会被停掉**。而 AVAudioEngine 不会自己恢复，
+//  所以这里必须能重建。
+//
+//  踩过的坑：判断「引擎还在不在跑」不能只看标志位。
+//    - 第一版看的是自己的 `isRunning`：引擎死了它还写着 true，于是永远不重建；
+//    - 第二版改看 `engine.isRunning`：配置变更之后它也**可能仍是 true**，
+//      此时渲染图已经断了，排进去的缓冲既不播完也不回调，队列一路堆到上限后
+//      每个包都被静默丢掉 —— 现象就是「服务器在推、电平也在动，但一点声音都没有，
+//      而且没有任何报错」。
+//
+//  唯一可靠的判据是「排进去的缓冲到底播完了没有」，也就是 `lastDrainedAt`。
+//  队列有积压却长时间没有一个缓冲播完，就判僵尸，整条重建。
 //
 
 import AVFoundation
@@ -33,32 +49,61 @@ final class VoicePlayer {
     /// 最近一次配置 AVAudioSession 的失败原因，成功时为 nil。
     /// 这段失败以前被静默吞掉，症状就是「有通话但完全没声音」，所以留出来给界面提示。
     private(set) var audioSessionError: String?
+
+    /// 重建链路时的诊断行，交给上层写日志。首次启动不记，只有「本来在跑、后来重建」才记。
+    var onEvent: (@MainActor (String) -> Void)?
+
     /// 引擎启动失败次数。push 每个语音包都会试着调 start()，
     /// 如果硬件真的起不来，不拦住就会 25 次/秒反复尝试。
     private var startFailures = 0
     /// 最近一次启动失败的时刻。连续失败达到上限后不再逐包重试，但也不能就此认死：
-    /// 来电 / 其他 App 抢占音频硬件之后，等它让出来就应当自己恢复（见 `start()`）。
+    /// 来电 / 其他 App 抢占音频硬件之后，等它让出来就应当自己恢复（见 `canAttemptStart`）。
     private var lastStartFailureAt: Date?
 
     /// 系统报过配置变更、还没重建过。
-    ///
-    /// `engine.isRunning` 在配置变更之后不一定立刻变 false（有时会滞后一拍），
-    /// 只靠它判断会出现「看着还在跑、其实早就不出声了」，所以再让通知兜一层。
     private var needsRebuild = false
     private var configObserver: NSObjectProtocol?
+
+    /// 队列里最后一个缓冲**真正播完**的时刻。
+    ///
+    /// 这是判断「引擎在跑但没有出声」的唯一可靠依据：`isRunning` 和
+    /// `engine.isRunning` 都只是各自记的一笔账，配置变更之后可能都还是 true。
+    private var lastDrainedAt: Date?
+    /// 最近一次整条重建的时刻。用来压掉「重建过程本身引起的」配置变更通知，
+    /// 否则重建 → 通知 → 再重建，来回打架，每个包都被丢掉一轮。
+    private var lastRebuildAt: Date?
 
     /// 队列里积压超过这个采样数就不再入队，避免延迟越拖越长（8000 = 1 秒）
     private let maxPendingFrames = 8000
     private let maxStartFailures = 3
     /// 连续失败之后的复试间隔（秒）
     private static let retryInterval: TimeInterval = 5
+    /// 有积压、但这么久没有任何一个缓冲播完 → 判定为僵尸引擎（0.6 秒 = 15 个包）。
+    private static let stallTimeout: TimeInterval = 0.6
+    /// 刚重建完这段时间里的配置变更通知，归属于重建过程本身。
+    private static let rebuildGrace: TimeInterval = 0.4
 
     var volume: Float = 1.0 {
         didSet { player.volume = volume }
     }
 
-    /// 当前是否有声音在排队（用来驱动 UI 的电平指示）
-    var isActive: Bool { isRunning && engine.isRunning && pendingFrames > 0 }
+    /// 当前是否**真的**有声音在放（用来驱动 UI 的电平指示 / 播放状态）
+    var isActive: Bool { isRunning && engine.isRunning && pendingFrames > 0 && !stalled() }
+
+    /// 给日志用的一行状态。排查「有收帧没声音」时，它比任何猜测都直接。
+    var diagnostics: String {
+        let pending = pendingFrames
+        let drained: String
+        if let last = lastDrainedAt {
+            drained = String(format: "%.2f 秒前", Date().timeIntervalSince(last))
+        } else {
+            drained = "从未"
+        }
+        return "音频引擎 running=\(isRunning)/\(engine.isRunning)"
+            + " player=\(player.isPlaying)"
+            + " 队列=\(pending) 帧 上次播完=\(drained)"
+            + (pending > 0 && stalled() ? "（疑似卡死）" : "")
+    }
 
     init() {
         format = AVAudioFormat(
@@ -69,9 +114,9 @@ final class VoicePlayer {
         )
 
         #if os(iOS)
-        // 音频硬件配置一变（PTT 切 mode、另一个引擎要输入 IO、来电、插拔耳机），
-        // 系统就会把这个引擎停掉。通知里只记账，真正重建放到下一次 `start()`：
-        // 变更很可能发生在发射期间，那一刻不该去动音频硬件。
+        // 音频硬件配置一变（另一个引擎要输入 IO、来电、插拔耳机），系统就会把这个引擎
+        // 停掉。通知里只记账，真正重建放到下一次 `start()`：变更很可能发生在发射期间，
+        // 那一刻不该去动音频硬件。
         configObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange,
             object: engine,
@@ -86,45 +131,70 @@ final class VoicePlayer {
 
     private func handleConfigurationChange() {
         guard isRunning else { return }
+        // 自己刚重建完这几百毫秒里的通知，往往是重建过程本身引起的（重新激活会话 /
+        // 麦克风引擎拆输入）。这时候再记一笔「要重建」，下一个包又会整条重建一次，
+        // 每个包都白丢一轮；真实的故障由 `stalled()` 兜底，不会漏。
+        if let rebuildAt = lastRebuildAt,
+           Date().timeIntervalSince(rebuildAt) < Self.rebuildGrace {
+            return
+        }
         needsRebuild = true
         // 队列里那批 PCM 是按旧采样率排的，播出来会变调，直接丢。
         pendingFrames = 0
+        lastDrainedAt = Date()
     }
 
     // MARK: - 生命周期
 
-    /// 拉起播放引擎（幂等；每个语音包都会调一次，正常路径只是一次 `engine.isRunning` 判断）。
+    /// 拉起播放引擎（幂等；每个语音包都会调一次，正常路径只是一次布尔判断）。
     ///
-    /// **必须能自愈**。`AVAudioEngine` 在音频硬件配置变化时会被系统停掉，而它**不会**
-    /// 自己起来：按下 PTT 时 `PttMicrophone` 把会话 mode 从 `.default` 换成 `.voiceChat`
-    /// （松手再换回来），同时另一个引擎开始要输入 IO —— 这两件事都会触发配置变更，
-    /// 结果就是播放引擎停住。以前这里第一行是 `guard !isRunning else { return }`，
-    /// 而 `isRunning` 只由我们自己改，于是状态还写着「在跑」、`start()` 直接返回，
-    /// 队列里再也进不去任何 PCM：**接收中按一下 PTT，之后就永远没声音，只能重连**。
+    /// **必须能自愈**：发动机被系统停掉之后要能自己起来，见文件头的说明。
     func start() {
-        guard let format else { return }
+        guard format != nil else { return }
         guard canAttemptStart() else { return }
 
-        // 引擎还活着、也没报过配置变更：只把 player 补起来
-        //（`flush()` 之后会出现「引擎在跑、player 停了」）。
-        if engine.isRunning && !needsRebuild {
-            if !player.isPlaying { player.play() }
-            isRunning = true
+        // 真的在跑就别碰音频硬件：这行每秒要走 25 次。
+        if isRunning, engine.isRunning, !needsRebuild, player.isPlaying {
             return
         }
 
-        // 走到这里说明要重建：要么第一次启动，要么引擎被系统停掉了。
+        rebuild(reason: "启动")
+    }
+
+    /// 发射结束：把播放链路整条重建一次。
+    ///
+    /// 这里**故意不去试探**「引擎是不是还活着」。发射期间会话被重新激活过、
+    /// 第二个引擎起停过，`engine.isRunning` 在这个场景下经常骗人（true 但没声音）。
+    /// 一次 PTT 只花一趟重建的钱，换掉一整类「松手之后再也听不见」的问题。
+    func resumeAfterPtt() {
+        // 解静音时 didSet 里的 `start()` 可能刚刚重建过，别连着折腾两次。
+        if let rebuildAt = lastRebuildAt,
+           Date().timeIntervalSince(rebuildAt) < 0.25,
+           isRunning, engine.isRunning, player.isPlaying {
+            return
+        }
+        rebuild(reason: "发射结束")
+    }
+
+    /// 整条链路重建：停 → 重连 → 起引擎 → player.play()。
+    ///
+    /// 之所以连 `connect` 也重做：配置变更之后原来的连接格式不再可信
+    /// （采样率、通道数都可能变过），重连比去推断哪里坏了省事，也顺手清掉僵尸状态。
+    private func rebuild(reason: String) {
+        guard let format else { return }
+        guard canAttemptStart() else { return }
+
+        let wasRunning = isRunning
+
         activateSession()
 
-        if isAttached {
-            // 之前正常跑过 → 是配置变更或系统停摆。旧队列里的 PCM 是按旧采样率排的，
-            // 放出来会变调；节点上的连接格式也不再保证有效，全部丢掉重来。
-            player.stop()
-            keepAlive.stop()
-            engine.stop()
-            pendingFrames = 0
-        }
+        // `stop()` 只对已经 attach 过的节点安全 —— 没挂上去就调会抛 ObjC 异常。
+        if isAttached { player.stop() }
+        if keepAliveAttached { keepAlive.stop() }
+        if engine.isRunning { engine.stop() }
+        pendingFrames = 0
         needsRebuild = false
+        lastDrainedAt = nil
 
         if !isAttached {
             engine.attach(player)
@@ -152,10 +222,19 @@ final class VoicePlayer {
 
         startFailures = 0
         lastStartFailureAt = nil
+        audioSessionError = nil
         isRunning = true
         player.volume = volume
         player.play()
         startKeepAlive()
+
+        let now = Date()
+        lastRebuildAt = now
+        lastDrainedAt = now
+
+        if wasRunning {
+            onEvent?("♻️ 播放链路重建（\(reason)）")
+        }
     }
 
     /// 是否允许再试一次启动。
@@ -167,6 +246,13 @@ final class VoicePlayer {
         guard startFailures >= maxStartFailures else { return true }
         guard let last = lastStartFailureAt else { return true }
         return Date().timeIntervalSince(last) >= Self.retryInterval
+    }
+
+    /// 队列有积压，却久到不正常地没有一个缓冲播完 → 引擎在跑但没渲染。
+    private func stalled() -> Bool {
+        guard pendingFrames > 0 else { return false }
+        guard let last = lastDrainedAt else { return true }
+        return Date().timeIntervalSince(last) > Self.stallTimeout
     }
 
     /// 会话激活。分类由 `PttMicrophone` 托管（连接期间一直是 `.playAndRecord`），
@@ -206,8 +292,10 @@ final class VoicePlayer {
         startFailures = 0
         lastStartFailureAt = nil
         needsRebuild = false
+        lastDrainedAt = nil
+        lastRebuildAt = nil
 
-        keepAlive.stop()
+        if keepAliveAttached { keepAlive.stop() }
 
         guard isRunning else {
             pendingFrames = 0
@@ -231,10 +319,34 @@ final class VoicePlayer {
     // MARK: - 入队
 
     func enqueue(_ samples: [Int16]) {
-        // 引擎被系统停掉时排进去的缓冲不会播、也不会回调，只会一直占着 pendingFrames。
-        guard isRunning, engine.isRunning, !samples.isEmpty else { return }
-        guard let format else { return }
-        guard pendingFrames < maxPendingFrames else { return }
+        guard !samples.isEmpty, let format else { return }
+
+        // 引擎状态不对就先修，别往死引擎里排 —— 排进去既不播也不回调，
+        // 只会把 pendingFrames 堆满，之后每个包都被上限挡回去（永久静音）。
+        if !isRunning || !engine.isRunning || needsRebuild || !player.isPlaying {
+            start()
+            guard isRunning, engine.isRunning else { return }
+        }
+
+        // 有积压、却一直没有缓冲播完 → 引擎在跑但没在渲染（配置变更之后的僵尸态，
+        // `engine.isRunning` 仍然写着 true）。这是「服务器在推、却没有声音」最隐蔽的
+        // 一种：不报错、电平表照动，只有队列在悄悄堆。这里 0.6 秒判一次，直接重建。
+        if stalled() {
+            // 刚重建过还是不响（硬件被别的 App 占着之类）就别 0.6 秒一次地砸，
+            // 隔一会儿再试；这段时间里丢包即可，反正也放不出来。
+            if let rebuildAt = lastRebuildAt,
+               Date().timeIntervalSince(rebuildAt) < 1.5 {
+                return
+            }
+            rebuild(reason: "队列有积压但没有输出")
+            guard isRunning, engine.isRunning else { return }
+        }
+
+        if pendingFrames >= maxPendingFrames {
+            // 走到这里说明积压是「网络突发」而不是卡死（卡死上面已经处理了）：
+            // 丢掉新包即可，旧的一会儿就播下去了。
+            return
+        }
 
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count)) else {
             return
@@ -249,6 +361,10 @@ final class VoicePlayer {
         }
 
         let count = samples.count
+        // 队列本来是空的 → 这批要重新起播，从现在开始算一个完整的判定窗口。
+        // 少了这一行，「上一句话在几分钟前」会被 `stalled()` 当成卡死，每通电话
+        // 开头都白重建一次。
+        if pendingFrames == 0 { lastDrainedAt = Date() }
         pendingFrames += count
 
         player.scheduleBuffer(buffer,
@@ -258,6 +374,8 @@ final class VoicePlayer {
             Task { @MainActor in
                 guard let self else { return }
                 self.pendingFrames = max(0, self.pendingFrames - count)
+                // 这一行是整个自愈逻辑的心跳：能走到这里才说明引擎真的在渲染。
+                self.lastDrainedAt = Date()
             }
         }
 
@@ -269,6 +387,7 @@ final class VoicePlayer {
     /// 通话结束时调用：不再等待队列清空，直接丢弃积压
     func flush() {
         pendingFrames = 0
+        lastDrainedAt = Date()
         // 引擎没在跑时 `player.play()` 没有意义（引擎停止状态下还可能抛 ObjC 异常，
         // Swift 接不住）。重建交给下一次 `start()`。
         guard isRunning, engine.isRunning else { return }

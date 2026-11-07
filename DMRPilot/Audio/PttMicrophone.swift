@@ -17,11 +17,16 @@
 //
 //  现在拆成两步：
 //  - `prepareForTalk()`（连接成功时调一次）把分类切成「可录音」并保持住；
-//  - `start()`（按下时调）只切录音模式 + 起引擎，`stop()` 只停引擎。
+//  - `start()`（按下时调）只起引擎，`stop()` 只停引擎。
 //
 //  分类一直是 playAndRecord，输入单元就不会被拆掉，按下时几乎不用等。
-//  收听的音质不受影响：监听走 `.default` 模式，只有发射的这几十秒才换成 `.voiceChat`
-//  （AGC + 降噪，窄带语音需要）。换 mode 不换分类，不触发路由变更，比切分类便宜得多。
+//
+//  ## 连 mode 也不换
+//
+//  以前发射期间会 `setMode(.voiceChat)`（AGC + 降噪）。换 mode 同样会让系统重建
+//  IO 单元，而本 App 还有一个播放用的 AVAudioEngine 在跑，它会被顺带停掉 ——
+//  这就是「按一下 PTT，接收从此没声音」的开关。DroidStar 的 iOS 实现也只设一次
+//  分类，全程不动 mode。增益我们自己加（见 `gain`），不依赖系统那套。
 //
 
 import AVFoundation
@@ -139,9 +144,15 @@ final class PttMicrophone {
             Self.talkSessionReady = true
         }
 
-        // 录音要 AGC + 降噪，所以只在发射期间把 mode 换成 `.voiceChat`。
-        // 换 mode 不换分类，路由和输入单元都还在，不会像切分类那样重建一遍。
-        try? session.setMode(.voiceChat)
+        // **发射期间不换 mode。**
+        //
+        // 以前这里会 `setMode(.voiceChat)`（AGC + 降噪），松手再换回 `.default`。
+        // 问题不在语音质量，在副作用：换 mode 会让系统重建一次 IO 单元，
+        // 而本 App 同时还有一个**播放**用的 `AVAudioEngine` 在跑，它会被这次重建
+        // 连带停掉（DMR 模式下这正是「按一下 PTT 之后再也没声音」的开关）。
+        // DroidStar 的 iOS 实现（iosaudiosession.mm）也只在本机设一次
+        // `.playAndRecord + .defaultToSpeaker`，全程不再改 mode。
+        // 增益与降噪我们自己处理（见 `gain`），不需要系统那套。
 
         let input = engine.inputNode
         let inputFormat = input.outputFormat(forBus: 0)
@@ -189,10 +200,10 @@ final class PttMicrophone {
         pending.removeAll(keepingCapacity: false)
         level = 0
 
-        // 会话**不**切回 `.playback`：切走会把输入 IO 单元拆掉，下次按下又要重建，
-        // 那 0.3～0.5 秒就是「按住半天才开始发」。只把录音模式换回收听用的 `.default`，
-        // 音量/音色和以前守听时一致。真正还原放在 `release()`（断开连接时）。
-        try? AVAudioSession.sharedInstance().setMode(.default)
+        // 会话**不**切回 `.playback`，也**不**换 mode：切分类会把输入 IO 单元拆掉，
+        // 下次按下又要重建，那 0.3～0.5 秒就是「按住半天才开始发」；换 mode 则会
+        // 重建 IO，把同时在跑的播放引擎一起停掉（见 `start()` 里的说明）。
+        // 真正还原放在 `release()`（断开连接时）。
     }
 
     /// 断开连接时调用：把会话还给纯播放。
