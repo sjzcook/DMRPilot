@@ -93,6 +93,18 @@ final class AppState: ObservableObject {
         hotspot.disconnect()
     }
 
+    /// 设置页换服务器之后调用：已经连着就自动断开重连到新地址。
+    ///
+    /// 没连（或连接失败停在 `.failed`）时只保存设置，不替用户把连接拉起来——
+    /// 上线是首页那个连接按钮的事。
+    ///
+    /// 不先调 `disconnect()`：`connect(with:)` 内部会先发 RPTCL 结束上一个会话、
+    /// 留 0.3 秒再把新连接起来，否则 master 会看到同一个 ID 的两条连接并关掉新的那条（MSTCL）。
+    func restartForServerChange() {
+        guard hotspot.state != .offline else { return }
+        hotspot.connect(with: settings)
+    }
+
     // MARK: - 通话组
 
     /// 切换收听的 TG（0 = 全部）。写进设置（会持久化），同时通知连接层立刻生效，

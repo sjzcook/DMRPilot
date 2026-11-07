@@ -69,15 +69,6 @@ struct CallLogView: View {
             .autocorrectionDisabled()
             .textInputAutocapitalization(.characters)
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    if log.total > 0 {
-                        Text("\(log.total) 条")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-                    }
-                }
-
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
                         showClearConfirm = true

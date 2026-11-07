@@ -21,7 +21,6 @@ struct SettingsView: View {
                 serverSection
                 behaviourSection
                 audioSection
-                actionSection
                 dataSection
                 aboutSection
             }
@@ -67,7 +66,10 @@ struct SettingsView: View {
 
     private var serverSection: some View {
         Section {
-            HostPickerField(store: hostStore, settings: $app.settings)
+            HostPickerField(store: hostStore, settings: $app.settings) {
+                // 换服务器后自动断开重连（没在线时只保存）。
+                app.restartForServerChange()
+            }
 
             // 这些只在 Homebrew 下有含义：ODTP 没有热点后缀、没有时隙/色码，
             // 也不发 RPTC，而且只走 UDP。协议现在固定 ODTP，所以这段不会显示，
@@ -238,31 +240,6 @@ struct SettingsView: View {
         )
     }
 
-    // MARK: - 操作
-
-    private var actionSection: some View {
-        Section {
-            Button {
-                app.connect()
-            } label: {
-                Label("保存并连接", systemImage: "bolt.horizontal")
-            }
-            .disabled(!app.settings.isIdentityReady)
-
-            if hotspot.state != .offline {
-                Button("断开连接", role: .destructive) {
-                    app.disconnect()
-                }
-            }
-        } footer: {
-            if !app.settings.isIdentityReady {
-                Text("填写 DMR ID 与 BM密码之后才能连接。")
-            } else {
-                Text("当前状态：\(hotspot.state.label)")
-            }
-        }
-    }
-
     // MARK: - 数据
 
     /// 服务器列表 + 本地 DMR ID 库。两者都存在本机，首页查呼号完全不联网。
@@ -310,8 +287,6 @@ struct SettingsView: View {
             }
         } header: {
             Text("数据")
-        } footer: {
-            Text("**服务器列表**：ds.vu3lvo.com 的 DMRHosts.txt（Pi-Star 格式），约 1500 台。点这一行右边的「更新」下载一次后**存在本机**（`Application Support/DMRPilot/hosts.txt`），之后的服务器选择与搜索全部读本地，不联网，断网也能用。\n**DMR ID**：RadioID.net 的整包用户表 user.csv（约 17 MB / 31 万条），点「更新」下载后在本机建索引（2.5 MB），之后首页的呼号、姓名、城市全部从本地查，不再逐条联网，换人说话也不会卡。库里查不到的 ID（中继台、网关、刚申请还没入库的）才会再走一次网络。\n两份数据各自独立更新，建议一两周点一次；左下角是各自的更新时间。下载中旧数据仍然可用，换新的是一次性的原子替换，中途失败不会把已有的数据弄坏。")
         }
     }
 

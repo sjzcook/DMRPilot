@@ -13,6 +13,9 @@ import SwiftUI
 struct HostPickerField: View {
     @ObservedObject var store: DMRHostStore
     @Binding var settings: Settings
+    /// 服务器变了（选中表里一台，或手填域名回车）之后的回调。
+    /// 设置页拿它做「自动断开重连」，所以这里只负责通知，不判断连接状态。
+    var onServerChange: () -> Void = {}
 
     @State private var isPicking = false
 
@@ -23,7 +26,7 @@ struct HostPickerField: View {
         }
         .task { await store.loadIfNeeded() }
         .sheet(isPresented: $isPicking) {
-            HostPickerSheet(store: store, settings: $settings)
+            HostPickerSheet(store: store, settings: $settings, onServerChange: onServerChange)
         }
     }
 
@@ -89,6 +92,8 @@ struct HostPickerField: View {
                 .autocorrectionDisabled()
                 .keyboardType(.URL)
                 .multilineTextAlignment(.trailing)
+                // 手填的域名没法每敲一个字符就重连，按下回车才算定下来。
+                .onSubmit { onServerChange() }
         }
         .padding(.leading, 24)
     }
@@ -113,6 +118,7 @@ private enum HostScope: String, CaseIterable, Identifiable {
 private struct HostPickerSheet: View {
     @ObservedObject var store: DMRHostStore
     @Binding var settings: Settings
+    var onServerChange: () -> Void = {}
 
     @Environment(\.dismiss) private var dismiss
 
@@ -220,12 +226,16 @@ private struct HostPickerSheet: View {
 
     private func hostRow(_ host: DMRHost) -> some View {
         Button {
+            // 点的是当前这台就什么都不用做，别白白断一次线。
+            let changed = settings.hostName != host.name || settings.host != host.hostname
             settings.hostName = host.name
             settings.host = host.hostname
             // 主机表是 Pi-Star 的 Homebrew 列表（62031）；走 ODTP 时端口固定在 54006，
             // 不能把表里的端口照抄进来，否则会连到一个不认 Rewind 的端口上。
             settings.port = settings.linkProtocol == .odtp ? settings.linkProtocol.defaultPort : Int(host.port)
             dismiss()
+            // 选完立刻生效：设置页那边会断开重连（没在线就只是保存）。
+            if changed { onServerChange() }
         } label: {
             HStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {

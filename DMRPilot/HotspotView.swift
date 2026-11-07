@@ -15,6 +15,8 @@ struct HotspotView: View {
     @State private var showLog = false
     @State private var pttPressed = false
     @State private var pttDenied = false
+    /// 电平表的平滑值：快起慢落，免得读数在「59」和「53」之间抖。
+    @State private var smoothedLevel: Double = 0
 
     var body: some View {
         NavigationStack {
@@ -36,6 +38,13 @@ struct HotspotView: View {
                 }
             }
             .listStyle(.insetGrouped)
+            // 电平随每个语音帧刷新（约 16 次/秒），原始值直接显示会在「59」和「53」之间乱跳：
+            // 这里做一次快起慢落（上升 0.7、回落 0.12），读数稳住但话音一停也能很快掉下去。
+            .onChange(of: hotspot.voiceLevel) { newValue in
+                let target = Double(newValue)
+                let factor = target > smoothedLevel ? 0.7 : 0.12
+                smoothedLevel += (target - smoothedLevel) * factor
+            }
             .navigationTitle("首页")
             .onAppear {
                 // 切回本页时可能正有人在说话：onChange 不会补发，这里补一次。
@@ -122,16 +131,24 @@ struct HotspotView: View {
                 Metric(title: "收帧", value: "\(hotspot.rxFrames)")
             }
 
-            // 只有电平表这一行加高，图标字号不动——整行的高度由电平表决定。
-            HStack(spacing: 8) {
-                Image(systemName: audioIcon)
-                    .font(.caption)
-                    .foregroundStyle(hotspot.isVoicePlaying ? Color.accentColor : Color.secondary)
+            // 电平表整行铺开，读数（`59` / `59+20`）压在它上方，按业余无线电 S 表的规矩。
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Image(systemName: audioIcon)
+                        .font(.caption)
+                        .foregroundStyle(hotspot.isVoicePlaying ? Color.accentColor : Color.secondary)
 
-                LevelMeter(level: Double(hotspot.voiceLevel))
-                    .frame(width: 80, height: 16)
+                    Text(signalReport.text)
+                        .font(.subheadline.weight(.semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(signalReport.hasSignal ? Color.primary : Color.secondary)
+                        .accessibilityLabel("信号报告 \(signalReport.text)")
 
-                Spacer(minLength: 0)
+                    Spacer(minLength: 0)
+                }
+
+                LevelMeter(level: displayLevel, segments: 18)
+                    .frame(maxWidth: .infinity, minHeight: 16, maxHeight: 16)
             }
             .padding(.vertical, 4)
 
@@ -438,6 +455,16 @@ struct HotspotView: View {
         return hotspot.isVoicePlaying ? "waveform" : "speaker.wave.1"
     }
 
+    /// 电平表/读数的实际输入：没在放音就当作 0，避免上一句话的峰值一直挂在表上。
+    private var displayLevel: Double {
+        hotspot.isVoicePlaying ? smoothedLevel : 0
+    }
+
+    /// 交给 `SignalReport` 折算成 `59` / `59+20` 这种报法。
+    private var signalReport: SignalReport {
+        SignalReport(level: displayLevel)
+    }
+
     // MARK: - 辅助
 
     private var isConnectedOrBusy: Bool {
@@ -531,29 +558,101 @@ struct Metric: View {
     }
 }
 
+// MARK: - 信号报告
+
+/// 把 0…1 的音频峰值折算成业余无线电的信号报告（RST 里 R+S 那两位）。
+///
+/// 刻度照 S 表的规矩：S1…S9 每级 6 dB，S9 以上报「S9 + N dB」；
+/// 数字语音的可读度恒为 5，所以 S9 就是 `59`，S9 以上是 `59+10` / `59+20`……
+///
+/// 参考点取 S9 = -30 dBFS：AMBE 解出来的语音峰值大多在 0.03…0.5 之间，
+/// 正常说话落在 `59` 上下，声音顶满能到 `59+20` 以上。
+struct SignalReport: Equatable {
+    /// 低于这个值当作没有信号，读数显示占位符。
+    private static let noiseFloor: Double = 0.0005
+    /// S9 对应的电平（dBFS）。
+    private static let s9dBFS: Double = -30
+    /// S 表每级 6 dB，业余无线电的通行约定。
+    private static let dBBetweenSUnits: Double = 6
+
+    /// 0 = 无信号，1…9 = S1…S9。
+    let sUnits: Int
+    /// S9 以上的 dB 数，按真实表盘的 10/20/30/40/60 归一档。
+    let overDB: Int
+
+    init(level: Double) {
+        guard level > Self.noiseFloor else {
+            sUnits = 0
+            overDB = 0
+            return
+        }
+
+        // 峰值是线性的，S 表是 dB 刻度，先换成 dBFS（≤ 0）。
+        let dbfs = 20 * log10(level)
+        let units = 9 + (dbfs - Self.s9dBFS) / Self.dBBetweenSUnits
+
+        if units <= 9 {
+            sUnits = max(1, min(9, Int(units.rounded(.down))))
+            overDB = 0
+        } else {
+            sUnits = 9
+            overDB = Self.nominalOver((units - 9) * Self.dBBetweenSUnits)
+        }
+    }
+
+    var hasSignal: Bool { sUnits > 0 }
+
+    /// `59` / `59+20` / `57`；没信号时 `—`。
+    var text: String {
+        guard hasSignal else { return "—" }
+        return overDB > 0 ? "59+\(overDB)" : "5\(sUnits)"
+    }
+
+    /// 表盘只有 10/20/30/40/60 这几档，中间值报下面那一档。
+    private static func nominalOver(_ db: Double) -> Int {
+        switch db {
+        case ..<5: return 0
+        case ..<15: return 10
+        case ..<25: return 20
+        case ..<35: return 30
+        case ..<50: return 40
+        default: return 60
+        }
+    }
+}
+
 // MARK: - 电平表
 
-/// 8 段电平指示，跟着解码器每个包输出的峰值跳动。
+/// 分段电平指示，跟着解码器每个包输出的峰值跳动。
+/// 首页那张表整行铺开，所以段数可以调多（默认 8 段给「当前讲话人」里的小表用）。
 struct LevelMeter: View {
     let level: Double
-
-    private static let segmentCount = 8
+    var segments: Int = 8
 
     var body: some View {
+        let filled = Self.fraction(of: level)
         HStack(spacing: 2) {
-            ForEach(0..<Self.segmentCount, id: \.self) { index in
-                let threshold = Double(index + 1) / Double(Self.segmentCount)
+            ForEach(0..<segments, id: \.self) { index in
+                let threshold = Double(index + 1) / Double(max(1, segments))
                 RoundedRectangle(cornerRadius: 1, style: .continuous)
-                    .fill(level >= threshold ? color(at: index) : Color.secondary.opacity(0.15))
+                    .fill(filled >= threshold ? color(at: index) : Color.secondary.opacity(0.15))
             }
         }
         .animation(.linear(duration: 0.08), value: level)
         .accessibilityLabel("电平 \(Int(level * 100))%")
     }
 
+    /// 峰值是线性的、听感是 dB 的：整条表按 -60…0 dBFS 铺满，
+    /// 这样表的位置和上方 `59` / `59+20` 的档位对得上（-30 dBFS 正好一半，也就是 S9）。
+    private static func fraction(of level: Double) -> Double {
+        guard level > 0.0005 else { return 0 }
+        let dbfs = 20 * log10(min(1, level))
+        return min(1, max(0, (dbfs + 60) / 60))
+    }
+
     private func color(at index: Int) -> Color {
-        if index >= Self.segmentCount - 1 { return .red }
-        if index >= Self.segmentCount - 3 { return .orange }
+        if index >= segments - 1 { return .red }
+        if index >= segments - 3 { return .orange }
         return .green
     }
 }
