@@ -25,6 +25,8 @@ struct HotspotView: View {
                     statusCard
                 }
 
+                pttSection
+
                 speakerSection
 
                 if !recentSpeakerItems.isEmpty {
@@ -34,9 +36,6 @@ struct HotspotView: View {
                         }
                     }
                 }
-
-                pttSection
-                audioSection
             }
             .listStyle(.insetGrouped)
             .navigationTitle("热点")
@@ -92,6 +91,18 @@ struct HotspotView: View {
                             .monospacedDigit()
                             .foregroundStyle(.secondary)
                     }
+
+                    // 连接时间右边的静音开关：和设置里「语音播放」是同一个设置，
+                    // 只是放在这儿能边说边按。图标跟着状态切换。
+                    Button(action: toggleAudio) {
+                        Image(systemName: app.settings.audioEnabled ? "speaker.wave.2.fill" : "speaker.slash.fill")
+                            .font(.footnote.weight(.semibold))
+                            .frame(width: 30, height: 30)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(app.settings.audioEnabled ? Color.accentColor : Color.orange)
+                    .accessibilityLabel(app.settings.audioEnabled ? "静音" : "恢复声音")
                 }
             }
 
@@ -499,46 +510,12 @@ struct HotspotView: View {
         return parts.joined(separator: " · ")
     }
 
-    // MARK: - 语音设置
+    // MARK: - 语音（开关在设置页，这里只留状态和快捷开关）
 
-    private var audioSection: some View {
-        Section {
-            Toggle(isOn: audioEnabledBinding) {
-                Label("语音播放", systemImage: "speaker.wave.2.fill")
-            }
-
-            if app.settings.audioEnabled {
-                HStack(spacing: 12) {
-                    Image(systemName: "speaker.fill")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    Slider(value: volumeBinding, in: 0...1)
-                    Image(systemName: "speaker.wave.3.fill")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            HStack {
-                Text("已解码")
-                Spacer()
-                Text("\(hotspot.voicePackets) 包")
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-            }
-
-            HStack {
-                Text("纠错比特")
-                Spacer()
-                Text("\(hotspot.voiceErrorCount)")
-                    .monospacedDigit()
-                    .foregroundStyle(hotspot.voiceErrorCount > 12 ? Color.orange : Color.secondary)
-            }
-        } header: {
-            Text("语音")
-        } footer: {
-            Text("帧的接收与拆解由 C++ 协议核心完成（Core/DMRCore.cpp，移植自 DroidStar 的 dmr.cpp，GPL-3.0）；AMBE+2 半速率解码器直接用的是 DroidStar 的 halfrate 原文件（Core/Vocoder/，GPL-3.0），参数也与它一致。每一路通话单独维护解码器状态，中途接入的通话也能直接出声。\n纠错比特是 Golay(23,12) 每帧纠正的位数，持续大于 12 说明信号质量很差。")
-        }
+    /// 连接时间右边那个静音按钮：改的是和设置 → 语音 → 「语音播放」同一个开关。
+    private func toggleAudio() {
+        app.settings.audioEnabled.toggle()
+        hotspot.applyAudioPreference(app.settings)
     }
 
     private var audioIcon: String {
@@ -547,29 +524,9 @@ struct HotspotView: View {
     }
 
     private var audioStatusText: String {
-        if !app.settings.audioEnabled { return "语音已关闭" }
+        if !app.settings.audioEnabled { return "已静音" }
         if hotspot.isVoicePlaying { return "解码中" }
         return "静默"
-    }
-
-    private var audioEnabledBinding: Binding<Bool> {
-        Binding(
-            get: { app.settings.audioEnabled },
-            set: { newValue in
-                app.settings.audioEnabled = newValue
-                hotspot.applyAudioPreference(app.settings)
-            }
-        )
-    }
-
-    private var volumeBinding: Binding<Double> {
-        Binding(
-            get: { app.settings.audioVolume },
-            set: { newValue in
-                app.settings.audioVolume = newValue
-                hotspot.applyAudioPreference(app.settings)
-            }
-        )
     }
 
     // MARK: - 辅助

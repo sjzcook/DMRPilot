@@ -18,6 +18,7 @@ struct SettingsView: View {
                 identitySection
                 serverSection
                 behaviourSection
+                audioSection
                 actionSection
                 dataSection
                 aboutSection
@@ -199,6 +200,72 @@ struct SettingsView: View {
         case .homebrew:
             return "Homebrew 没有「订阅」指令：连上后在通话组上发一次完整 PTT（语音头 + 12 个突发 + 结束符，带嵌入 LC），BrandMeister 才会把这个组标成动态订阅，它的语音也才会推下来。热点页点「确定」切换组时也会自动来一次。\n" + follow + "\n订阅时隙要和该组在 SelfCare 里挂的时隙一致——中国区多数 TG 在 TS2。\nBrandMeister 的动态订阅静默约 10 分钟会被释放，打开「静默后自动续订」后，App 会在该组连续没有语音时自动再发一次（间隔取上面的值，建议 8 分钟，留出余量）。\n色码只写进我们发出去的语音帧（slot type 与嵌入信令 DMREMB）和上报配置包里的资料字段，连接与接收都不需要它：Homebrew 握手没有任何色码校验，收帧也不按色码过滤。"
         }
+    }
+
+    // MARK: - 语音
+
+    /// 从热点页搬过来的整块「语音」。
+    ///
+    /// 热点页只留状态显示和「连接时间」右边那个静音按钮，开关与音量统一放到设置里，
+    /// 免得每次想调音量都要翻回热点页。
+    private var audioSection: some View {
+        Section {
+            Toggle(isOn: audioEnabledBinding) {
+                Label("语音播放", systemImage: "speaker.wave.2.fill")
+            }
+
+            if app.settings.audioEnabled {
+                HStack(spacing: 12) {
+                    Image(systemName: "speaker.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Slider(value: volumeBinding, in: 0...1)
+                    Image(systemName: "speaker.wave.3.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            HStack {
+                Text("已解码")
+                Spacer()
+                Text("\(hotspot.voicePackets) 包")
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack {
+                Text("纠错比特")
+                Spacer()
+                Text("\(hotspot.voiceErrorCount)")
+                    .monospacedDigit()
+                    .foregroundStyle(hotspot.voiceErrorCount > 12 ? Color.orange : Color.secondary)
+            }
+        } header: {
+            Text("语音")
+        } footer: {
+            Text("热点页连接成功后，「连接时间」右边也有一个静音按钮，开关的就是这里的「语音播放」，图标会跟着状态切换。\n帧的接收与拆解由 C++ 协议核心完成（Core/DMRCore.cpp，移植自 DroidStar 的 dmr.cpp，GPL-3.0）；AMBE+2 半速率解码器直接用的是 DroidStar 的 halfrate 原文件（Core/Vocoder/，GPL-3.0），参数也与它一致。每一路通话单独维护解码器状态，中途接入的通话也能直接出声。\n纠错比特是 Golay(23,12) 每帧纠正的位数，持续大于 12 说明信号质量很差。")
+        }
+    }
+
+    private var audioEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { app.settings.audioEnabled },
+            set: { newValue in
+                app.settings.audioEnabled = newValue
+                hotspot.applyAudioPreference(app.settings)
+            }
+        )
+    }
+
+    private var volumeBinding: Binding<Double> {
+        Binding(
+            get: { app.settings.audioVolume },
+            set: { newValue in
+                app.settings.audioVolume = newValue
+                hotspot.applyAudioPreference(app.settings)
+            }
+        )
     }
 
     // MARK: - 操作
