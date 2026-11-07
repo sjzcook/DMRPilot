@@ -40,6 +40,8 @@ final class PttMicrophone {
 
     /// 每凑够一帧就回调一次（主线程）
     var onFrame: (@MainActor ([Int16]) -> Void)?
+    /// 采集链路的诊断信息（输入格式等），接到日志面板。
+    var onEvent: (@MainActor (String) -> Void)?
     /// 当前输入电平，0…1（已含增益）。界面用它判断有没有声音进来。
     private(set) var level: Float = 0
 
@@ -65,12 +67,10 @@ final class PttMicrophone {
     // 拉到 30000），它的采集侧不做是因为桌面/安卓的麦克风电平本来够；iOS 的
     // `.playAndRecord + .default` 在免提距离下比 AMBE 期待的低了十几 dB。
 
-    /// 目标峰值（约 -8.7 dBFS）：给手动增益留余量，也避免编码前就削顶。
+    /// 目标峰值（约 -8.7 dBFS）。低于它才提升；高于它**不衰减**（见 `applyAutoGain`）。
     private static let agcTarget: Float = 12000
     /// 最大提升（+27.6 dB）。再高会把整段底噪一起抬起来，听感变成一片沙。
     private static let agcMaxGain: Float = 24
-    /// 最小增益（-12 dB）：大嗓门时压一点，防止削波失真。
-    private static let agcMinGain: Float = 0.25
     /// 噪声门（约 -43 dBFS）：低于它就当作没人在说，增益直接往回收。
     /// 没有这道门，安静间隙里底噪会被放大二十几倍，编码器那边还会把沙沙声当语音。
     private static let agcGate: Float = 220
@@ -80,13 +80,25 @@ final class PttMicrophone {
     private static let agcRelease: Float = 0.35
 
     /// 自动增益当前倍数。逐帧更新，跨帧保留（20 ms 一档，正好是语音包络的时间尺度）。
+    ///
+    /// 永远 >= 1：**只提不压**。麦克风电平本来就够的时候（峰值已经达到 `agcTarget`）
+    /// 保持 1 倍，不去衰减 —— 衰减会直接吃掉用户的音量，「加了 AGC 反而更小」。
+    /// 削顶由「提升幅度不超过 target 之内的差额」天然保证，不需要再压。
     private var autoGainValue: Float = 1
 
-    /// 本次发射里**原始输入**的最大峰值（自动增益之前）。用来诊断「麦克风到底收到多少声」。
-    /// `stop()` 不清它 —— 松手之后还要拿它打一行日志。
+    // MARK: - 采集统计（`endPtt` 打日志用）
+
+    /// 本次发射里原始输入的**最大**峰值（自动增益之前）。判断有没有削顶。
     private(set) var lastPeak: Float = 0
-    /// 本次发射里自动增益达到过的最大值。和 `lastPeak` 一起判断增益是不是已经顶到上限。
-    private(set) var lastAutoGain: Float = 1
+    /// 以下四个只在 `stop()` 里结算，统计的是「过了噪声门」的帧（真正有人在说的那些）。
+    private(set) var averageInputPeak: Float = 0
+    private(set) var averageOutputPeak: Float = 0
+    private(set) var averageGain: Float = 1
+    private(set) var voicedFrameCount: Int = 0
+
+    private var inputPeakSum: Double = 0
+    private var outputPeakSum: Double = 0
+    private var gainSum: Double = 0
 
     private let engine = AVAudioEngine()
     private var converter: AVAudioConverter?
@@ -207,7 +219,21 @@ final class PttMicrophone {
         // 每次按下都从 1 倍开始：上一句收尾时的增益不该带进新的一句。
         autoGainValue = 1
         lastPeak = 0
-        lastAutoGain = 1
+        inputPeakSum = 0
+        outputPeakSum = 0
+        gainSum = 0
+        voicedFrameCount = 0
+        averageInputPeak = 0
+        averageOutputPeak = 0
+        averageGain = 1
+
+        // 输入格式一定要打出来：多声道时 `AVAudioConverter` 会做下混，
+        // iPhone 多个麦克风之间如果有相位差，下混会互相抵消 —— 那是「电平莫名很低」
+        // 最隐蔽的一种成因，光看峰值数字分辨不出来。
+        onEvent?(String(format: "🎙️ 采集格式：%.0f Hz × %d 声道（%@）→ 8000 Hz 单声道 Int16",
+                        inputFormat.sampleRate,
+                        Int(inputFormat.channelCount),
+                        inputFormat.isInterleaved ? "交织" : "非交织"))
 
         // `target` / `converter` 都先取成局部常量再进闭包：采集回调在别的线程，
         // 直接读主线程隔离的属性会被并发检查挑出来，也没有必要。
@@ -242,6 +268,15 @@ final class PttMicrophone {
         converter = nil
         pending.removeAll(keepingCapacity: false)
         level = 0
+
+        // 结算成平均值。日志要用它，而逐帧除法没必要留在采集路径上。
+        // 只统计过了噪声门的帧：把「说话间隙的底噪」也算进去会把平均值拉得没意义。
+        if voicedFrameCount > 0 {
+            let n = Double(voicedFrameCount)
+            averageInputPeak = Float(inputPeakSum / n)
+            averageOutputPeak = Float(outputPeakSum / n)
+            averageGain = Float(gainSum / n)
+        }
 
         // 会话**不**切回 `.playback`，也**不**换 mode：切分类会把输入 IO 单元拆掉，
         // 下次按下又要重建，那 0.3～0.5 秒就是「按住半天才开始发」；换 mode 则会
@@ -312,35 +347,45 @@ final class PttMicrophone {
             // 满幅约 -6 dB（20000）就打满
             level = min(1, peak / 20000)
 
+            // 统计只在「有人在说」的帧上做（噪声门之外），否则间隙里的底噪会把均值拉偏。
+            if rawPeak >= PttMicrophone.agcGate {
+                inputPeakSum += Double(rawPeak)
+                outputPeakSum += Double(peak)
+                gainSum += Double(autoGainValue)
+                voicedFrameCount += 1
+            }
+
             onFrame?(frame)
         }
     }
 
-    /// 一帧（160 采样）的自动增益，目标是峰值 `agcTarget`。
+    /// 一帧（160 采样）的自动增益，目标是峰值不低于 `agcTarget`。
     ///
-    /// 三个方向上的取舍：
-    /// - **提升慢**（`agcAttack`）：逐帧 25%，约 80 ms 到位，不会让呼吸声一抽一抽；
-    /// - **回落快**：噪声门一触发就按 `agcRelease` 往回走，否则一句话说完的间隙里，
-    ///   放大了二十几倍的底噪会拖出一段沙沙的尾巴；
-    /// - **双向限幅**：`agcMinGain` 压大嗓门（防编码前削顶），`agcMaxGain` 挡住
-    ///   把整段底噪一起抬起来的冲动。
+    /// **只提不压**，这一点很重要：早先的版本在输入超过目标时会把增益降到 0.25
+    /// 来「防削顶」，结果麦克风电平本来就够的时候被硬压了十几 dB，
+    /// 现场表现正是「加了自动增益反而更小」。现在下限锁在 1：
+    /// - 峰值低于目标 → 按差额提上来（上限 `agcMaxGain`）；
+    /// - 峰值已经高于目标 → 保持 1 倍，原样送编码器。
+    /// 这样永远不可能因为增益而削顶（输出峰值 ≤ max(输入峰值, 目标)），
+    /// 也就不需要衰减这一路。
+    ///
+    /// 另外两条节奏：提升慢（`agcAttack`，约 80 ms），噪声门一触发就快回落
+    /// （`agcRelease`，约 60 ms）—— 否则一句话说完的间隙里，放大了二十几倍的
+    /// 底噪会拖出一段沙沙的尾巴。
     private func applyAutoGain(_ frame: inout [Int16], rawPeak: Float) {
         if rawPeak < PttMicrophone.agcGate {
             // 没人在说：往回收到 1 倍，别把底噪带进下一句的开头。
             autoGainValue = max(1, autoGainValue * PttMicrophone.agcRelease)
         } else {
-            let wanted = min(PttMicrophone.agcMaxGain,
-                             max(PttMicrophone.agcMinGain,
-                                 PttMicrophone.agcTarget / rawPeak))
+            let wanted = max(1, min(PttMicrophone.agcMaxGain,
+                                    PttMicrophone.agcTarget / rawPeak))
             if wanted < autoGainValue {
-                // 突然大声了：立刻降下来，削波是不可逆的
+                // 突然大声了：立刻松回 1 倍，不能让上一句的放大继续顶着
                 autoGainValue = wanted
             } else {
                 autoGainValue += (wanted - autoGainValue) * PttMicrophone.agcAttack
             }
         }
-
-        if autoGainValue > lastAutoGain { lastAutoGain = autoGainValue }
 
         guard autoGainValue != 1 else { return }
         for i in frame.indices {

@@ -230,6 +230,11 @@ final class HomebrewClient: ObservableObject {
         voice.onEvent = { [weak self] text in
             self?.append(.info, text)
         }
+        // 采集侧同理：输入格式（采样率 / 声道数）直接写进日志。
+        // 多声道时下混会不会把电平抵消掉，全靠这一行判断。
+        mic.onEvent = { [weak self] text in
+            self?.append(.info, text)
+        }
         // RPTC 里那几项资料字段，DroidStar 是写死的，这里给个正经值。
         dmr_core_set_text(core, DMR_TEXT_LOCATION, "EasyDMR")
         dmr_core_set_text(core, DMR_TEXT_DESCRIPTION, "EasyDMR iOS")
@@ -485,19 +490,24 @@ final class HomebrewClient: ObservableObject {
         mic.onFrame = nil
         mic.stop()
 
-        // 采集电平体检。这一行是用来分流「对端说声音小」的：
-        // - 输入峰值只有一两百（-45 dBFS 以下）→ 麦克风几乎没收到声，是遮挡 / 路由问题，
-        //   再大的增益也救不回来（`hint` 会提示）；
-        // - 输入峰值正常（-30~-20 dBFS）而自动增益已经顶到 ×24 —— 说明增益给足了，
-        //   对端还嫌小就是编码器那侧的电平标定偏了（`HREncoder.calibrateIfNeeded`）。
-        // 手动增益没算进「补到」那一项，它是在自动增益之后叠加的用户微调。
+        // 采集电平体检。这行是用来分流「对端说声音小」的：
+        // - 输入均值只有一两百（-45 dBFS 以下）→ 麦克风几乎没收到声，遮挡 / 路由问题，
+        //   再大的增益也救不回来；
+        // - 输入正常（-30 dBFS 上下）而增益已经顶到 ×24、输出还在 -10 dBFS 以下 →
+        //   增益给足了，问题在编码器那侧的电平标定（`HREncoder.calibrateIfNeeded`）；
+        // - 输出已经到 -8 dBFS 上下而对方还嫌小 → 同上，或者是对端的音量。
+        // 全部取「有人在说的帧」的均值：极值没有代表性（PTT 按下瞬间的爆音经常
+        // 直接顶到满幅，把整句的观感毁掉）。
         let peak = Double(mic.lastPeak)
-        let auto = mic.lastAutoGain
-        let inputDb = peak > 1 ? 20 * log10(peak / 32768) : -120
-        let outputDb = inputDb + 20 * log10(Double(auto))
-        let hint = peak < 200 ? "，麦克风几乎没收到声音（检查是否被遮挡 / 外接设备占用）" : ""
-        append(.info, String(format: "🎙️ 采集电平：输入峰值 %.0f（%.0f dBFS），自动增益 ×%.1f → 约 %.0f dBFS%@",
-                             peak, inputDb, auto, outputDb, hint))
+        let frames = mic.voicedFrameCount
+        if frames > 0 {
+            let inDb = 20 * log10(max(1, Double(mic.averageInputPeak)) / 32768)
+            let outDb = 20 * log10(max(1, Double(mic.averageOutputPeak)) / 32768)
+            append(.info, String(format: "🎙️ 采集：输入均值 %.0f（%.0f dBFS）→ 增益 ×%.1f → 输出 %.0f dBFS（原始峰值 %.0f）",
+                                 Double(mic.averageInputPeak), inDb, mic.averageGain, outDb, peak))
+        } else {
+            append(.info, String(format: "🎙️ 采集：整句没检测到语音（原始峰值 %.0f），麦克风可能被遮挡或被外接设备占用", peak))
+        }
 
         if let started = txStartedAt {
             txSeconds = Date().timeIntervalSince(started)
