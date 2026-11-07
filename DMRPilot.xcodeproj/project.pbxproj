@@ -33,6 +33,7 @@
 		C1C2C3D4E5F6A7B8C9D00240 /* DMRUserDatabase.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00140 /* DMRUserDatabase.swift */; };
 		C1C2C3D4E5F6A7B8C9D00241 /* TalkgroupPickerField.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00141 /* TalkgroupPickerField.swift */; };
 		C1C2C3D4E5F6A7B8C9D00242 /* CallLogView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00142 /* CallLogView.swift */; };
+		C1C2C3D4E5F6A7B8C9D00245 /* PTTIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00145 /* PTTIntents.swift */; };
 		C1C2C3D4E5F6A7B8C9D00244 /* libsqlite3.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00144 /* libsqlite3.tbd */; };
 		C1C2C3D4E5F6A7B8C9D00243 /* CallLogStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F6A7B8C9D00143 /* CallLogStore.swift */; };
 		FA11C0DE0000000000000101 /* DMRCore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA11C0DE0000000000000001 /* DMRCore.cpp */; };
@@ -91,6 +92,7 @@
 		B1B2C3D4E5F6A7B8C9D00141 /* TalkgroupPickerField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TalkgroupPickerField.swift; sourceTree = "<group>"; };
 		B1B2C3D4E5F6A7B8C9D00142 /* CallLogView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallLogView.swift; sourceTree = "<group>"; };
 		B1B2C3D4E5F6A7B8C9D00143 /* CallLogStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallLogStore.swift; sourceTree = "<group>"; };
+		B1B2C3D4E5F6A7B8C9D00145 /* PTTIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PTTIntents.swift; sourceTree = "<group>"; };
 		B1B2C3D4E5F6A7B8C9D00144 /* libsqlite3.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libsqlite3.tbd; path = usr/lib/libsqlite3.tbd; sourceTree = SDKROOT; };
 		B1B2C3D4E5F6A7B8C9D0010D /* DMRPilot.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DMRPilot.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		FA11C0DE0000000000000001 /* DMRCore.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = DMRCore.cpp; sourceTree = "<group>"; };
@@ -203,6 +205,7 @@
 				B1B2C3D4E5F6A7B8C9D00141 /* TalkgroupPickerField.swift */,
 				B1B2C3D4E5F6A7B8C9D00142 /* CallLogView.swift */,
 				B1B2C3D4E5F6A7B8C9D00143 /* CallLogStore.swift */,
+				B1B2C3D4E5F6A7B8C9D00145 /* PTTIntents.swift */,
 				FA11C0DE00000000000000FF /* DMRPilot-Bridging-Header.h */,
 				A1B2C3D4E5F6A7B8C9D00012 /* Core */,
 				A1B2C3D4E5F6A7B8C9D00010 /* Vocoder */,
@@ -386,6 +389,7 @@
 				C1C2C3D4E5F6A7B8C9D00241 /* TalkgroupPickerField.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D00242 /* CallLogView.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D00243 /* CallLogStore.swift in Sources */,
+				C1C2C3D4E5F6A7B8C9D00245 /* PTTIntents.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D0020D /* HalfrateTables.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D0020E /* HalfrateCore.swift in Sources */,
 				C1C2C3D4E5F6A7B8C9D0020F /* HalfrateFec.swift in Sources */,
@@ -491,6 +495,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "DMR Pilot";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "按住 PTT 时需要用麦克风采集语音，编码后发到 DMR 服务器。";
+				INFOPLIST_KEY_UIBackgroundModes = audio;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -523,6 +528,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "DMR Pilot";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "按住 PTT 时需要用麦克风采集语音，编码后发到 DMR 服务器。";
+				INFOPLIST_KEY_UIBackgroundModes = audio;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;

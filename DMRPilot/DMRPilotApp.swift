@@ -9,7 +9,9 @@ import SwiftUI
 
 @main
 struct DMRPilotApp: App {
-    @StateObject private var app = AppState()
+    /// 用 `AppState.shared` 而不是新建：快捷指令里的 PTT 必须和界面上看到的是
+    /// 同一个连接对象，否则会另起一个没连上的实例。
+    @StateObject private var app = AppState.shared
 
     var body: some Scene {
         WindowGroup {

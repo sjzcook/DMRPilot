@@ -11,6 +11,13 @@ import SwiftUI
 @MainActor
 final class AppState: ObservableObject {
 
+    /// 进程内唯一实例。
+    ///
+    /// 快捷指令（`PTTIntents.swift`）是在 App 进程里跑的，但拿不到 SwiftUI 注入的
+    /// environmentObject，只能从这里取同一个 AppState——否则会新造一个 HomebrewClient，
+    /// 连着一半的连接、另一个麦克风。
+    static let shared = AppState()
+
     // MARK: - 设置
 
     @Published var settings: Settings {

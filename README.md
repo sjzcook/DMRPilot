@@ -69,6 +69,7 @@ DMRApp/
 │   ├── TalkgroupPickerField.swift # 通话组弹出选择器（中国/全部 + 名称搜索 + 手填号码）
 │   ├── CallsignDirectory.swift  # DMR ID → 呼号（本地库优先，网络兜底 + Caches 缓存）
 │   ├── DMRUserDatabase.swift    # RadioID.net 整包用户库：下载 / 建索引 / 二分查询
+│   ├── PTTIntents.swift         # 快捷指令 / Action Button 的 PTT 动作（App Intents）
 │   ├── LogConsoleView.swift     # 十六进制协议日志
 │   ├── Vocoder/                 # 只剩发送方向的 Swift 编码器（解码已改走 Core/Vocoder）
 │   │   ├── HalfrateEncoder.swift    # 分析 + 码本量化（PTT 用）
@@ -219,6 +220,35 @@ python tools/gen_icon.py
 - 首次按下会申请麦克风权限。拒绝之后按钮会提示去「设置 → DMRPilot → 麦克风」，
   改完回来不用重连。
 - 发射期间**暂停播放**收到的语音：半双工，而且麦克风会把扬声器声音再收进去，变成回声。
+
+### 快捷指令 / Action Button
+
+`DMRPilot/PTTIntents.swift` 里用 App Intents 注册了四个动作，装好 App 之后在
+**快捷指令**的动作列表里能直接搜到「DMRPilot」，也可以把它们挂到 **Action Button** 上
+（设置 → 操作按钮 → 快捷指令）。
+
+| 动作 | 行为 |
+| --- | --- |
+| PTT 开关 | 按一下开始发射，再按一下结束。挂 Action Button 就是「对讲机按键」的手感。 |
+| PTT 发射（定时） | 按一下开始，说够 N 秒（1–120，默认 10）自动收尾。 |
+| PTT 开始发射 | 只开始，不自动停；适合在快捷指令里自己拼。 |
+| PTT 结束发射 | 收尾（发结束符、停麦克风）；没在发射时只回一句提示，不报错。 |
+
+**为什么不是真的「按住说、松手停」**：Action Button 触发快捷指令时只给一次「按下」事件，
+系统不提供「松开」回调，第三方 App 拿不到松手时刻。所以要么用固定时长（定时），
+要么用两次触发拼成一次通话（开关）。真正的按住/松开只有 App 内的圆形 PTT 按钮能做到。
+
+几个实现上的约定：
+
+- 动作用 `AppState.shared`（`AppState` 改成了进程内单例），保证和界面上是同一个
+  `HomebrewClient`、同一个麦克风、同一个通话组，不会另起一个没连上的实例。
+- **断线会自动重连**：按 Action Button 的意思是「我要说话」，所以发现不在线就先
+  `connect()`，最多等 8 秒；身份没填全 / 握手失败才报错。错误文案直接显示在快捷指令里。
+- 麦克风没授权时会失败并提示去系统设置，不会静默什么都不做。
+- 新增 `INFOPLIST_KEY_UIBackgroundModes = audio`（工程设置里生成 Info.plist）。
+  App 在后台 / 锁屏时，只要音频会话还活着就有机会开麦；被系统彻底挂起后，
+  第一次按 Action Button 会顺带把 App 唤醒并重连，此时发射会晚 1–3 秒才真正开始。
+  这条只在真机上能验，模拟器和本机编译都看不出来。
 
 链路（全部在设备上完成，没有任何外部服务）：
 
@@ -806,7 +836,7 @@ ODTP / Rewind 那条链路更短：`0x0920` 的载荷本身就是这 27 字节�
 - Static / Dynamic Talkgroup 管理（需要 master 的 `RPTO` 选项帧，各 master 支持度不一）
 - Talker Alias 解析（`DMRA` 帧，能把源 ID 显示成呼号）
 - 按通话组/时隙过滤、离线缓存通话组名称表（现在是内存缓存，重启要重拉）
-- 后台保活（`UIBackgroundModes` + `NWPathMonitor`，注意 App Store 审核对长期后台 UDP 比较敏感）
+- 后台保活做完整（`audio` 后台模式已经加上；还差「空闲时放一段静音把会话撑住」，否则长时间不动会被挂起）
 - 语音录音 / 回放（PCM 已经在手里，写个 `AVAudioFile` 就行）
 - 把解码挪到独立串行队列（现在是主线程同步解码，25 包/秒时约 1–3 ms/包）
 
