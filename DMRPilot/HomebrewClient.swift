@@ -178,6 +178,12 @@ final class HomebrewClient: ObservableObject {
     /// 排查「有收帧没声音」时，这一行能直接分辨是解码出了静音，还是根本没走到解码。
     private var ysfProbeLogged = false
 
+    /// 按下 PTT 的那一刻，本地是不是正在收一路语音。
+    ///
+    /// 用来判断「本来在收听，被我这一句话打断之后要不要把订阅重新挂回去」
+    /// （见 `restoreReceptionAfterPtt`）。不看这个的话，每次松手都补一次订阅太吵。
+    private var receivingBeforePtt = false
+
     // MARK: - 发射状态
 
     private enum TxKind {
@@ -291,6 +297,14 @@ final class HomebrewClient: ObservableObject {
         // 换台：先退掉旧组的订阅，再把收听范围锁到新组。
         if changed {
             cancelSubscription(for: previous)
+            // ODTP 的 CANCELLING 是「退订全部」：刚退完必须让后面那次 `call()` 真的发出去。
+            // `call()` 有一条 3 秒去重（`lastSubscribeAt`），A→B→A 这样快速来回切的时候
+            // 第二次回 A 会被它挡掉 —— 退订发了、订阅没发，等于**一个组都不剩**，
+            // 现场就是「切了一下组，从此收不到任何东西」。这里把去重记录清掉。
+            if isOdtp {
+                lastSubscribeAt = nil
+                lastSubscribeTalkgroup = nil
+            }
         }
         listenLock = value
 
@@ -384,6 +398,11 @@ final class HomebrewClient: ObservableObject {
     func beginPtt(destination: Int, isPrivate: Bool = false) {
         guard !isTransmitting else { return }
 
+        // 记下「按之前到底有没有在收听」：收尾后要用它决定要不要把订阅重新挂回去。
+        // 这一行必须放在最前面 —— 下面的 `voice.isMuted = true` 不会动 `streamKey`，
+        // 但发射过程里对方有可能推结束符，晚了就判断不出来了。
+        receivingBeforePtt = streamKey != nil
+
         // YSF 没有通话组、没有时隙色码：走另一条更短的发射路径。
         if isYsf {
             beginYsfPtt()
@@ -464,8 +483,42 @@ final class HomebrewClient: ObservableObject {
             txSeconds = Date().timeIntervalSince(started)
         }
         finishTransmission(label: "⬛ 停止发射")
+        // 发射把对方的呼叫打断了，服务器那边这条连接可能就不再推语音了 —— 收尾时
+        // 把收听重新挂回去（只在「按之前确实在收」的时候做）。
+        restoreReceptionAfterPtt()
         voice.isMuted = !activeSettings.audioEnabled
         txStartedAt = nil
+    }
+
+    /// 发射结束后把「收听」重新挂回去。
+    ///
+    /// 现场：有人讲话时按一下 PTT，松手之后既没有声音、也不再有任何新帧（`rxFrames`、
+    /// 通话列表全停住）。本地这条收流链路**不依赖发射状态**（`rw_core_tx_*` 只发不算，
+    /// `handleInbound` / `handleDmrFrame` 里也没有任何 `isTransmitting` 分支），
+    /// 所以只剩两种可能：
+    ///
+    /// 1. 帧真的没来 —— 终端在 BrandMeister 上是一条半双工会话，我们这句话把对方的
+    ///    呼叫顶掉之后，服务器不再往这条连接推语音；
+    /// 2. 帧来了但被本地按 dst 丢掉 —— 见 `handleDmrFrame` 里 `dst > 0` 那条注释。
+    ///
+    /// 第 1 种只能靠「重新订阅」救：ODTP 的订阅是显式命令，一个包就能挂回去，
+    /// 服务器回一个空确认而已，不会打断正在进行的呼叫。Homebrew 没有订阅指令，
+    /// 重新挂要靠一次真实的静音发射（0.75 秒），代价太大，这里不做，只留日志。
+    private func restoreReceptionAfterPtt() {
+        guard receivingBeforePtt else { return }
+        receivingBeforePtt = false
+        guard state == .online else { return }
+
+        if isOdtp {
+            // 收听范围优先用 `listenLock`（用户点过的那一组），它才是服务器实际在推的。
+            let target = listenLock > 0 ? listenLock : activeTalkgroup
+            guard target > 0 else { return }
+            guard sendSubscribe(talkgroup: target) else { return }
+            append(.info, "↺ 发射结束，重新向 TG \(target) 订阅一次（把收听挂回来）")
+        } else if isHomebrew {
+            append(.info, "↺ 发射结束：Homebrew 没有订阅指令，如果对方之后不再出声，"
+                + "等服务器下发或手动点一次通话组重新订阅")
+        }
     }
 
     // MARK: - 发射（两条路径共用）
@@ -1729,17 +1782,22 @@ final class HomebrewClient: ObservableObject {
         // 默认跟随是 DroidStar 的接收侧做法——BM 推的是这台热点被订阅的全部组，
         // 其中还包括 SelfCare 里配的静态组。但用户既然点了某一组，就该只听到这一组，
         // 旧组的语音必须立刻停掉（Homebrew 退不掉订阅，只能在这里丢帧）。
+        //
+        // `dst > 0` 这个条件不能省：ODTP 的语音帧本身不带地址（0x0920 只有 27 字节
+        // AMBE），目的地址靠最近一个 Full LC（0x0911）补进核心里。连上时对方已经在讲、
+        // 或者那条 LC 丢了，`dst` 就是 0 —— 这时按 dst 丢弃会把**整条流**吞掉，
+        // 界面上表现为「在收（包有进来）但什么都没发生」，或者干脆像「不再接收」。
         let target = listenLock > 0
             ? listenLock
             : (activeSettings.followServerTalkgroups ? 0 : activeTalkgroup)
-        if !isPrivate, target > 0, dst != target {
+        if !isPrivate, target > 0, dst > 0, dst != target {
             filteredFrames += 1
             return
         }
 
         // 服务器实际在推哪个组 —— 这个值经常不等于界面上选的那个。
         // 放在过滤之后：被丢掉的旧组不该再刷新「服务器下发 TG x」那一行。
-        if !isPrivate, serverTalkgroup != dst { serverTalkgroup = dst }
+        if !isPrivate, dst > 0, serverTalkgroup != dst { serverTalkgroup = dst }
 
         talkgroupAliveAt = Date()
         streamLastFrameAt = Date()
@@ -2060,6 +2118,7 @@ final class HomebrewClient: ObservableObject {
 
         streamKey = nil
         streamLastFrameAt = nil
+        receivingBeforePtt = false
         ysfSource = ""
         ysfDest = ""
         ysfProbeLogged = false
